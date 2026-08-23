@@ -1,0 +1,11 @@
+{
+  "results": [
+    {
+      "surface_shell_id": "SURFACE-EXAMPLE",
+      "page_id": "PAGE-EXAMPLE",
+      "page_shell_id": "PSHELL-EXAMPLE",
+      "device_id": "HDEVICE-001",
+      "status": "PASS"
+    }
+  ]
+}

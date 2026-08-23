@@ -1,0 +1,12 @@
+{
+  "policy_version": 1,
+  "direct_copy_hash_required": true,
+  "format_conversion_requires_command": true,
+  "native_system_resource_requires_decision": true,
+  "unregistered_project_visuals_allowed": false,
+  "allowed_visual_extensions": [".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif"],
+  "allowed_untracked_visual_paths": [],
+  "forbidden_inline_glyphs": ["✓", "✔"],
+  "forbidden_implementation_tokens": ["TODO", "FIXME", "MOCK_ONLY", "STUB_ONLY", "FAKE_DATA"],
+  "mp4_allowed": false
+}

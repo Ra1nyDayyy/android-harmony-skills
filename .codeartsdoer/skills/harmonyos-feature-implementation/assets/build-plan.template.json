@@ -1,0 +1,32 @@
+{
+  "hbuild_id": "HBUILD-001",
+  "h4env_id": "H4ENV-001",
+  "executed_by": "__FILL_FROZEN_VERIFICATION_EXECUTOR_ID__",
+  "commands": [
+    {
+      "command_id": "CMD-TOOLCHAIN",
+      "category": "TOOLCHAIN",
+      "cwd": ".",
+      "argv": ["__FROZEN_TOOLCHAIN_EXECUTABLE__", "toolchain"]
+    },
+    {
+      "command_id": "CMD-CLEAN-BUILD",
+      "category": "CLEAN_BUILD",
+      "cwd": ".",
+      "argv": ["__FROZEN_CLEAN_BUILD_EXECUTABLE__", "clean-build", "--artifact", "{ARTIFACT}"]
+    },
+    {
+      "command_id": "CMD-BUNDLE",
+      "category": "BUNDLE_CHECK",
+      "cwd": ".",
+      "argv": ["__FROZEN_BUNDLE_CHECK_EXECUTABLE__", "bundle-check", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__"]
+    },
+    {
+      "command_id": "CMD-SIGNING",
+      "category": "SIGNING_CHECK",
+      "cwd": ".",
+      "argv": ["__FROZEN_SIGNING_CHECK_EXECUTABLE__", "signing-check", "--bundle", "__FROZEN_BUNDLE_NAME__"]
+    }
+  ],
+  "artifact_paths": ["build/application.hap"]
+}

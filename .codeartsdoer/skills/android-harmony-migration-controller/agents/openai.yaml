@@ -1,0 +1,6 @@
+interface:
+  display_name: "安卓迁移总管"
+  short_description: "统筹安卓到鸿蒙迁移项目的范围、分工、仲裁、返工与阶段门禁管理"
+  default_prompt: "使用 $android-harmony-migration-controller 创建迁移任务，并按门禁治理范围冻结、安卓盘点、鸿蒙工程骨架和功能对等实现。"
+policy:
+  allow_implicit_invocation: true

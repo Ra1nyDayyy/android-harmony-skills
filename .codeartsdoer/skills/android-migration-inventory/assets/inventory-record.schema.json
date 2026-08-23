@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Android migration inventory record",
+  "type": "object",
+  "required": [
+    "inventory_id", "feature_id", "feature_name", "page_id", "page_name",
+    "state_id", "state_name", "env_id", "evidence_id", "entry_condition",
+    "action_summary", "expected_observable", "actual_observable", "asset_ids",
+    "responsible_agent", "row_status"
+  ],
+  "properties": {
+    "inventory_id": {"type": "string"},
+    "feature_id": {"type": "string"},
+    "feature_name": {"type": "string"},
+    "page_id": {"type": "string"},
+    "page_name": {"type": "string"},
+    "state_id": {"type": "string"},
+    "state_name": {"type": "string"},
+    "env_id": {"type": "string"},
+    "evidence_id": {"type": "string"},
+    "entry_condition": {"type": "string"},
+    "transition_from_state_id": {"type": "string"},
+    "predecessor_evidence_id": {"type": "string"},
+    "action_summary": {"type": "string"},
+    "expected_observable": {"type": "string"},
+    "actual_observable": {"type": "string"},
+    "code_refs": {"type": "array", "items": {"type": "string"}},
+    "business_rule_refs": {"type": "array", "items": {"type": "string"}},
+    "data_dependency_refs": {"type": "array", "items": {"type": "string"}},
+    "system_capability_refs": {"type": "array", "items": {"type": "string"}},
+    "third_party_dependency_refs": {"type": "array", "items": {"type": "string"}},
+    "asset_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "responsible_agent": {"type": "string"},
+    "row_status": {"enum": ["CAPTURED", "PENDING_CONFIRMATION", "REWORK", "REVIEWED", "SUPERSEDED"]},
+    "rework_id": {"type": "string"},
+    "reviewed_by": {"type": "string"},
+    "reviewed_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}

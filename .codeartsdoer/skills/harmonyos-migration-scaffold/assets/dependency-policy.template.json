@@ -1,0 +1,16 @@
+{
+  "layers": ["app", "feature", "foundation", "contract"],
+  "allowed_edges": [
+    {"from": "app", "to": "feature"},
+    {"from": "app", "to": "foundation"},
+    {"from": "feature", "to": "foundation"},
+    {"from": "feature", "to": "contract"},
+    {"from": "foundation", "to": "contract"}
+  ],
+  "placeholder_forbidden_tokens": [
+    "ViewModel", "fetch(", "http.", "axios", "database", "preferences", "setTimeout(", "setInterval(", "MockData", "FakeData"
+  ],
+  "contract_forbidden_tokens": [
+    "class ", "implements ", "fetch(", "http.", "axios", "database", "preferences", "setTimeout(", "setInterval(", "MockData", "FakeData"
+  ]
+}

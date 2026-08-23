@@ -1,0 +1,115 @@
+{
+  "henv_id": "HENV-001",
+  "created_at": "__FILL_ISO_8601__",
+  "created_by": "__FILL_ARCHITECTURE_LEAD_ID__",
+  "host": {
+    "os": "__FILL__",
+    "os_version": "__FILL__",
+    "architecture": "__FILL__"
+  },
+  "toolchain": {
+    "deveco_studio_version": "__FILL__",
+    "harmonyos_sdk_api_target": "__FILL__",
+    "compatible_api": "__FILL__",
+    "build_tool_version": "__FILL__",
+    "package_manager_version": "__FILL__",
+    "runtime_version": "__FILL__",
+    "allowed_executables": [],
+    "category_contracts": {
+      "TOOLCHAIN": {
+        "executable": "__FILL_CANONICAL_TOOL_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_REQUIRED_TOKEN__"],
+        "success_output_contains": ["__FILL_STABLE_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "DEVICE": {
+        "executable": "__FILL_CANONICAL_HDC_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_DEVICE_LIST_TOKEN__"],
+        "success_output_contains": ["__FILL_DEVICE_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "BUNDLE_CHECK": {
+        "executable": "__FILL_CANONICAL_HDC_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_BUNDLE_QUERY_TOKEN__"],
+        "success_output_contains": ["__FILL_BUNDLE_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "SIGNING_CHECK": {
+        "executable": "__FILL_CANONICAL_TOOL_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_SIGNING_CHECK_TOKEN__"],
+        "success_output_contains": ["__FILL_SIGNING_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "CLEAN_BUILD": {
+        "executable": "__FILL_CANONICAL_HVIGORW_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["assembleHap"],
+        "success_output_contains": ["__FILL_BUILD_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "INSTALL": {
+        "executable": "__FILL_CANONICAL_HDC_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["install"],
+        "success_output_contains": ["install bundle successfully"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "LAUNCH": {
+        "executable": "__FILL_CANONICAL_HDC_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["shell", "aa", "start"],
+        "success_output_contains": ["__FILL_LAUNCH_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "ROUTE_SMOKE": {
+        "executable": "__FILL_CANONICAL_ROUTE_TEST_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_ROUTE_RESULT_OUTPUT_TOKEN__"],
+        "success_output_contains": ["__FILL_ROUTE_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      },
+      "SCREENSHOT_CAPTURE": {
+        "executable": "__FILL_CANONICAL_HDC_PATH__",
+        "executable_sha256": "__AUTO_AT_FREEZE__",
+        "required_argv_tokens": ["__FILL_SCREENSHOT_TOKEN__"],
+        "success_output_contains": ["__FILL_SCREENSHOT_SUCCESS_MARKER__"],
+        "error_output_contains": ["Error:", "Failed:", "Failure:"]
+      }
+    }
+  },
+  "application": {
+    "bundle_name": "__FILL__",
+    "product_name": "default",
+    "build_mode": "debug",
+    "dependency_lock_file": "oh-package-lock.json5",
+    "dependency_lock_sha256": "__FILL__"
+  },
+  "signing": {
+    "configuration_reference": "__FILL_REFERENCE_ONLY__",
+    "certificate_alias": "__FILL__",
+    "certificate_fingerprint_sha256": "__FILL__",
+    "certificate_expires_at": "__FILL_ISO_8601__",
+    "secret_storage_reference": "__FILL_REFERENCE_ONLY__",
+    "secrets_embedded": false
+  },
+  "bundle_conflict_check_scope": "LOCAL_DEVICE",
+  "target_device_classes": ["phone"],
+  "devices": [
+    {
+      "device_id": "HDEVICE-001",
+      "is_baseline": true,
+      "required": true,
+      "screenshot_required": true,
+      "device_type": "emulator",
+      "model": "__FILL__",
+      "serial": "__FILL__",
+      "os_version": "__FILL__",
+      "api_level": "__FILL__",
+      "resolution": "__FILL__"
+    }
+  ]
+}

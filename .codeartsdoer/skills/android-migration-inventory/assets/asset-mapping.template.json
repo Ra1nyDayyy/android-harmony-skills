@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "asset_id": "ASSET-EXAMPLE",
+      "source_path": "app/src/main/res/drawable/example.svg",
+      "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "asset_type": "VECTOR_IMAGE",
+      "feature_ids": ["FEATURE-EXAMPLE"],
+      "page_ids": ["PAGE-EXAMPLE"],
+      "state_ids": ["STATE-EXAMPLE"],
+      "notes": "Replace or remove this example before archiving."
+    }
+  ]
+}

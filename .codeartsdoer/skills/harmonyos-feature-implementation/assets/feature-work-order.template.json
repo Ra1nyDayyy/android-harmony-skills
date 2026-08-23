@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "H4WO-001",
+  "run_id": "__FILL_RUN_ID__",
+  "phase": 4,
+  "feature_id": "FEATURE-001",
+  "status": "ISSUED",
+  "issued_at": "__FILL_ISO_8601__",
+  "issued_by": "__FILL_IMPLEMENTATION_LEAD_ID__",
+  "phase4_manifest_sha256": "__AUTO__",
+  "stage04_input_lock_sha256": "__AUTO__",
+  "ownership": {
+    "feature_owner_id": "__FILL__",
+    "ui_agent_id": "__FILL__",
+    "business_data_agent_id": "__FILL__",
+    "native_capability_agent_id": "__FILL__"
+  },
+  "visual_asset_agent_id": "__AUTO_FROM_PHASE4_OWNERSHIP__",
+  "source_inventory_ids": ["__AUTO__"],
+  "parity_ids": ["__AUTO__"],
+  "harmony_module_ids": ["__AUTO__"],
+  "targets": [
+    {
+      "source_row_key": "__AUTO__",
+      "harmony_module_id": "__AUTO__",
+      "target_kind": "__AUTO__",
+      "target_id": "__AUTO__"
+    }
+  ],
+  "required_h4env_ids": ["__AUTO__"],
+  "asset_ids": [],
+  "capability_requirement_ids": [],
+  "capability_contract_ids": [],
+  "exclusive_code_paths": ["__FILL_EXISTING_PROJECT_RELATIVE_PATH__"],
+  "completion_conditions": [
+    "Every seeded parity row is implemented and evidenced on every required H4ENV"
+  ]
+}

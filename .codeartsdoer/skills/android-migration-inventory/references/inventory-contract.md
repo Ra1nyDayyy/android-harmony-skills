@@ -1,0 +1,45 @@
+# Inventory contract
+
+## Row invariant
+
+Every formal row means exactly:
+
+> one `Feature-ID` x one `Page-ID` x one `State-ID` x one `ENV-ID` x one `Evidence-ID`.
+
+Five states on one page require five rows. The same state in two environments requires two rows. One evidence ID cannot prove multiple formal rows.
+
+`Page-ID` includes full pages, dialogs, bottom sheets, menus, system pickers, and other observable surfaces. Pure background behavior goes in dependency claims linked to a feature, not in a fake page.
+
+## Required claim fields
+
+- `inventory_id`, `feature_id`, `feature_name`
+- `page_id`, `page_name`
+- `state_id`, `state_name`
+- `env_id`, `evidence_id`
+- `entry_condition`, `action_summary`
+- `expected_observable`, `actual_observable`
+- `responsible_agent`, `row_status`
+
+For transitions also provide `transition_from_state_id` and `predecessor_evidence_id`.
+
+Use arrays for code, business-rule, data, system-capability, third-party, and asset references. `asset_ids` is mandatory on every row and is either a sorted list of real `Asset-ID` values or exactly `["NONE_FOUND"]`; never mix the sentinel with real IDs. Concrete code findings use `path:line` references. Unknowns remain explicit; do not fill them from convention.
+
+`coverage-ledger.csv` has exactly one row per included Feature-ID and explicitly lists applicable ENV-IDs. `PASS` requires all four mapping checks to be true. `catalogs/code-map.csv` records every code/state candidate; every `IN_SCOPE` candidate must have a matching inventory row in each applicable environment. Other catalogs hold business rules, data dependencies, system capabilities, and third-party SDKs.
+
+## Asset handoff
+
+`asset-inventory.csv` has one row per real archived Android asset. It binds `Asset-ID`, frozen source path, canonical archive path, SHA-256, type, Feature/Page/State associations, creator, reviewer, lifecycle, and notes. Each real asset is copied to `asset-package/files/<Asset-ID>/<source-basename>`.
+
+Allowed `asset_type` values are `RASTER_IMAGE`, `VECTOR_IMAGE`, `XML_RESOURCE`, `FONT`, `AUDIO`, `ANIMATION`, `JSON_RESOURCE`, and `RAW_RESOURCE`. Mapping arrays must be sorted and duplicate-free; `source_path` is a traversal-free path relative to the frozen Android project, and `source_sha256` must match its current regular-file bytes.
+
+`asset-package/manifest.sha256` lists every archived file once in archive-path order. `COMMITTED` contains only the SHA-256 of that manifest plus a newline. The manifest must exactly cover the package, and every asset row must be referenced by at least one active inventory row whose Feature/Page/State IDs are covered by the asset row. An empty committed package is valid only when active inventory rows explicitly use `["NONE_FOUND"]`.
+
+The frozen code-map agent is the only asset archiver. The final coverage checker changes asset rows from `ARCHIVED` to `REVIEWED`; source and archive bytes must still match at closure.
+
+## Status values
+
+- `CAPTURED`: evidence exists but final review has not passed.
+- `PENDING_CONFIRMATION`: fact or environment conflict remains unresolved.
+- `REWORK`: a rework ID is open.
+- `REVIEWED`: written only by the closure validator after the frozen coverage checker accepts the row.
+- `SUPERSEDED`: a newer row/evidence replaced it while history remains.

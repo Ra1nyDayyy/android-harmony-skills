@@ -1,0 +1,1 @@
+ticket_id,severity,problem_type,parity_or_record_id,feature_id,page_id,state_id,h4env_id,failed_build_id,failed_evidence_id,responsible_role,responsible_agent,completion_condition,status,opened_by,opened_at,confirmed_by,confirmed_at,resolution_build_id,resolution_evidence_id,closed_by,closed_at,notes

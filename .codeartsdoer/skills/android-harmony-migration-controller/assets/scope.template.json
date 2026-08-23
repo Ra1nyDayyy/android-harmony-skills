@@ -1,0 +1,66 @@
+{
+  "run_id": "__RUN_ID__",
+  "project_id": "__PROJECT_ID__",
+  "created_at": "__CREATED_AT__",
+  "android": {
+    "project_root": "__PROJECT_ROOT__",
+    "source_revision": "__FILL__",
+    "source_revision_kind": "git-commit",
+    "apk_path": "__FILL__",
+    "apk_sha256": "__FILL__",
+    "application_id": "__FILL__",
+    "app_version": "__FILL__",
+    "app_build": "__FILL__",
+    "build_variant": "__FILL__"
+  },
+  "target": {
+    "platform": "HarmonyOS NEXT",
+    "sdk_or_api_target": "__FILL__",
+    "device_classes": ["phone"]
+  },
+  "migration_scope": {
+    "included_features": ["__FILL__"],
+    "excluded_features": [],
+    "parity_dimensions": ["function", "page", "state", "data", "interaction", "error"]
+  },
+  "ownership": {
+    "migration_controller_id": "__FILL__",
+    "inventory_lead_id": "__FILL__",
+    "code_map_agent_id": "__FILL__",
+    "runtime_state_agent_ids": ["__FILL__"],
+    "business_rule_agent_id": "__FILL__",
+    "data_dependency_agent_id": "__FILL__",
+    "evidence_administrator_id": "__FILL__",
+    "coverage_checker_id": "__FILL__"
+  },
+  "pending_confirmations": [],
+  "environments": [
+    {
+      "env_id": "ENV-001",
+      "is_baseline": true,
+      "account_id": "__FILL__",
+      "account_role": "__FILL__",
+      "seed_data_id": "__FILL__",
+      "seed_reset_ref": "__FILL__",
+      "network_profile": "normal",
+      "network_conditions_ref": "__FILL__",
+      "network_toggle_available": "__FILL_BOOLEAN__",
+      "emulator_model": "__FILL__",
+      "device_serial": "__FILL__",
+      "resolution": "__FILL__",
+      "density_dpi": "__FILL_NUMBER__",
+      "android_api_level": "__FILL_NUMBER__",
+      "orientation": "portrait",
+      "locale": "zh-CN",
+      "theme": "light",
+      "font_scale": 1.0,
+      "timezone": "Asia/Shanghai",
+      "permissions_profile": "fresh-install"
+    }
+  ],
+  "tool_policy": {
+    "runtime_ui_tool": "android-cli",
+    "apk_analyzer_bin": "apkanalyzer",
+    "layout_inspector_allowed": false
+  }
+}

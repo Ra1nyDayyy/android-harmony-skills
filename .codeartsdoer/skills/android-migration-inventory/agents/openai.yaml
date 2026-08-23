@@ -1,0 +1,6 @@
+interface:
+  display_name: "Android 迁移盘点"
+  short_description: "使用 Android CLI 建立可复核的状态清单、环境基线和完整证据链"
+  default_prompt: "使用 $android-migration-inventory 全面盘点当前 Android 项目并生成证据链。"
+policy:
+  allow_implicit_invocation: true

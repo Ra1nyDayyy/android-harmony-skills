@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "created_at": "__AUTO_AT_INITIALIZATION__",
+  "locked_by": "__AUTO_IMPLEMENTATION_LEAD__",
+  "contracts": [
+    {
+      "contract_id": "H4CONV-CONTRACT-001",
+      "source_extensions": [".svg"],
+      "target_extensions": [".png"],
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "argv_template": [
+        "__FILL_CANONICAL_EXECUTABLE_PATH__",
+        "convert",
+        "{SOURCE}",
+        "{TARGET}"
+      ],
+      "required_argv_tokens": ["convert", "{SOURCE}", "{TARGET}"],
+      "success_output_contains": ["CONVERSION_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    }
+  ]
+}

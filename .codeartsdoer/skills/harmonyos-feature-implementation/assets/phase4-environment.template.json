@@ -1,0 +1,118 @@
+{
+  "h4env_id": "H4ENV-001",
+  "source_android_env_id": "ENV-001",
+  "base_henv_id": "HENV-001",
+  "device_id": "HDEVICE-001",
+  "device_serial": "__FILL_EXACT_FROZEN_SERIAL__",
+  "bundle_name": "__FILL_FROZEN_BUNDLE_NAME__",
+  "created_by": "__FILL_IMPLEMENTATION_LEAD_ID__",
+  "required": true,
+  "device_selector_tokens": ["--serial", "__FILL_EXACT_FROZEN_SERIAL__"],
+  "category_contracts": {
+    "TOOLCHAIN": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["toolchain"],
+      "success_output_contains": ["TOOLCHAIN_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "CLEAN_BUILD": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["clean-build", "{ARTIFACT}"],
+      "success_output_contains": ["CLEAN_BUILD_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "BUNDLE_CHECK": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["bundle-check", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__"],
+      "success_output_contains": ["BUNDLE_CHECK_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "SIGNING_CHECK": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["signing-check", "__FILL_FROZEN_BUNDLE_NAME__"],
+      "success_output_contains": ["SIGNING_CHECK_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "DEVICE_CHECK": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["device-check", "__FILL_EXACT_FROZEN_SERIAL__"],
+      "success_output_contains": ["DEVICE_CHECK_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "CLEAN_INSTALL": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["clean-install", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "{ARTIFACT}"],
+      "success_output_contains": ["CLEAN_INSTALL_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "SEED_RESET": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["seed-reset", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__"],
+      "success_output_contains": ["SEED_RESET_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "NETWORK_PROFILE": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["network-profile", "__FILL_EXACT_FROZEN_SERIAL__"],
+      "success_output_contains": ["NETWORK_PROFILE_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "PERMISSION_PROFILE": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["permission-profile", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__"],
+      "success_output_contains": ["PERMISSION_PROFILE_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "LAUNCH": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["launch", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__"],
+      "success_output_contains": ["LAUNCH_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "NAVIGATE": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["navigate", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target"],
+      "success_output_contains": ["NAVIGATE_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "BUSINESS_ASSERT": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["business-assert", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{ASSERTIONS}"],
+      "success_output_contains": ["BUSINESS_ASSERT_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "SCREENSHOT_CAPTURE": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["screenshot", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{SCREENSHOT}"],
+      "success_output_contains": ["SCREENSHOT_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    },
+    "UI_TREE_CAPTURE": {
+      "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
+      "executable_sha256": "__FILL_64_HEX_SHA256__",
+      "required_argv_tokens": ["ui-tree", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{UI_TREE}"],
+      "success_output_contains": ["UI_TREE_OK"],
+      "error_output_contains": ["Error:", "Failed:", "Failure:"]
+    }
+  },
+  "comparison": {
+    "screenshot_width": "__FILL_INTEGER__",
+    "screenshot_height": "__FILL_INTEGER__",
+    "content_bounds": [0, 0, "__FILL_INTEGER__", "__FILL_INTEGER__"],
+    "geometry_tolerance_px": 2,
+    "excluded_platform_regions": []
+  }
+}

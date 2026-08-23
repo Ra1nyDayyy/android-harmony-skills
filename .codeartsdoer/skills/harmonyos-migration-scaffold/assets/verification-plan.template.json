@@ -1,0 +1,81 @@
+{
+  "verification_id": "HVER-001",
+  "henv_id": "HENV-001",
+  "executed_by": "__FILL_FROZEN_TOOLCHAIN_AGENT_ID__",
+  "commands": [
+    {
+      "command_id": "CMD-TOOLCHAIN",
+      "category": "TOOLCHAIN",
+      "cwd": ".",
+      "argv": ["__FROZEN_TOOLCHAIN_EXECUTABLE__", "__FROZEN_TOOLCHAIN_ARG__"]
+    },
+    {
+      "command_id": "CMD-DEVICE",
+      "category": "DEVICE",
+      "device_id": "HDEVICE-001",
+      "cwd": ".",
+      "argv": ["__FROZEN_DEVICE_EXECUTABLE__", "__FROZEN_DEVICE_ARG__", "__EXACT_FROZEN_SERIAL__"]
+    },
+    {
+      "command_id": "CMD-BUNDLE",
+      "category": "BUNDLE_CHECK",
+      "device_id": "HDEVICE-001",
+      "cwd": ".",
+      "argv": ["__FROZEN_BUNDLE_CHECK_EXECUTABLE__", "__FROZEN_BUNDLE_ARGS__", "__EXACT_FROZEN_SERIAL__", "__FROZEN_BUNDLE_NAME__"]
+    },
+    {
+      "command_id": "CMD-SIGNING",
+      "category": "SIGNING_CHECK",
+      "cwd": ".",
+      "argv": ["__FROZEN_SIGNING_EXECUTABLE__", "__FROZEN_SIGNING_ARGS__"]
+    },
+    {
+      "command_id": "CMD-BUILD",
+      "category": "CLEAN_BUILD",
+      "cwd": ".",
+      "argv": ["__FROZEN_BUILD_EXECUTABLE__", "__FROZEN_CLEAN_BUILD_ARGS__", "build/application.hap"]
+    },
+    {
+      "command_id": "CMD-INSTALL",
+      "category": "INSTALL",
+      "device_id": "HDEVICE-001",
+      "cwd": ".",
+      "argv": ["__FROZEN_INSTALL_EXECUTABLE__", "__FROZEN_INSTALL_ARGS__", "__EXACT_FROZEN_SERIAL__", "build/application.hap"]
+    },
+    {
+      "command_id": "CMD-LAUNCH",
+      "category": "LAUNCH",
+      "device_id": "HDEVICE-001",
+      "cwd": ".",
+      "argv": ["__FROZEN_LAUNCH_EXECUTABLE__", "__FROZEN_LAUNCH_ARGS__", "__EXACT_FROZEN_SERIAL__", "__FROZEN_BUNDLE_NAME__"]
+    },
+    {
+      "command_id": "CMD-SMOKE-EXAMPLE",
+      "category": "ROUTE_SMOKE",
+      "device_id": "HDEVICE-001",
+      "target_kind": "ROUTE_PAGE",
+      "target_id": "ROUTE-EXAMPLE",
+      "page_id": "PAGE-EXAMPLE",
+      "page_shell_id": "PSHELL-EXAMPLE",
+      "result_output_path": "build/verification-results/ROUTE-EXAMPLE-HDEVICE-001.json",
+      "cwd": ".",
+      "argv": ["__FROZEN_ROUTE_SMOKE_EXECUTABLE__", "__FROZEN_ROUTE_SMOKE_ARGS__", "__EXACT_FROZEN_SERIAL__", "__FROZEN_BUNDLE_NAME__", "build/verification-results/ROUTE-EXAMPLE-HDEVICE-001.json"]
+    },
+    {
+      "command_id": "CMD-SCREEN-EXAMPLE",
+      "category": "SCREENSHOT_CAPTURE",
+      "device_id": "HDEVICE-001",
+      "screenshot_id": "HSCREEN-EXAMPLE",
+      "target_kind": "ROUTE_PAGE",
+      "target_id": "ROUTE-EXAMPLE",
+      "feature_ids": ["FEATURE-EXAMPLE"],
+      "page_id": "PAGE-EXAMPLE",
+      "page_shell_id": "PSHELL-EXAMPLE",
+      "smoke_command_id": "CMD-SMOKE-EXAMPLE",
+      "output_path": "build/screenshots/HSCREEN-EXAMPLE.png",
+      "cwd": ".",
+      "argv": ["__FROZEN_SCREENSHOT_EXECUTABLE__", "__FROZEN_SCREENSHOT_ARGS__", "__EXACT_FROZEN_SERIAL__", "build/screenshots/HSCREEN-EXAMPLE.png"]
+    }
+  ],
+  "artifact_paths": ["build/application.hap"]
+}

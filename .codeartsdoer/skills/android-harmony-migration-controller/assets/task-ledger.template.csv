@@ -1,0 +1,7 @@
+task_id,phase,task,owner,status,depends_on,updated_at,notes
+TASK-PHASE-01,1,Freeze migration scope and baselines,migration-controller,IN_PROGRESS,,,
+TASK-PHASE-02,2,Produce Android state inventory and evidence chain,android-inventory-lead,NOT_STARTED,TASK-PHASE-01,,
+TASK-PHASE-03,3,Create and independently accept HarmonyOS scaffold,harmony-architecture-lead,NOT_STARTED,TASK-PHASE-02,,
+TASK-PHASE-04,4,Implement and accept HarmonyOS feature parity,harmony-implementation-lead,NOT_STARTED,TASK-PHASE-03,,
+TASK-PHASE-05,5,Build one release candidate and accept whole-app regression,harmony-regression-lead,NOT_STARTED,TASK-PHASE-04,,
+TASK-PHASE-06,6,Preserve the tested candidate and accept the delivery package,harmony-delivery-lead,NOT_STARTED,TASK-PHASE-05,,

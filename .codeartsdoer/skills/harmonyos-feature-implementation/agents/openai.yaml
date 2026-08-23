@@ -1,0 +1,6 @@
+interface:
+  display_name: "HarmonyOS Feature Implementation"
+  short_description: "Implement and verify Android feature parity on HarmonyOS"
+  default_prompt: "Use $harmonyos-feature-implementation to implement frozen Android features in HarmonyOS and verify every state on the emulator."
+policy:
+  allow_implicit_invocation: true

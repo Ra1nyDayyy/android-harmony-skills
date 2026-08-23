@@ -1,0 +1,9 @@
+{
+  "parity_id": "PAR-001",
+  "visual_result": "MATCH",
+  "functional_result": "MATCH",
+  "asset_result": "MATCH",
+  "reviewed_visual_element_ids": ["VEL-001"],
+  "differences": [],
+  "notes": ""
+}

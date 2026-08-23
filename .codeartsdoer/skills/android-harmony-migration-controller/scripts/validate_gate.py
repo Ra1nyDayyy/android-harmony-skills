@@ -1,0 +1,5677 @@
+#!/usr/bin/env python3
+"""Validate Phase 1 through Phase 6 gates for a migration controller run."""
+
+from __future__ import annotations
+
+import argparse
+import binascii
+import csv
+import hashlib
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import tempfile
+import zipfile
+import zlib
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{2,79}$")
+ACTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
+PLACEHOLDER_RE = re.compile(r"^__.+__$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+UNRESOLVED_WORDS = {"PENDING_CONFIRMATION", "UNKNOWN", "UNRESOLVED", "TBD", "TODO"}
+CLOSURE_EXACT_EXCLUDES = {"closure-report.json", "closure-manifest.sha256", "CLOSED"}
+CLOSURE_DIR_EXCLUDES = {".locks", ".staging"}
+STAGE3_CLOSURE_EXACT_EXCLUDES = {
+    "stage-03-gate-report.json", "stage-03-closure-manifest.sha256", "CLOSED",
+}
+STAGE3_ROLE_KEYS = (
+    "architecture_lead_id", "toolchain_agent_id", "navigation_agent_id",
+    "public_ui_agent_id", "capability_contract_agent_id", "architecture_acceptance_agent_id",
+)
+STAGE3_SNAPSHOT_REGISTRIES = {
+    "stage-03-input-lock.json", "module-registry.csv", "dependency-policy.json",
+    "architecture-map.csv", "route-registry.csv", "surface-registry.csv",
+    "public-ui-registry.csv", "capability-contracts.csv", "asset-registry.csv", "migration-status.csv",
+    "architecture-decisions.csv", "phase-manifest.json",
+}
+STAGE3_SNAPSHOT_EXCLUDED_PARTS = {
+    ".git", ".hg", ".svn", ".idea", ".hvigor", "oh_modules", "node_modules",
+    "build", "out", "dist", "coverage", "__pycache__",
+}
+STAGE3_REWORK_ROUTES = {
+    "ARCHITECTURE": ("architecture-lead", "architecture_lead_id"),
+    "PLACEMENT": ("architecture-lead", "architecture_lead_id"),
+    "DEPENDENCY": ("architecture-lead", "architecture_lead_id"),
+    "INPUT": ("architecture-lead", "architecture_lead_id"),
+    "TOOLCHAIN": ("toolchain-agent", "toolchain_agent_id"),
+    "BUILD": ("toolchain-agent", "toolchain_agent_id"),
+    "DEVICE": ("toolchain-agent", "toolchain_agent_id"),
+    "BUNDLE": ("toolchain-agent", "toolchain_agent_id"),
+    "SIGNING": ("toolchain-agent", "toolchain_agent_id"),
+    "INSTALL": ("toolchain-agent", "toolchain_agent_id"),
+    "LAUNCH": ("toolchain-agent", "toolchain_agent_id"),
+    "ARTIFACT": ("toolchain-agent", "toolchain_agent_id"),
+    "SCREENSHOT": ("toolchain-agent", "toolchain_agent_id"),
+    "NAVIGATION": ("navigation-agent", "navigation_agent_id"),
+    "ROUTE": ("navigation-agent", "navigation_agent_id"),
+    "SURFACE": ("navigation-agent", "navigation_agent_id"),
+    "MAPPING": ("navigation-agent", "navigation_agent_id"),
+    "SMOKE": ("navigation-agent", "navigation_agent_id"),
+    "PUBLIC_UI": ("public-ui-agent", "public_ui_agent_id"),
+    "RESPONSIVE": ("public-ui-agent", "public_ui_agent_id"),
+    "THEME": ("public-ui-agent", "public_ui_agent_id"),
+    "CAPABILITY": ("capability-contract-agent", "capability_contract_agent_id"),
+    "CONTRACT": ("capability-contract-agent", "capability_contract_agent_id"),
+}
+STAGE4_CLOSURE_EXACT_EXCLUDES = {
+    "stage-04-gate-report.json", "stage-04-closure-manifest.sha256", "CLOSED",
+}
+STAGE4_ROLE_KEYS = (
+    "implementation_lead_id", "visual_asset_agent_id",
+    "verification_executor_id", "parity_acceptance_agent_id",
+)
+STAGE4_PROJECT_EXCLUDED_PARTS = {
+    ".git", ".idea", ".hvigor", "build", "dist", "coverage", "node_modules",
+    "oh_modules", "__pycache__", ".pytest_cache",
+}
+STAGE4_INPUT_RELATIVES = {
+    "phase2_closure_sha256": "phase-02-android-inventory/closure-report.json",
+    "phase2_closure_manifest_sha256": "phase-02-android-inventory/closure-manifest.sha256",
+    "phase2_closed_sha256": "phase-02-android-inventory/CLOSED",
+    "phase2_inventory_sha256": "phase-02-android-inventory/inventory.csv",
+    "phase2_evidence_index_sha256": "phase-02-android-inventory/evidence-index.csv",
+    "phase2_asset_inventory_sha256": "phase-02-android-inventory/asset-inventory.csv",
+    "phase2_asset_manifest_sha256": "phase-02-android-inventory/asset-package/manifest.sha256",
+    "phase2_asset_committed_sha256": "phase-02-android-inventory/asset-package/COMMITTED",
+    "phase3_input_lock_sha256": "phase-03-harmony-scaffold/stage-03-input-lock.json",
+    "phase3_gate_report_sha256": "phase-03-harmony-scaffold/stage-03-gate-report.json",
+    "phase3_closure_manifest_sha256": "phase-03-harmony-scaffold/stage-03-closure-manifest.sha256",
+    "phase3_closed_sha256": "phase-03-harmony-scaffold/CLOSED",
+    "phase3_scaffold_snapshot_sha256": "phase-03-harmony-scaffold/scaffold-snapshot-manifest.json",
+    "phase3_architecture_map_sha256": "phase-03-harmony-scaffold/architecture-map.csv",
+    "phase3_module_registry_sha256": "phase-03-harmony-scaffold/module-registry.csv",
+    "phase3_route_registry_sha256": "phase-03-harmony-scaffold/route-registry.csv",
+    "phase3_surface_registry_sha256": "phase-03-harmony-scaffold/surface-registry.csv",
+    "phase3_public_ui_registry_sha256": "phase-03-harmony-scaffold/public-ui-registry.csv",
+    "phase3_capability_contracts_sha256": "phase-03-harmony-scaffold/capability-contracts.csv",
+    "phase3_asset_registry_sha256": "phase-03-harmony-scaffold/asset-registry.csv",
+    "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
+}
+STAGE5_ROLE_KEYS = (
+    "regression_lead_id", "candidate_build_agent_id", "journey_executor_id",
+    "quality_agent_id", "system_acceptance_agent_id",
+)
+STAGE6_ROLE_KEYS = (
+    "delivery_lead_id", "candidate_custody_agent_id", "candidate_validation_agent_id",
+    "material_consistency_agent_id", "delivery_acceptance_agent_id",
+)
+STAGE5_CLOSURE_EXACT_EXCLUDES = {
+    "stage-05-gate-report.json", "stage-05-closure-manifest.sha256", "CLOSED",
+}
+STAGE6_CLOSURE_EXACT_EXCLUDES = {
+    "stage-06-gate-report.json", "stage-06-closure-manifest.sha256", "CLOSED",
+}
+PHASE56_TRANSIENT_PARTS = {".locks", ".staging", "__pycache__", ".pytest_cache"}
+PHASE6_PROHIBITED_COMMAND_WORDS = {
+    "build", "rebuild", "compile", "package", "sign", "resign", "upload", "send",
+    "distribute", "publish", "release", "store", "market", "remote-sign", "remote_sign",
+    "remotesign", "deploy", "submit",
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Missing file: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object: {path}")
+    return data
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def unresolved(value: Any) -> bool:
+    if value is None or value == "":
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(PLACEHOLDER_RE.match(stripped)) or stripped.upper() in UNRESOLVED_WORDS
+    if isinstance(value, list):
+        return not value or any(unresolved(item) for item in value)
+    if isinstance(value, dict):
+        return any(unresolved(item) for item in value.values())
+    return False
+
+
+def need(mapping: dict[str, Any], key: str, label: str, errors: list[str]) -> Any:
+    value = mapping.get(key)
+    if unresolved(value):
+        errors.append(f"Missing or unresolved {label}")
+    return value
+
+
+def run_checked(argv: list[str], label: str, errors: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"{label} could not run: {exc}")
+        return ""
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        errors.append(f"{label} failed: {detail[:500]}")
+        return ""
+    return completed.stdout.strip()
+
+
+def validate_git_baseline(project_root: Path, revision: str, errors: list[str]) -> None:
+    actual = run_checked(["git", "-C", str(project_root), "rev-parse", "HEAD"], "git revision check", errors)
+    if actual and revision != actual:
+        errors.append(f"android.source_revision must equal the exact Git HEAD: {actual}")
+    dirty = run_checked(
+        ["git", "-C", str(project_root), "status", "--porcelain", "--untracked-files=all"],
+        "git worktree check",
+        errors,
+    )
+    if dirty:
+        errors.append("Android project has uncommitted or untracked files; freeze a clean source revision")
+
+
+def validate_apk(apk_path: Path, declared_hash: str, errors: list[str]) -> str | None:
+    if not apk_path.is_file():
+        errors.append(f"Installable APK does not exist: {apk_path}")
+        return None
+    if not zipfile.is_zipfile(apk_path):
+        errors.append(f"APK is not a valid ZIP/APK container: {apk_path}")
+        return None
+    try:
+        with zipfile.ZipFile(apk_path) as archive:
+            names = set(archive.namelist())
+            bad_member = archive.testzip()
+    except (OSError, zipfile.BadZipFile) as exc:
+        errors.append(f"APK cannot be read: {exc}")
+        return None
+    if bad_member:
+        errors.append(f"APK contains a corrupt member: {bad_member}")
+    if "AndroidManifest.xml" not in names:
+        errors.append("APK has no AndroidManifest.xml")
+    if not any(name == "resources.arsc" or re.fullmatch(r"classes\d*\.dex", name) for name in names):
+        errors.append("APK has neither resources.arsc nor a classes*.dex payload")
+    actual_hash = sha256_file(apk_path)
+    if not SHA256_RE.fullmatch(str(declared_hash)):
+        errors.append("android.apk_sha256 must be a lowercase 64-character SHA-256")
+    elif declared_hash != actual_hash:
+        errors.append("android.apk_sha256 does not match the APK file")
+    return actual_hash
+
+
+def resolve_executable(value: str) -> str | None:
+    candidate = Path(value).expanduser()
+    if candidate.parent != Path(".") or candidate.is_absolute():
+        return str(candidate.resolve()) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    return shutil.which(value)
+
+
+def validate_apk_identity(
+    analyzer_value: str, apk_path: Path, android: dict[str, Any], errors: list[str]
+) -> None:
+    analyzer = resolve_executable(analyzer_value)
+    if not analyzer:
+        errors.append(f"APK analyzer is unavailable: {analyzer_value}")
+        return
+    checks = (
+        ("application-id", str(android.get("application_id", ""))),
+        ("version-name", str(android.get("app_version", ""))),
+        ("version-code", str(android.get("app_build", ""))),
+    )
+    for command, expected in checks:
+        actual = run_checked(
+            [analyzer, "manifest", command, str(apk_path)],
+            f"apkanalyzer manifest {command}",
+            errors,
+        )
+        if actual and actual != expected:
+            errors.append(f"APK {command} differs from controller scope: expected {expected!r}, got {actual!r}")
+
+
+def validate_phase1(
+    run_dir: Path, scope: dict[str, Any]
+) -> tuple[list[str], list[str], str | None, dict[str, Any]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    facts: dict[str, Any] = {}
+
+    try:
+        run_manifest = load_json(run_dir / "run-manifest.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        run_manifest = {}
+    if scope.get("run_id") != run_manifest.get("run_id"):
+        errors.append("scope.run_id does not match run-manifest.json")
+    if scope.get("project_id") != run_manifest.get("project_id"):
+        errors.append("scope.project_id does not match run-manifest.json")
+
+    android = scope.get("android") if isinstance(scope.get("android"), dict) else {}
+    for key in (
+        "project_root", "source_revision", "source_revision_kind", "apk_path", "apk_sha256",
+        "application_id", "app_version", "app_build", "build_variant",
+    ):
+        need(android, key, f"android.{key}", errors)
+
+    project_root = Path(str(android.get("project_root", ""))).expanduser().resolve()
+    apk_path = Path(str(android.get("apk_path", ""))).expanduser().resolve()
+    manifest_project = str(run_manifest.get("project_root", ""))
+    if not unresolved(android.get("project_root")) and not project_root.is_dir():
+        errors.append(f"Android project root does not exist: {project_root}")
+    if manifest_project and str(project_root) != str(Path(manifest_project).expanduser().resolve()):
+        errors.append("android.project_root does not match immutable run-manifest.json")
+    settings_files = [project_root / "settings.gradle", project_root / "settings.gradle.kts"]
+    gradle_files = list(project_root.rglob("build.gradle")) + list(project_root.rglob("build.gradle.kts")) if project_root.is_dir() else []
+    source_manifests = list(project_root.rglob("src/main/AndroidManifest.xml")) if project_root.is_dir() else []
+    if not any(path.is_file() for path in settings_files) or not gradle_files or not source_manifests:
+        errors.append("Android project must contain settings.gradle(.kts), a build.gradle(.kts), and src/main/AndroidManifest.xml")
+    elif not any("android" in path.read_text(encoding="utf-8", errors="replace").lower() for path in gradle_files):
+        errors.append("No Android Gradle plugin declaration was found")
+    if android.get("source_revision_kind") != "git-commit":
+        errors.append("android.source_revision_kind must be git-commit")
+    elif project_root.is_dir() and not unresolved(android.get("source_revision")):
+        validate_git_baseline(project_root, str(android["source_revision"]), errors)
+    if not unresolved(android.get("apk_path")):
+        facts["apk_sha256"] = validate_apk(apk_path, str(android.get("apk_sha256", "")), errors)
+    facts["source_revision"] = android.get("source_revision")
+
+    target = scope.get("target") if isinstance(scope.get("target"), dict) else {}
+    if need(target, "platform", "target.platform", errors) != "HarmonyOS NEXT":
+        errors.append("target.platform must be HarmonyOS NEXT")
+    need(target, "sdk_or_api_target", "target.sdk_or_api_target", errors)
+    need(target, "device_classes", "target.device_classes", errors)
+
+    migration_scope = scope.get("migration_scope") if isinstance(scope.get("migration_scope"), dict) else {}
+    included = need(migration_scope, "included_features", "migration_scope.included_features", errors)
+    excluded = migration_scope.get("excluded_features")
+    if not isinstance(included, list) or any(not isinstance(item, str) or not ID_RE.fullmatch(item) for item in included):
+        errors.append("migration_scope.included_features must contain valid Feature-IDs")
+        included = []
+    if len(set(included)) != len(included):
+        errors.append("migration_scope.included_features contains duplicates")
+    if "excluded_features" not in migration_scope:
+        errors.append("migration_scope.excluded_features must be explicit, even when empty")
+        excluded = []
+    elif not isinstance(excluded, list) or any(not isinstance(item, str) or not ID_RE.fullmatch(item) for item in excluded):
+        errors.append("migration_scope.excluded_features must contain valid Feature-IDs")
+        excluded = []
+    if set(included) & set(excluded):
+        errors.append("A Feature-ID cannot be both included and excluded")
+    need(migration_scope, "parity_dimensions", "migration_scope.parity_dimensions", errors)
+    facts["included_features"] = included
+
+    ownership = scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {}
+    actor_values: list[str] = []
+    for key in (
+        "migration_controller_id", "inventory_lead_id", "code_map_agent_id", "business_rule_agent_id",
+        "data_dependency_agent_id", "evidence_administrator_id", "coverage_checker_id",
+    ):
+        value = need(ownership, key, f"ownership.{key}", errors)
+        if isinstance(value, str) and not unresolved(value):
+            if not ACTOR_RE.fullmatch(value):
+                errors.append(f"Invalid actor ID: ownership.{key}")
+            actor_values.append(value)
+    runtime_agents = ownership.get("runtime_state_agent_ids")
+    if not isinstance(runtime_agents, list) or not runtime_agents:
+        errors.append("ownership.runtime_state_agent_ids must be a non-empty list")
+    else:
+        for value in runtime_agents:
+            if not isinstance(value, str) or not ACTOR_RE.fullmatch(value):
+                errors.append("ownership.runtime_state_agent_ids contains an invalid actor ID")
+            else:
+                actor_values.append(value)
+    if len(actor_values) != len(set(actor_values)):
+        errors.append("Every frozen controller and Phase 2 actor ID must be distinct")
+
+    pending = scope.get("pending_confirmations")
+    if not isinstance(pending, list):
+        errors.append("pending_confirmations must be an explicit list")
+    elif pending:
+        errors.append("Phase 1 cannot PASS with pending confirmations")
+
+    policy = scope.get("tool_policy") if isinstance(scope.get("tool_policy"), dict) else {}
+    if policy.get("runtime_ui_tool") != "android-cli":
+        errors.append("tool_policy.runtime_ui_tool must be android-cli")
+    if policy.get("layout_inspector_allowed") is not False:
+        errors.append("tool_policy.layout_inspector_allowed must be false")
+    analyzer_value = need(policy, "apk_analyzer_bin", "tool_policy.apk_analyzer_bin", errors)
+    if apk_path.is_file() and isinstance(analyzer_value, str) and not unresolved(analyzer_value):
+        validate_apk_identity(analyzer_value, apk_path, android, errors)
+
+    environments = scope.get("environments")
+    if not isinstance(environments, list) or not environments:
+        errors.append("At least one environment is required")
+        return errors, warnings, None, facts
+
+    baseline_ids: list[str] = []
+    env_ids: set[str] = set()
+    required_env = (
+        "env_id", "account_id", "account_role", "seed_data_id", "seed_reset_ref",
+        "network_profile", "network_conditions_ref", "network_toggle_available", "emulator_model",
+        "device_serial", "resolution", "density_dpi", "android_api_level", "orientation", "locale",
+        "theme", "font_scale", "timezone", "permissions_profile",
+    )
+    for index, env in enumerate(environments):
+        if not isinstance(env, dict):
+            errors.append(f"environments[{index}] must be an object")
+            continue
+        for key in required_env:
+            need(env, key, f"environments[{index}].{key}", errors)
+        env_id = str(env.get("env_id", ""))
+        if env_id and not ID_RE.fullmatch(env_id):
+            errors.append(f"Invalid ENV-ID: {env_id}")
+        if env_id in env_ids:
+            errors.append(f"Duplicate ENV-ID: {env_id}")
+        env_ids.add(env_id)
+        if env.get("is_baseline") is True:
+            baseline_ids.append(env_id)
+        if not isinstance(env.get("network_toggle_available"), bool):
+            errors.append(f"{env_id or index}: network_toggle_available must be boolean")
+        if not isinstance(env.get("density_dpi"), int):
+            errors.append(f"{env_id or index}: density_dpi must be an integer")
+        if not isinstance(env.get("android_api_level"), int):
+            errors.append(f"{env_id or index}: android_api_level must be an integer")
+        if not isinstance(env.get("font_scale"), (int, float)):
+            errors.append(f"{env_id or index}: font_scale must be numeric")
+
+    if len(baseline_ids) != 1:
+        errors.append(f"Exactly one baseline environment is required; found {len(baseline_ids)}")
+    baseline_env_id = baseline_ids[0] if len(baseline_ids) == 1 else None
+    for name in (
+        "task-ledger.csv", "decision-log.csv", "rework-log.csv", "work-order-registry.csv",
+        "evidence-anchor-registry.csv",
+    ):
+        if not (run_dir / "controller" / name).is_file():
+            errors.append(f"Missing controller record: controller/{name}")
+    try:
+        ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
+        phase1_rows = [row for row in ledger_rows if row.get("phase") == "1"]
+        phase2_rows = [row for row in ledger_rows if row.get("phase") == "2"]
+        if len(phase1_rows) != 1 or len(phase2_rows) != 1:
+            errors.append("Task ledger must contain exactly one Phase 1 and one Phase 2 row")
+        else:
+            expected_controller = ownership.get("migration_controller_id")
+            expected_lead = ownership.get("inventory_lead_id")
+            if phase1_rows[0].get("owner") not in {expected_controller, "migration-controller"}:
+                errors.append("Phase 1 task owner differs from frozen controller")
+            if phase2_rows[0].get("owner") not in {expected_lead, "android-inventory-lead"}:
+                errors.append("Phase 2 task owner differs from frozen inventory lead")
+            if phase1_rows[0].get("owner") != expected_controller or phase2_rows[0].get("owner") != expected_lead:
+                warnings.append("Task owners are template defaults and will be normalized by --write")
+    except (OSError, ValueError) as exc:
+        errors.append(f"Invalid task ledger: {exc}")
+    facts["scope_sha256"] = sha256_file(run_dir / "controller" / "scope.json")
+    facts["run_manifest_sha256"] = sha256_file(run_dir / "run-manifest.json") if (run_dir / "run-manifest.json").is_file() else None
+    return errors, warnings, baseline_env_id, facts
+
+
+def closure_paths(workspace: Path) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for path in workspace.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"Symbolic links are prohibited in Phase 2 package: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(workspace).as_posix()
+        pure = PurePosixPath(relative)
+        if relative in CLOSURE_EXACT_EXCLUDES or any(part in CLOSURE_DIR_EXCLUDES for part in pure.parts):
+            continue
+        if path.name.endswith((".lock", ".tmp")):
+            continue
+        paths[relative] = path
+    return paths
+
+
+def verify_closure_snapshot(phase_dir: Path, closure: dict[str, Any], errors: list[str]) -> None:
+    manifest_path = phase_dir / "closure-manifest.sha256"
+    closed_path = phase_dir / "CLOSED"
+    report_path = phase_dir / "closure-report.json"
+    if not manifest_path.is_file() or not closed_path.is_file():
+        errors.append("Phase 2 PASS requires closure-manifest.sha256 and CLOSED")
+        return
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest_digest = hashlib.sha256(manifest_text.encode("utf-8")).hexdigest()
+    if closure.get("closure_manifest_sha256") != manifest_digest:
+        errors.append("Closure manifest digest differs from closure report")
+    if closed_path.read_text(encoding="utf-8").strip() != sha256_file(report_path):
+        errors.append("CLOSED marker does not bind the current closure report")
+
+    expected: dict[str, str] = {}
+    for number, line in enumerate(manifest_text.splitlines(), start=1):
+        if "  " not in line:
+            errors.append(f"Malformed closure manifest line {number}")
+            continue
+        digest, relative = line.split("  ", 1)
+        pure = PurePosixPath(relative)
+        if not SHA256_RE.fullmatch(digest) or pure.is_absolute() or ".." in pure.parts or relative in expected:
+            errors.append(f"Unsafe or duplicate closure manifest entry: {relative!r}")
+            continue
+        expected[relative] = digest
+    try:
+        actual = closure_paths(phase_dir)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return
+    if set(expected) != set(actual):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        errors.append(f"Closure snapshot file set changed; missing={missing[:5]}, extra={extra[:5]}")
+    for relative in sorted(set(expected) & set(actual)):
+        if sha256_file(actual[relative]) != expected[relative]:
+            errors.append(f"Closure snapshot hash mismatch: {relative}")
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle))
+    except FileNotFoundError:
+        return []
+
+
+def parse_json_id_list(value: str, label: str, errors: list[str]) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        errors.append(f"{label} must be a JSON string array")
+        return []
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or any(not isinstance(item, str) or not ID_RE.fullmatch(item) for item in parsed)
+        or len(parsed) != len(set(parsed))
+    ):
+        errors.append(f"{label} must contain unique safe IDs")
+        return []
+    return parsed
+
+
+def validate_phase2_assets(
+    phase_dir: Path,
+    scope: dict[str, Any],
+    inventory_rows: list[dict[str, str]],
+    errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Recompute the reviewed Android asset archive and its inventory links."""
+    asset_inventory_path = phase_dir / "asset-inventory.csv"
+    asset_package = phase_dir / "asset-package"
+    manifest_path = asset_package / "manifest.sha256"
+    committed_path = asset_package / "COMMITTED"
+    asset_rows = read_csv_rows(asset_inventory_path)
+    expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
+    expected_creator = scope.get("ownership", {}).get("code_map_agent_id")
+    android_root = Path(str(scope.get("android", {}).get("project_root", ""))).expanduser().resolve()
+    assets: dict[str, dict[str, Any]] = {}
+
+    for index, row in enumerate(asset_rows, start=2):
+        asset_id = row.get("asset_id", "")
+        if not ID_RE.fullmatch(asset_id) or asset_id in assets:
+            errors.append(f"asset-inventory.csv:{index}: unsafe or duplicate Asset-ID: {asset_id!r}")
+            continue
+        feature_ids = parse_json_id_list(row.get("feature_ids", ""), f"{asset_id}.feature_ids", errors)
+        page_ids = parse_json_id_list(row.get("page_ids", ""), f"{asset_id}.page_ids", errors)
+        state_ids = parse_json_id_list(row.get("state_ids", ""), f"{asset_id}.state_ids", errors)
+        source_relative = row.get("source_path", "")
+        archive_relative = row.get("archive_path", "")
+        source_name = PurePosixPath(source_relative).name
+        expected_archive = f"asset-package/files/{asset_id}/{source_name}" if source_name else ""
+        archive_path = safe_relative_path(phase_dir, archive_relative, f"{asset_id} archive", errors)
+        source_path = safe_relative_path(android_root, source_relative, f"{asset_id} source", errors)
+        digest = row.get("sha256", "")
+        if archive_relative != expected_archive:
+            errors.append(f"{asset_id}: archive_path is not canonical")
+        if not SHA256_RE.fullmatch(digest):
+            errors.append(f"{asset_id}: invalid asset SHA-256")
+        else:
+            if archive_path and (not archive_path.is_file() or sha256_file(archive_path) != digest):
+                errors.append(f"{asset_id}: archived asset bytes differ from asset-inventory.csv")
+            if source_path and (not source_path.is_file() or sha256_file(source_path) != digest):
+                errors.append(f"{asset_id}: source asset bytes differ from the frozen archive")
+        if (
+            not row.get("asset_type")
+            or row.get("created_by") != expected_creator
+            or row.get("reviewed_by") != expected_reviewer
+            or not row.get("created_at")
+            or not row.get("reviewed_at")
+            or row.get("status") != "REVIEWED"
+        ):
+            errors.append(f"{asset_id}: asset lifecycle or frozen ownership is invalid")
+        assets[asset_id] = {
+            "row": row,
+            "feature_ids": set(feature_ids),
+            "page_ids": set(page_ids),
+            "state_ids": set(state_ids),
+        }
+
+    manifest_entries = verify_exact_manifest(
+        asset_package,
+        "manifest.sha256",
+        {"manifest.sha256", "COMMITTED"},
+        "Phase 2 asset-package manifest",
+        errors,
+    )
+    expected_entries = {}
+    for value in assets.values():
+        archive = str(value["row"].get("archive_path", ""))
+        prefix = "asset-package/"
+        package_relative = archive[len(prefix):] if archive.startswith(prefix) else archive
+        expected_entries[package_relative] = str(value["row"].get("sha256", ""))
+    if manifest_entries != expected_entries:
+        errors.append("Phase 2 asset-package manifest does not exactly match asset-inventory.csv")
+    if manifest_path.is_file() and committed_path.is_file():
+        expected_marker = (sha256_file(manifest_path) + "\n").encode("ascii")
+        try:
+            if committed_path.read_bytes() != expected_marker:
+                errors.append("Phase 2 asset-package COMMITTED marker is invalid")
+        except OSError as exc:
+            errors.append(f"Cannot read Phase 2 asset-package COMMITTED marker: {exc}")
+    else:
+        errors.append("Phase 2 asset package is not sealed")
+
+    referenced: set[str] = set()
+    active_rows = [row for row in inventory_rows if row.get("row_status") != "SUPERSEDED"]
+    for row in active_rows:
+        inventory_id = row.get("inventory_id", "")
+        asset_ids = parse_json_id_list(row.get("asset_ids", ""), f"{inventory_id}.asset_ids", errors)
+        if asset_ids == ["NONE_FOUND"]:
+            continue
+        if "NONE_FOUND" in asset_ids:
+            errors.append(f"{inventory_id}: NONE_FOUND cannot be mixed with real Asset-IDs")
+            continue
+        for asset_id in asset_ids:
+            referenced.add(asset_id)
+            asset = assets.get(asset_id)
+            if not asset:
+                errors.append(f"{inventory_id}: references an unknown Asset-ID: {asset_id}")
+                continue
+            if (
+                row.get("feature_id") not in asset["feature_ids"]
+                or row.get("page_id") not in asset["page_ids"]
+                or row.get("state_id") not in asset["state_ids"]
+            ):
+                errors.append(f"{asset_id}: asset scope does not cover inventory row {inventory_id}")
+    orphaned = sorted(set(assets) - referenced)
+    if orphaned:
+        errors.append(f"Phase 2 asset inventory contains unreferenced assets: {orphaned[:5]}")
+    return assets
+
+
+def safe_relative_path(root: Path, relative: str, label: str, errors: list[str]) -> Path | None:
+    """Resolve an existing run-local path without following a symbolic-link component."""
+    pure = PurePosixPath(str(relative))
+    if pure.is_absolute() or ".." in pure.parts or not pure.parts or str(pure) in {"", "."}:
+        errors.append(f"Unsafe {label} path: {relative!r}")
+        return None
+    current = root
+    for part in pure.parts:
+        current = current / part
+        if current.is_symlink():
+            errors.append(f"Symbolic links are prohibited in {label} path: {relative}")
+            return None
+    try:
+        resolved_root = root.resolve()
+        resolved = current.resolve()
+        resolved.relative_to(resolved_root)
+    except (OSError, ValueError):
+        errors.append(f"{label} path escapes its root: {relative}")
+        return None
+    if not resolved.exists():
+        errors.append(f"Missing {label}: {resolved}")
+        return None
+    return resolved
+
+
+def actor_ids(ownership: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for value in ownership.values():
+        if isinstance(value, str) and value:
+            values.add(value)
+        elif isinstance(value, list):
+            values.update(str(item) for item in value if isinstance(item, str) and item)
+    return values
+
+
+def parse_sha256_manifest(path: Path, label: str, errors: list[str]) -> dict[str, str]:
+    expected: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"Cannot read {label}: {exc}")
+        return expected
+    for number, line in enumerate(lines, start=1):
+        if "  " not in line:
+            errors.append(f"Malformed {label} line {number}")
+            continue
+        digest, relative = line.split("  ", 1)
+        pure = PurePosixPath(relative)
+        if (
+            not SHA256_RE.fullmatch(digest)
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or not pure.parts
+            or relative in expected
+        ):
+            errors.append(f"Unsafe or duplicate {label} entry: {relative!r}")
+            continue
+        expected[relative] = digest
+    return expected
+
+
+def verify_exact_manifest(
+    directory: Path,
+    manifest_name: str,
+    excluded: set[str],
+    label: str,
+    errors: list[str],
+) -> dict[str, str]:
+    manifest_path = directory / manifest_name
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        errors.append(f"Missing or unsafe {label}: {manifest_path}")
+        return {}
+    expected = parse_sha256_manifest(manifest_path, label, errors)
+    actual: dict[str, Path] = {}
+    for path in directory.rglob("*"):
+        if path.is_symlink():
+            errors.append(f"Symbolic links are prohibited in {label} package: {path}")
+            continue
+        if not path.is_file():
+            continue
+        relative = path.relative_to(directory).as_posix()
+        if relative in excluded:
+            continue
+        actual[relative] = path
+    if set(expected) != set(actual):
+        errors.append(
+            f"{label} file set changed; missing={sorted(set(expected) - set(actual))[:5]}, "
+            f"extra={sorted(set(actual) - set(expected))[:5]}"
+        )
+    for relative in sorted(set(expected) & set(actual)):
+        if sha256_file(actual[relative]) != expected[relative]:
+            errors.append(f"{label} hash mismatch: {relative}")
+    return expected
+
+
+def validate_complete_png(path: Path) -> tuple[int, int]:
+    if not path.is_file() or path.is_symlink() or path.stat().st_size < 45:
+        raise ValueError(f"Missing, unsafe, or empty PNG: {path}")
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"Invalid PNG signature: {path}")
+    offset = 8
+    chunks: list[tuple[bytes, bytes]] = []
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise ValueError(f"Truncated PNG chunk: {path}")
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_type = data[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            raise ValueError(f"Truncated PNG payload: {path}")
+        payload = data[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack(">I", data[offset + 8 + length:end])[0]
+        if (binascii.crc32(chunk_type + payload) & 0xFFFFFFFF) != expected_crc:
+            raise ValueError(f"PNG CRC mismatch: {path}")
+        chunks.append((chunk_type, payload))
+        offset = end
+        if chunk_type == b"IEND":
+            break
+    if offset != len(data) or not chunks or chunks[0][0] != b"IHDR" or chunks[-1][0] != b"IEND":
+        raise ValueError(f"PNG chunk order or trailing data is invalid: {path}")
+    if len([kind for kind, _ in chunks if kind == b"IHDR"]) != 1 or len(chunks[0][1]) != 13:
+        raise ValueError(f"PNG must contain one valid IHDR: {path}")
+    width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+        ">IIBBBBB", chunks[0][1]
+    )
+    allowed_depths = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+    if (
+        width < 1 or height < 1 or compression != 0 or filtering != 0 or interlace != 0
+        or color_type not in allowed_depths or bit_depth not in allowed_depths[color_type]
+    ):
+        raise ValueError(f"PNG dimensions or encoding are unsupported: {path}")
+    idat = b"".join(payload for kind, payload in chunks if kind == b"IDAT")
+    if not idat:
+        raise ValueError(f"PNG has no IDAT data: {path}")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+    expected_size = height * (((width * channels * bit_depth + 7) // 8) + 1)
+    try:
+        decompressor = zlib.decompressobj()
+        pixels = decompressor.decompress(idat, expected_size + 1)
+        pixels += decompressor.flush()
+    except zlib.error as exc:
+        raise ValueError(f"PNG image data is corrupt: {path}: {exc}") from exc
+    if not decompressor.eof or decompressor.unused_data or len(pixels) != expected_size:
+        raise ValueError(f"PNG image data length is invalid: {path}")
+    return width, height
+
+
+def phase4_closure_excluded(relative: PurePosixPath) -> bool:
+    value = relative.as_posix()
+    if value in STAGE4_CLOSURE_EXACT_EXCLUDES:
+        return True
+    if any(part in {".locks", ".staging", "__pycache__", ".pytest_cache"} for part in relative.parts):
+        return True
+    if relative.suffix in {".tmp", ".pyc"} or relative.name.endswith(".lock"):
+        return True
+    return bool(
+        relative.parts
+        and relative.parts[0] == "harmony-project"
+        and any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in relative.parts[1:])
+    )
+
+
+def verify_phase4_closure(workspace: Path, errors: list[str]) -> dict[str, str]:
+    manifest = workspace / "stage-04-closure-manifest.sha256"
+    if not manifest.is_file() or manifest.is_symlink():
+        errors.append("Phase 4 closure manifest is missing or unsafe")
+        return {}
+    expected = parse_sha256_manifest(manifest, "Phase 4 closure manifest", errors)
+    actual: dict[str, Path] = {}
+    for path in workspace.rglob("*"):
+        relative = PurePosixPath(path.relative_to(workspace).as_posix())
+        if phase4_closure_excluded(relative):
+            continue
+        if path.is_symlink():
+            errors.append(f"Symbolic links are prohibited in Phase 4 closure: {path}")
+            continue
+        if path.is_file():
+            actual[relative.as_posix()] = path
+    if set(expected) != set(actual):
+        errors.append(
+            "Phase 4 closure file set changed; "
+            f"missing={sorted(set(expected) - set(actual))[:5]}, "
+            f"extra={sorted(set(actual) - set(expected))[:5]}"
+        )
+    for relative in sorted(set(expected) & set(actual)):
+        if sha256_file(actual[relative]) != expected[relative]:
+            errors.append(f"Phase 4 closure hash mismatch: {relative}")
+    return expected
+
+
+def phase4_project_snapshot(project: Path, errors: list[str]) -> tuple[str | None, list[dict[str, Any]]]:
+    entries: list[dict[str, Any]] = []
+    if not project.is_dir() or project.is_symlink():
+        errors.append(f"Phase 4 HarmonyOS project is missing or unsafe: {project}")
+        return None, entries
+    for path in sorted(project.rglob("*")):
+        relative = path.relative_to(project)
+        if any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in relative.parts):
+            continue
+        if path.is_symlink():
+            errors.append(f"Symbolic links are prohibited in the Phase 4 project: {path}")
+            continue
+        if path.is_file():
+            entries.append(
+                {"path": relative.as_posix(), "sha256": sha256_file(path), "size": path.stat().st_size}
+            )
+    canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), entries
+
+
+def phase4_source_row_key(row: dict[str, str]) -> str:
+    values = [str(row.get(field, "")) for field in (
+        "feature_id", "page_id", "state_id", "env_id", "evidence_id",
+    )]
+    if any(not value for value in values):
+        raise ValueError(f"Inventory row lacks a complete source identity: {row.get('inventory_id', '')}")
+    material = "|".join(values)
+    return "SROW-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20].upper()
+
+
+def phase4_json_string_list(value: str, label: str, errors: list[str], *, allow_empty: bool = True) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        errors.append(f"{label} is not a JSON string array")
+        return []
+    if (
+        not isinstance(parsed, list)
+        or (not allow_empty and not parsed)
+        or any(not isinstance(item, str) or not item for item in parsed)
+        or parsed != sorted(set(parsed))
+    ):
+        errors.append(f"{label} must be a sorted unique JSON string array")
+        return []
+    return parsed
+
+
+def phase4_geometry(value: str, label: str, errors: list[str]) -> dict[str, float] | None:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        errors.append(f"{label} is not valid JSON geometry")
+        return None
+    if not isinstance(parsed, dict) or any(
+        not isinstance(parsed.get(field), (int, float)) for field in ("x", "y", "width", "height")
+    ):
+        errors.append(f"{label} must contain numeric x/y/width/height")
+        return None
+    if parsed["x"] < 0 or parsed["y"] < 0 or parsed["width"] <= 0 or parsed["height"] <= 0:
+        errors.append(f"{label} has invalid bounds")
+        return None
+    return {field: float(parsed[field]) for field in ("x", "y", "width", "height")}
+
+
+def directory_snapshot_facts(directory: Path) -> tuple[str, int, int]:
+    entries: list[dict[str, Any]] = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Symbolic links are prohibited in directory snapshot: {path}")
+        if path.is_file():
+            entries.append(
+                {
+                    "path": path.relative_to(directory).as_posix(),
+                    "sha256": sha256_file(path),
+                    "size": path.stat().st_size,
+                }
+            )
+    canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), sum(item["size"] for item in entries), len(entries)
+
+
+def verify_sealed_package(
+    directory: Path,
+    package_id: str,
+    lifecycle: str,
+    label: str,
+    errors: list[str],
+) -> dict[str, str]:
+    expected = verify_exact_manifest(
+        directory, "manifest.sha256", {"manifest.sha256", "COMMITTED"}, label, errors
+    )
+    marker = directory / "COMMITTED"
+    manifest = directory / "manifest.sha256"
+    if not marker.is_file() or marker.is_symlink() or not manifest.is_file():
+        errors.append(f"{label} is not COMMITTED")
+    else:
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+            manifest_digest = sha256_file(manifest)
+            if not value.startswith(f"{package_id} {lifecycle} manifest_sha256={manifest_digest}"):
+                errors.append(f"{label} COMMITTED marker is invalid")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"Cannot read {label} COMMITTED marker: {exc}")
+    sealed_paths = (directory, *directory.rglob("*")) if directory.is_dir() else ()
+    for path in sealed_paths:
+        if path.stat().st_mode & 0o222:
+            display = "." if path == directory else path.relative_to(directory)
+            errors.append(f"{label} contains a writable sealed path: {display}")
+            break
+    return expected
+
+
+def index_unique_rows(
+    rows: list[dict[str, str]], key: str, label: str, errors: list[str]
+) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        identifier = row.get(key, "")
+        if not ID_RE.fullmatch(identifier) or identifier in result:
+            errors.append(f"{label} has an unsafe or duplicate {key}: {identifier!r}")
+            continue
+        result[identifier] = row
+    return result
+
+
+def validate_phase4_commands(
+    package_dir: Path,
+    commands: Any,
+    environment: dict[str, Any],
+    expected_categories: list[str],
+    label: str,
+    errors: list[str],
+) -> None:
+    if not isinstance(commands, list) or [
+        item.get("category") if isinstance(item, dict) else None for item in commands
+    ] != expected_categories:
+        errors.append(f"{label} command category sequence differs")
+        return
+    contracts = environment.get("category_contracts") if isinstance(environment.get("category_contracts"), dict) else {}
+    command_ids: set[str] = set()
+    for command in commands:
+        category = str(command.get("category", ""))
+        command_id = str(command.get("command_id", ""))
+        contract = contracts.get(category) if isinstance(contracts.get(category), dict) else {}
+        stdout = safe_relative_path(
+            package_dir, str(command.get("stdout_path", "")), f"{label} stdout", errors
+        )
+        stderr = safe_relative_path(
+            package_dir, str(command.get("stderr_path", "")), f"{label} stderr", errors
+        )
+        argv = command.get("argv")
+        plan_argv = command.get("plan_argv")
+        if (
+            not ID_RE.fullmatch(command_id)
+            or command_id in command_ids
+            or not contract
+            or command.get("resolved_executable") != contract.get("resolved_executable")
+            or command.get("executable_sha256") != contract.get("executable_sha256")
+            or command.get("required_argv_tokens") != contract.get("required_argv_tokens")
+            or command.get("success_output_contains") != contract.get("success_output_contains")
+            or command.get("error_output_contains") != contract.get("error_output_contains")
+            or command.get("success_output_matches") != contract.get("success_output_contains")
+            or command.get("error_output_matches") != []
+            or command.get("exit_code") != 0
+            or command.get("timed_out") is not False
+            or command.get("semantic_error") is not False
+            or command.get("command_verdict") != "PASS"
+            or not isinstance(plan_argv, list)
+            or not isinstance(argv, list)
+            or not argv
+            or len(argv) != len(plan_argv)
+            or plan_argv[0] != contract.get("resolved_executable")
+            or argv[0] != contract.get("resolved_executable")
+            or any(token not in plan_argv for token in contract.get("required_argv_tokens", []))
+            or any(
+                not isinstance(planned, str)
+                or not isinstance(actual, str)
+                or not actual
+                or ("{" not in planned and actual != planned)
+                or (planned.startswith("{") and planned.endswith("}") and actual == planned)
+                for planned, actual in zip(plan_argv, argv)
+            )
+            or not stdout
+            or not stderr
+            or not stdout.is_file()
+            or not stderr.is_file()
+            or command.get("stdout_sha256") != sha256_file(stdout)
+            or command.get("stderr_sha256") != sha256_file(stderr)
+        ):
+            errors.append(f"{label} command record differs from frozen contract: {category}")
+        command_ids.add(command_id)
+        selector = environment.get("device_selector_tokens")
+        serial = str(environment.get("emulator", {}).get("serial", ""))
+        bundle = str(environment.get("base_application", {}).get("bundle_name", ""))
+        serial_categories = {
+            "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
+            "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
+            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+        }
+        bundle_categories = {
+            "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET",
+            "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
+            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+        }
+        selector_present = False
+        if isinstance(plan_argv, list) and isinstance(selector, list) and selector:
+            selector_present = any(
+                plan_argv[index:index + len(selector)] == selector
+                for index in range(0, len(plan_argv) - len(selector) + 1)
+            )
+        if category in serial_categories and (
+            not isinstance(plan_argv, list) or serial not in plan_argv or not selector_present
+        ):
+            errors.append(f"{label} command lacks exact frozen emulator selection: {category}")
+        if category in bundle_categories and (
+            not isinstance(plan_argv, list) or bundle not in plan_argv
+        ):
+            errors.append(f"{label} command lacks exact frozen Bundle: {category}")
+        if stdout and stderr and stdout.is_file() and stderr.is_file():
+            combined = stdout.read_text(encoding="utf-8", errors="replace") + "\n" + stderr.read_text(
+                encoding="utf-8", errors="replace"
+            )
+            successes = [item for item in contract.get("success_output_contains", []) if item in combined]
+            failures = [
+                item for item in contract.get("error_output_contains", []) if item.lower() in combined.lower()
+            ]
+            if (
+                successes != command.get("success_output_matches")
+                or failures != command.get("error_output_matches")
+                or failures
+            ):
+                errors.append(f"{label} command output verdict differs: {category}")
+
+
+def validate_phase2(
+    run_dir: Path,
+    scope: dict[str, Any],
+    baseline_env_id: str | None,
+    phase1_facts: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    phase_dir = run_dir / "phase-02-android-inventory"
+    required = (
+        "phase-manifest.json", "environments.json", "inventory.csv", "inventory.json",
+        "inventory-manifest.sha256", "evidence-index.csv", "acceptance-registry.csv",
+        "asset-inventory.csv", "asset-package/manifest.sha256", "asset-package/COMMITTED",
+        "evidence-anchors.snapshot.csv", "evidence", "catalogs", "rechecks.csv",
+        "closure-report.json", "closure-manifest.sha256", "CLOSED",
+    )
+    for name in required:
+        if not (phase_dir / name).exists():
+            errors.append(f"Missing Phase 2 artifact: {phase_dir / name}")
+
+    try:
+        closure = load_json(phase_dir / "closure-report.json")
+        phase_manifest = load_json(phase_dir / "phase-manifest.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings
+
+    if closure.get("run_id") != scope.get("run_id") or phase_manifest.get("run_id") != scope.get("run_id"):
+        errors.append("Phase 2 run identity does not match controller scope")
+    if closure.get("final_verdict") != "PASS":
+        errors.append("Phase 2 closure report does not say PASS")
+    if closure.get("evidence_chain_closed") is not True:
+        errors.append("Phase 2 evidence chain is not closed")
+    if closure.get("reviewer_role") != "coverage-checker-agent":
+        errors.append("Phase 2 final reviewer must be coverage-checker-agent")
+    expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
+    if closure.get("reviewer_id") != expected_reviewer:
+        errors.append("Phase 2 reviewer ID does not match frozen ownership")
+    if closure.get("baseline_env_id") != baseline_env_id:
+        errors.append("Phase 2 baseline ENV-ID does not match controller scope")
+    if closure.get("scope_sha256") != phase1_facts.get("scope_sha256"):
+        errors.append("Phase 2 closure is bound to a different controller scope")
+    if closure.get("open_rechecks", 0) != 0 or closure.get("open_critical_rechecks", 0) != 0:
+        errors.append("Phase 2 has open rechecks")
+    if closure.get("pending_confirmations", 0) != 0:
+        errors.append("Phase 2 has pending confirmations")
+    expected_features = set(scope.get("migration_scope", {}).get("included_features", []))
+    if set(closure.get("covered_feature_ids", [])) != expected_features:
+        errors.append("Phase 2 does not cover the complete included feature scope")
+    if phase_manifest.get("status") != "CLOSED":
+        errors.append("Phase 2 manifest is not CLOSED")
+    if phase_manifest.get("scope_sha256") != phase1_facts.get("scope_sha256"):
+        errors.append("Phase 2 manifest scope digest differs from controller gate")
+    android = scope.get("android", {})
+    if (
+        phase_manifest.get("android_project_root") != str(Path(android.get("project_root", "")).expanduser().resolve())
+        or phase_manifest.get("apk_path") != str(Path(android.get("apk_path", "")).expanduser().resolve())
+        or phase_manifest.get("apk_sha256") != android.get("apk_sha256")
+        or phase_manifest.get("source_revision") != android.get("source_revision")
+        or phase_manifest.get("ownership") != scope.get("ownership")
+        or phase_manifest.get("included_features") != scope.get("migration_scope", {}).get("included_features")
+    ):
+        errors.append("Phase 2 manifest identity differs from the frozen controller scope")
+
+    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
+    phase1_tasks = [row for row in ledger_rows if row.get("phase") == "1"]
+    phase2_tasks = [row for row in ledger_rows if row.get("phase") == "2"]
+    if (
+        len(phase1_tasks) != 1 or phase1_tasks[0].get("status") != "PASS"
+        or phase1_tasks[0].get("owner") != scope.get("ownership", {}).get("migration_controller_id")
+    ):
+        errors.append("Controller task ledger does not have a frozen Phase 1 PASS")
+    if (
+        len(phase2_tasks) != 1 or phase2_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
+        or phase2_tasks[0].get("owner") != scope.get("ownership", {}).get("inventory_lead_id")
+    ):
+        errors.append("Controller task ledger does not have the assigned Phase 2 task")
+
+    open_controller_rework = [
+        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
+        if row.get("phase") in {"1", "2"} and row.get("status", "").upper() not in {"CLOSED", "SUPERSEDED"}
+    ]
+    if open_controller_rework:
+        errors.append(f"Controller has open Phase 1/2 rework: {len(open_controller_rework)}")
+
+    work_order_id = phase_manifest.get("work_order_id", "")
+    registry = [
+        row for row in read_csv_rows(run_dir / "controller" / "work-order-registry.csv")
+        if row.get("work_order_id") == work_order_id and row.get("phase") == "2"
+    ]
+    if len(registry) != 1:
+        errors.append("Phase 2 work order is not uniquely registered")
+    else:
+        registry_row = registry[0]
+        work_order_path = run_dir / registry_row.get("relative_path", "")
+        if (
+            not work_order_path.is_file()
+            or registry_row.get("status") != "ISSUED"
+            or registry_row.get("scope_sha256") != phase1_facts.get("scope_sha256")
+            or registry_row.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or sha256_file(work_order_path) != registry_row.get("work_order_sha256")
+            or phase_manifest.get("work_order_sha256") != registry_row.get("work_order_sha256")
+        ):
+            errors.append("Registered Phase 2 work order is missing, changed, or unauthorized")
+    inventory_rows = read_csv_rows(phase_dir / "inventory.csv")
+    index_rows = read_csv_rows(phase_dir / "evidence-index.csv")
+    acceptance_rows = read_csv_rows(phase_dir / "acceptance-registry.csv")
+    anchor_snapshot_rows = read_csv_rows(phase_dir / "evidence-anchors.snapshot.csv")
+    controller_anchor_rows = [
+        row for row in read_csv_rows(run_dir / "controller" / "evidence-anchor-registry.csv")
+        if row.get("run_id") == scope.get("run_id") and row.get("phase") == "2"
+    ]
+    if not inventory_rows:
+        errors.append("Phase 2 inventory is empty")
+    if not index_rows:
+        errors.append("Phase 2 evidence index is empty")
+    if anchor_snapshot_rows != sorted(controller_anchor_rows, key=lambda row: row.get("evidence_id", "")):
+        errors.append("Phase 2 evidence-anchor snapshot differs from the controller-owned registry")
+    anchor_snapshot_path = phase_dir / "evidence-anchors.snapshot.csv"
+    if not anchor_snapshot_path.is_file():
+        errors.append("Phase 2 evidence-anchor snapshot is missing")
+    elif closure.get("evidence_anchor_snapshot_sha256") != sha256_file(anchor_snapshot_path):
+        errors.append("Phase 2 closure references a different evidence-anchor snapshot")
+    anchors_by_id = {row.get("evidence_id", ""): row for row in controller_anchor_rows}
+    if len(anchors_by_id) != len(controller_anchor_rows) or set(anchors_by_id) != {
+        row.get("evidence_id", "") for row in index_rows
+    }:
+        errors.append("Controller evidence anchors do not exactly cover the Phase 2 evidence index")
+    for index in index_rows:
+        evidence_id = index.get("evidence_id", "")
+        anchor = anchors_by_id.get(evidence_id, {})
+        expected_relative = (
+            f"evidence/{index.get('env_id', '')}/{index.get('page_id', '')}/"
+            f"{index.get('state_id', '')}/{evidence_id}"
+        )
+        evidence_dir = phase_dir / expected_relative
+        try:
+            manifest_digest = sha256_file(evidence_dir / "manifest.sha256")
+            metadata_digest = sha256_file(evidence_dir / "metadata.json")
+        except OSError:
+            manifest_digest = metadata_digest = ""
+        if (
+            index.get("relative_path") != expected_relative
+            or anchor.get("anchor_id") != f"ANCH-{evidence_id}"
+            or anchor.get("relative_path") != expected_relative
+            or anchor.get("package_manifest_sha256") != manifest_digest
+            or anchor.get("metadata_sha256") != metadata_digest
+            or anchor.get("metadata_sha256") != index.get("metadata_sha256")
+            or anchor.get("scope_sha256") != phase1_facts.get("scope_sha256")
+            or anchor.get("environment_registry_sha256") != phase_manifest.get("environment_registry_sha256")
+            or anchor.get("anchored_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or anchor.get("status") != "ANCHORED"
+        ):
+            errors.append(f"Controller evidence anchor differs for {evidence_id}")
+    active_inventory = [row for row in inventory_rows if row.get("row_status") != "SUPERSEDED"]
+    if any(row.get("row_status") != "REVIEWED" or row.get("reviewed_by") != expected_reviewer for row in active_inventory):
+        errors.append("Phase 2 inventory lifecycle is not REVIEWED by the frozen checker")
+    if any(row.get("status") not in {"ACCEPTED", "SUPERSEDED"} for row in index_rows):
+        errors.append("Phase 2 evidence lifecycle contains an unaccepted status")
+    accepted_pairs = {(row.get("inventory_id"), row.get("evidence_id")) for row in acceptance_rows if row.get("decision") == "ACCEPTED" and row.get("reviewed_by") == expected_reviewer}
+    inventory_pairs = {(row.get("inventory_id"), row.get("evidence_id")) for row in active_inventory}
+    if accepted_pairs != inventory_pairs:
+        errors.append("Acceptance registry does not exactly match active reviewed inventory")
+    validate_phase2_assets(phase_dir, scope, inventory_rows, errors)
+    verify_closure_snapshot(phase_dir, closure, errors)
+    return errors, warnings
+
+
+def validate_phase3(
+    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any]
+) -> tuple[list[str], list[str], str | None, str | None, str | None, str | None]:
+    """Independently recheck the controller-issued and fully sealed Phase 3 result."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    phase_dir = run_dir / "phase-03-harmony-scaffold"
+    required = (
+        "stage-03-input-lock.json", "phase-manifest.json", "inputs/phase-02-gate-report.json",
+        "environments", "module-registry.csv", "dependency-policy.json", "architecture-map.csv",
+        "route-registry.csv", "surface-registry.csv", "public-ui-registry.csv",
+        "capability-contracts.csv", "asset-registry.csv", "migration-status.csv", "architecture-decisions.csv",
+        "rework-tickets.csv", "harmony-project", "verification", "scaffold-snapshot-manifest.json",
+        "build-report.json", "stage-03-gate-report.json", "stage-03-closure-manifest.sha256", "CLOSED",
+    )
+    for name in required:
+        candidate = phase_dir / name
+        if not candidate.exists() or candidate.is_symlink():
+            errors.append(f"Missing or unsafe Phase 3 artifact: {candidate}")
+
+    try:
+        input_lock = load_json(phase_dir / "stage-03-input-lock.json")
+        phase_manifest = load_json(phase_dir / "phase-manifest.json")
+        stage_report = load_json(phase_dir / "stage-03-gate-report.json")
+        build_report = load_json(phase_dir / "build-report.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings, None, None, None, None
+
+    # The closure snapshot covers every Phase 3 file except the final report, its manifest, and CLOSED.
+    verify_exact_manifest(
+        phase_dir,
+        "stage-03-closure-manifest.sha256",
+        STAGE3_CLOSURE_EXACT_EXCLUDES,
+        "Phase 3 closure manifest",
+        errors,
+    )
+    stage_report_path = phase_dir / "stage-03-gate-report.json"
+    closed_path = phase_dir / "CLOSED"
+    if stage_report_path.is_file() and closed_path.is_file():
+        try:
+            if closed_path.read_text(encoding="utf-8").strip() != sha256_file(stage_report_path):
+                errors.append("Phase 3 CLOSED marker does not bind the current stage gate report")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"Cannot read Phase 3 CLOSED marker: {exc}")
+
+    if phase_manifest.get("phase") != 3:
+        errors.append("Phase 3 manifest does not identify phase 3")
+    if phase_manifest.get("run_id") != scope.get("run_id") or input_lock.get("run_id") != scope.get("run_id"):
+        errors.append("Phase 3 run identity differs from controller scope")
+
+    # Resolve the immutable, controller-registered Phase 3 work order.
+    work_order_id = str(phase_manifest.get("work_order_id") or input_lock.get("work_order_id") or "")
+    work_order: dict[str, Any] = {}
+    work_order_sha256: str | None = None
+    phase3_ownership: dict[str, Any] = {}
+    if not ID_RE.fullmatch(work_order_id):
+        errors.append("Phase 3 lacks a safe registered Work-Order-ID")
+    work_order_registry = read_csv_rows(run_dir / "controller" / "work-order-registry.csv")
+    registry_matches = [
+        row for row in work_order_registry
+        if row.get("work_order_id") == work_order_id and row.get("phase") == "3"
+    ]
+    active_phase3_orders = [
+        row for row in work_order_registry
+        if row.get("phase") == "3" and row.get("status", "").upper() != "SUPERSEDED"
+    ]
+    if len(active_phase3_orders) != 1 or (
+        active_phase3_orders and active_phase3_orders[0].get("work_order_id") != work_order_id
+    ):
+        errors.append("Controller must have exactly one active Phase 3 work order")
+    if len(registry_matches) != 1:
+        errors.append("Phase 3 work order is not uniquely registered")
+    else:
+        registry_row = registry_matches[0]
+        work_order_path = safe_relative_path(
+            run_dir, registry_row.get("relative_path", ""), "Phase 3 work order", errors
+        )
+        if work_order_path and work_order_path.is_file():
+            try:
+                work_order = load_json(work_order_path)
+                work_order_sha256 = sha256_file(work_order_path)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if (
+            registry_row.get("status") != "ISSUED"
+            or registry_row.get("scope_sha256") != phase1_facts.get("scope_sha256")
+            or registry_row.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or work_order_sha256 != registry_row.get("work_order_sha256")
+        ):
+            errors.append("Registered Phase 3 work order is changed, unauthorized, or bound to another scope")
+
+    if work_order:
+        if (
+            work_order.get("work_order_id") != work_order_id
+            or work_order.get("phase") != 3
+            or work_order.get("status") != "ISSUED"
+            or work_order.get("run_id") != scope.get("run_id")
+            or work_order.get("scope_sha256") != phase1_facts.get("scope_sha256")
+            or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or work_order.get("required_skill") != "harmonyos-migration-scaffold"
+            or work_order.get("included_features") != scope.get("migration_scope", {}).get("included_features")
+            or work_order.get("excluded_features") != scope.get("migration_scope", {}).get("excluded_features")
+        ):
+            errors.append("Phase 3 work-order identity or authority is invalid")
+        phase3_ownership = work_order.get("ownership") if isinstance(work_order.get("ownership"), dict) else {}
+        role_values: list[str] = []
+        for key in STAGE3_ROLE_KEYS:
+            value = phase3_ownership.get(key)
+            if not isinstance(value, str) or not ACTOR_RE.fullmatch(value):
+                errors.append(f"Phase 3 work order has invalid ownership.{key}")
+            else:
+                role_values.append(value)
+        if len(role_values) != len(STAGE3_ROLE_KEYS) or len(role_values) != len(set(role_values)):
+            errors.append("All six frozen Phase 3 actor IDs must be present and distinct")
+        overlap = sorted(set(role_values) & actor_ids(scope.get("ownership", {})))
+        if overlap:
+            errors.append(f"Phase 3 actors overlap frozen Phase 1/2 actors: {overlap}")
+
+        if input_lock.get("work_order_id") != work_order_id or phase_manifest.get("work_order_id") != work_order_id:
+            errors.append("Phase 3 input lock/manifest does not cite the registered work order")
+        if (
+            input_lock.get("work_order_sha256") != work_order_sha256
+            or phase_manifest.get("work_order_sha256") != work_order_sha256
+        ):
+            errors.append("Phase 3 input lock/manifest is bound to another work-order digest")
+        if input_lock.get("ownership") != phase3_ownership or phase_manifest.get("ownership") != phase3_ownership:
+            errors.append("Phase 3 frozen ownership differs from the controller work order")
+        if (
+            input_lock.get("included_feature_ids")
+            != sorted(scope.get("migration_scope", {}).get("included_features", []))
+            or input_lock.get("excluded_feature_ids")
+            != sorted(scope.get("migration_scope", {}).get("excluded_features", []))
+        ):
+            errors.append("Phase 3 input lock feature scope differs from controller scope")
+
+        scope_lock = input_lock.get("controller_scope")
+        scope_snapshot = phase_dir / "inputs" / "controller-scope.json"
+        if (
+            work_order.get("scope_relative_path") != "controller/scope.json"
+            or not isinstance(scope_lock, dict)
+            or scope_lock.get("sha256") != phase1_facts.get("scope_sha256")
+            or not scope_snapshot.is_file()
+            or sha256_file(scope_snapshot) != phase1_facts.get("scope_sha256")
+            or scope_lock.get("snapshot_path") != str(scope_snapshot)
+        ):
+            errors.append("Phase 3 scope snapshot is missing, noncanonical, or changed")
+
+        work_order_lock = input_lock.get("phase3_work_order")
+        work_order_snapshot = phase_dir / "inputs" / "phase-03-work-order.json"
+        if (
+            not isinstance(work_order_lock, dict)
+            or work_order_lock.get("sha256") != work_order_sha256
+            or not work_order_snapshot.is_file()
+            or sha256_file(work_order_snapshot) != work_order_sha256
+            or work_order_lock.get("snapshot_path") != str(work_order_snapshot)
+        ):
+            errors.append("Phase 3 input lock does not contain the registered work-order snapshot")
+
+        input_relatives = {
+            "phase2_closure_sha256": "phase-02-android-inventory/closure-report.json",
+            "phase2_closure_manifest_sha256": "phase-02-android-inventory/closure-manifest.sha256",
+            "phase2_closed_sha256": "phase-02-android-inventory/CLOSED",
+            "phase2_inventory_sha256": "phase-02-android-inventory/inventory.csv",
+            "phase2_asset_inventory_sha256": "phase-02-android-inventory/asset-inventory.csv",
+            "phase2_asset_manifest_sha256": "phase-02-android-inventory/asset-package/manifest.sha256",
+            "phase2_asset_committed_sha256": "phase-02-android-inventory/asset-package/COMMITTED",
+            "phase2_anchor_snapshot_sha256": "phase-02-android-inventory/evidence-anchors.snapshot.csv",
+            "controller_anchor_registry_sha256": "controller/evidence-anchor-registry.csv",
+        }
+        lock_names = {
+            "phase2_closure_sha256": "phase2_closure",
+            "phase2_closure_manifest_sha256": "phase2_closure_manifest",
+            "phase2_closed_sha256": "phase2_closed",
+            "phase2_inventory_sha256": "phase2_inventory",
+            "phase2_asset_inventory_sha256": "phase2_asset_inventory",
+            "phase2_asset_manifest_sha256": "phase2_asset_package_manifest",
+            "phase2_asset_committed_sha256": "phase2_asset_package_committed",
+            "phase2_anchor_snapshot_sha256": "phase2_anchor_snapshot",
+            "controller_anchor_registry_sha256": "controller_anchor_registry",
+        }
+        snapshot_relatives = {
+            "phase2_closure_sha256": "inputs/phase-02-closure-report.json",
+            "phase2_closure_manifest_sha256": "inputs/phase-02-closure-manifest.sha256",
+            "phase2_closed_sha256": "inputs/phase-02-CLOSED",
+            "phase2_inventory_sha256": "inputs/phase-02-inventory.csv",
+            "phase2_asset_inventory_sha256": "inputs/phase-02-asset-inventory.csv",
+            "phase2_asset_manifest_sha256": "inputs/phase-02-asset-package-manifest.sha256",
+            "phase2_asset_committed_sha256": "inputs/phase-02-asset-package-COMMITTED",
+            "phase2_anchor_snapshot_sha256": "inputs/phase-02-evidence-anchors.snapshot.csv",
+            "controller_anchor_registry_sha256": "inputs/controller-evidence-anchor-registry.csv",
+        }
+        for digest_key, relative in input_relatives.items():
+            path = safe_relative_path(run_dir, relative, digest_key, errors)
+            actual_digest = sha256_file(path) if path and path.is_file() else None
+            expected_digest = work_order.get(digest_key)
+            if not SHA256_RE.fullmatch(str(expected_digest)) or actual_digest != expected_digest:
+                errors.append(f"Phase 3 work order input changed: {digest_key}")
+            relative_key = digest_key.removesuffix("_sha256") + "_relative_path"
+            if work_order.get(relative_key) != relative:
+                errors.append(f"Phase 3 work order has a noncanonical input path: {relative_key}")
+            lock_value = input_lock.get(lock_names[digest_key])
+            lock_digest = lock_value.get("sha256") if isinstance(lock_value, dict) else input_lock.get(digest_key)
+            if lock_digest != expected_digest:
+                errors.append(f"Phase 3 input lock does not bind {digest_key}")
+            snapshot_path = phase_dir / snapshot_relatives[digest_key]
+            if (
+                not snapshot_path.is_file()
+                or sha256_file(snapshot_path) != expected_digest
+                or not isinstance(lock_value, dict)
+                or (path is not None and lock_value.get("path") != str(path))
+                or lock_value.get("snapshot_path") != str(snapshot_path)
+            ):
+                errors.append(f"Phase 3 input snapshot does not bind {digest_key}")
+
+        phase2_asset_rows = read_csv_rows(run_dir / "phase-02-android-inventory" / "asset-inventory.csv")
+        phase2_assets = {row.get("asset_id", ""): row for row in phase2_asset_rows}
+        locked_asset_files = input_lock.get("phase2_asset_files")
+        if not isinstance(locked_asset_files, list):
+            errors.append("Phase 3 input lock lacks phase2_asset_files")
+            locked_asset_files = []
+        locked_by_id: dict[str, dict[str, Any]] = {}
+        for record in locked_asset_files:
+            if not isinstance(record, dict):
+                errors.append("Phase 3 phase2_asset_files contains a non-object record")
+                continue
+            asset_id = str(record.get("asset_id", ""))
+            if not ID_RE.fullmatch(asset_id) or asset_id in locked_by_id:
+                errors.append(f"Phase 3 input lock has an unsafe or duplicate Asset-ID: {asset_id!r}")
+                continue
+            locked_by_id[asset_id] = record
+            source = phase2_assets.get(asset_id)
+            if not source:
+                errors.append(f"Phase 3 input lock contains an unknown Asset-ID: {asset_id}")
+                continue
+            archive_relative = str(source.get("archive_path", ""))
+            canonical = safe_relative_path(
+                run_dir / "phase-02-android-inventory",
+                archive_relative,
+                f"Phase 2 asset {asset_id}",
+                errors,
+            )
+            if (
+                record.get("archive_path") != archive_relative
+                or record.get("sha256") != source.get("sha256")
+                or canonical is None
+                or record.get("path") != str(canonical)
+                or (canonical.is_file() and sha256_file(canonical) != source.get("sha256"))
+            ):
+                errors.append(f"Phase 3 input lock does not bind Phase 2 asset {asset_id}")
+        if set(locked_by_id) != set(phase2_assets):
+            errors.append("Phase 3 input lock does not exactly cover Phase 2 archived assets")
+
+        gate_snapshot = phase_dir / "inputs" / "phase-02-gate-report.json"
+        controller_gate_snapshot = safe_relative_path(
+            run_dir,
+            str(work_order.get("phase2_gate_snapshot_relative_path", "")),
+            "controller-owned Phase 2 gate snapshot",
+            errors,
+        )
+        gate_digest = sha256_file(gate_snapshot) if gate_snapshot.is_file() else None
+        if (
+            not SHA256_RE.fullmatch(str(work_order.get("phase2_gate_sha256")))
+            or gate_digest != work_order.get("phase2_gate_sha256")
+            or not controller_gate_snapshot
+            or sha256_file(controller_gate_snapshot) != work_order.get("phase2_gate_sha256")
+        ):
+            errors.append("Frozen Phase 2 gate snapshot differs from the Phase 3 work order")
+        lock_gate = input_lock.get("phase2_gate")
+        lock_gate_digest = lock_gate.get("sha256") if isinstance(lock_gate, dict) else input_lock.get("phase2_gate_sha256")
+        if lock_gate_digest != work_order.get("phase2_gate_sha256"):
+            errors.append("Phase 3 input lock does not bind the Phase 2 gate snapshot")
+        if (
+            not isinstance(lock_gate, dict)
+            or lock_gate.get("path") != str(gate_snapshot)
+            or not controller_gate_snapshot
+            or lock_gate.get("source_path") != str(controller_gate_snapshot)
+        ):
+            errors.append("Phase 3 Gate 2 input path is not the immutable local snapshot")
+        try:
+            frozen_gate = load_json(gate_snapshot)
+            if (
+                frozen_gate.get("phase") != 2
+                or frozen_gate.get("verdict") != "PASS"
+                or frozen_gate.get("scope_sha256") != phase1_facts.get("scope_sha256")
+                or frozen_gate.get("errors")
+            ):
+                errors.append("Frozen controller Gate 2 snapshot is not a complete PASS")
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    expected_architecture_lead = phase3_ownership.get("architecture_lead_id")
+    expected_toolchain = phase3_ownership.get("toolchain_agent_id")
+    expected_navigation = phase3_ownership.get("navigation_agent_id")
+    expected_public_ui = phase3_ownership.get("public_ui_agent_id")
+    expected_capability = phase3_ownership.get("capability_contract_agent_id")
+    expected_acceptance = phase3_ownership.get("architecture_acceptance_agent_id")
+
+    henv_id = str(stage_report.get("henv_id") or "")
+    verification_id = str(stage_report.get("verification_id") or "")
+    if not ID_RE.fullmatch(henv_id):
+        errors.append("Phase 3 gate report lacks a safe HENV-ID")
+    if not ID_RE.fullmatch(verification_id):
+        errors.append("Phase 3 gate report lacks a safe HVER-ID")
+    if stage_report.get("phase") != 3 or stage_report.get("verdict") != "PASS":
+        errors.append("Phase 3 gate report does not say PASS")
+    if not ID_RE.fullmatch(str(stage_report.get("gate_id", ""))) or stage_report.get("run_id") != scope.get("run_id"):
+        errors.append("Phase 3 gate report has an unsafe Gate-ID or wrong run identity")
+    if (
+        stage_report.get("reviewer_role") != "architecture-acceptance-agent"
+        or stage_report.get("reviewer_id") != expected_acceptance
+    ):
+        errors.append("Phase 3 report was not issued by the frozen architecture acceptance agent")
+    if stage_report.get("errors"):
+        errors.append("Phase 3 gate report contains errors")
+    counts = stage_report.get("counts") if isinstance(stage_report.get("counts"), dict) else {}
+    if counts.get("open_rework", counts.get("open_blocking_rework", 0)) != 0:
+        errors.append("Phase 3 gate report has open rework")
+    if counts.get("inventory_rows") != counts.get("architecture_rows"):
+        errors.append("Phase 3 architecture mapping is not one-to-one with frozen inventory")
+    if not isinstance(counts.get("screenshots"), int) or counts.get("screenshots", 0) <= 0:
+        errors.append("Phase 3 has no sealed emulator screenshot evidence")
+    attestations = stage_report.get("attestations") if isinstance(stage_report.get("attestations"), dict) else {}
+    required_attestations = {
+        "real_file_review", "placeholder_boundaries", "contract_only",
+        "dependency_review", "runtime_smoke", "screenshot_review",
+    }
+    if any(attestations.get(name) is not True for name in required_attestations):
+        errors.append("Phase 3 acceptance report lacks one or more mandatory attestations")
+    input_lock_path = phase_dir / "stage-03-input-lock.json"
+    if not input_lock_path.is_file() or stage_report.get("input_lock_sha256") != sha256_file(input_lock_path):
+        errors.append("Phase 3 gate report references a different input lock")
+
+    # Ledger ownership is frozen by the work order; Gate 3 remains with the architecture lead.
+    phase3_tasks = [row for row in read_csv_rows(run_dir / "controller" / "task-ledger.csv") if row.get("phase") == "3"]
+    if (
+        len(phase3_tasks) != 1
+        or phase3_tasks[0].get("owner") != expected_architecture_lead
+        or phase3_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
+    ):
+        errors.append("Controller task ledger does not have the frozen Phase 3 owner and active task")
+
+    controller_phase3_rework = [
+        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
+        if row.get("phase") == "3"
+    ]
+    open_controller_rework = [
+        row for row in controller_phase3_rework
+        if row.get("status", "").upper() != "CLOSED"
+    ]
+    if open_controller_rework:
+        errors.append(f"Controller has open Phase 3 rework: {len(open_controller_rework)}")
+
+    environment_path = phase_dir / "environments" / henv_id / "harmony-environment.json"
+    verification_dir = phase_dir / "verification" / verification_id
+    try:
+        environment = load_json(environment_path)
+        verification = load_json(verification_dir / "metadata.json")
+        verification_snapshot = load_json(verification_dir / "scaffold-snapshot-manifest.json")
+        current_snapshot = load_json(phase_dir / "scaffold-snapshot-manifest.json")
+        artifact_manifest = load_json(verification_dir / "artifact-manifest.json")
+        screenshot_rows = read_csv_rows(verification_dir / "screenshot-index.csv")
+    except ValueError as exc:
+        errors.append(str(exc))
+        environment, verification, verification_snapshot, current_snapshot = {}, {}, {}, {}
+        artifact_manifest, screenshot_rows = {}, []
+
+    henv_rows = [
+        row for row in read_csv_rows(phase_dir / "environments" / "henv-registry.csv")
+        if row.get("henv_id") == henv_id
+    ]
+    if (
+        len(henv_rows) != 1
+        or henv_rows[0].get("status") != "FROZEN"
+        or henv_rows[0].get("frozen_by") != expected_architecture_lead
+        or not environment_path.is_file()
+        or (environment_path.is_file() and henv_rows[0].get("environment_sha256") != sha256_file(environment_path))
+    ):
+        errors.append("Selected HENV is not uniquely frozen and hash-bound by the architecture lead")
+    if (
+        environment.get("henv_id") != henv_id
+        or environment.get("created_by") != expected_architecture_lead
+        or environment.get("frozen_by", expected_architecture_lead) != expected_architecture_lead
+    ):
+        errors.append("Selected HENV ownership differs from the Phase 3 work order")
+    devices = environment.get("devices") if isinstance(environment.get("devices"), list) else []
+    device_ids: set[str] = set()
+    required_devices: set[str] = set()
+    screenshot_devices: set[str] = set()
+    for device in devices:
+        if not isinstance(device, dict):
+            errors.append("HENV contains a non-object device entry")
+            continue
+        device_id = str(device.get("device_id", ""))
+        if not ID_RE.fullmatch(device_id) or device_id in device_ids:
+            errors.append(f"Unsafe or duplicate HDEVICE-ID: {device_id!r}")
+            continue
+        device_ids.add(device_id)
+        if device.get("required") is True:
+            required_devices.add(device_id)
+        if device.get("screenshot_required") is True:
+            screenshot_devices.add(device_id)
+    if not required_devices or not screenshot_devices or not screenshot_devices.issubset(required_devices):
+        errors.append("HENV must contain required devices and screenshot-required devices")
+
+    if verification_dir.is_dir():
+        verify_exact_manifest(
+            verification_dir, "manifest.sha256", {"manifest.sha256", "COMMITTED"},
+            "HVER manifest", errors,
+        )
+    committed_path = verification_dir / "COMMITTED"
+    if committed_path.is_file():
+        try:
+            committed = committed_path.read_text(encoding="utf-8").strip()
+            if not committed.startswith(f"{verification_id} PASS "):
+                errors.append("HVER COMMITTED marker does not bind the selected passing verification")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"Cannot read HVER COMMITTED marker: {exc}")
+    else:
+        errors.append("Selected HVER package is not COMMITTED")
+    if (
+        verification.get("verification_id") != verification_id
+        or verification.get("henv_id") != henv_id
+        or verification.get("status") != "PASS"
+        or verification.get("executed_by") != expected_toolchain
+    ):
+        errors.append("Selected HVER identity, status, or executor differs from the frozen work order")
+    if build_report.get("status") != "PASS" or build_report.get("verification_id") != verification_id:
+        errors.append("Phase 3 build report is not PASS for the selected HVER-ID")
+    if build_report.get("henv_id") != henv_id:
+        errors.append("Phase 3 build report references another HENV-ID")
+    if (
+        build_report.get("clean_build_passed") is not True
+        or set(build_report.get("install_passed_devices", []) if isinstance(build_report.get("install_passed_devices"), list) else []) != required_devices
+        or set(build_report.get("launch_passed_devices", []) if isinstance(build_report.get("launch_passed_devices"), list) else []) != required_devices
+        or set(build_report.get("screenshot_required_devices", []) if isinstance(build_report.get("screenshot_required_devices"), list) else []) != screenshot_devices
+        or set(verification.get("required_devices", []) if isinstance(verification.get("required_devices"), list) else []) != required_devices
+        or set(verification.get("screenshot_required_devices", []) if isinstance(verification.get("screenshot_required_devices"), list) else []) != screenshot_devices
+    ):
+        errors.append("Build/HVER device coverage differs from the frozen HENV")
+
+    required_command_categories = {
+        "TOOLCHAIN", "DEVICE", "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_BUILD",
+        "INSTALL", "LAUNCH", "ROUTE_SMOKE", "SCREENSHOT_CAPTURE",
+    }
+    command_categories: set[str] = set()
+    command_ids: set[str] = set()
+    commands = verification.get("commands") if isinstance(verification.get("commands"), list) else []
+    for index, command in enumerate(commands):
+        if not isinstance(command, dict):
+            errors.append(f"HVER command record {index} is not an object")
+            continue
+        command_id = str(command.get("command_id", ""))
+        category = str(command.get("category", ""))
+        if not ID_RE.fullmatch(command_id) or command_id in command_ids:
+            errors.append(f"Unsafe or duplicate HVER Command-ID: {command_id!r}")
+        command_ids.add(command_id)
+        if category not in required_command_categories:
+            errors.append(f"Unknown HVER command category: {category!r}")
+        command_categories.add(category)
+        device_id = str(command.get("device_id", ""))
+        if device_id and not ID_RE.fullmatch(device_id):
+            errors.append(f"Unsafe HVER HDEVICE-ID: {device_id!r}")
+        if command.get("exit_code") != 0 or command.get("timed_out") is not False:
+            errors.append(f"HVER command did not complete successfully: {command_id}")
+        for stream in ("stdout", "stderr"):
+            relative = str(command.get(f"{stream}_path", ""))
+            log_path = safe_relative_path(verification_dir, relative, f"HVER {stream} log", errors)
+            digest = str(command.get(f"{stream}_sha256", ""))
+            if (
+                not SHA256_RE.fullmatch(digest)
+                or not log_path
+                or not log_path.is_file()
+                or sha256_file(log_path) != digest
+            ):
+                errors.append(f"HVER {stream} log hash differs for {command_id}")
+    if command_categories != required_command_categories:
+        errors.append(
+            f"HVER command category coverage differs; "
+            f"missing={sorted(required_command_categories - command_categories)}, "
+            f"extra={sorted(command_categories - required_command_categories)}"
+        )
+
+    # Recompute the reviewed scaffold snapshot from its entry list and current files.
+    snapshot_entries = current_snapshot.get("entries") if isinstance(current_snapshot.get("entries"), list) else []
+    snapshot_paths: dict[str, Path] = {}
+    canonical_entries: list[dict[str, Any]] = []
+    for index, entry in enumerate(snapshot_entries):
+        if not isinstance(entry, dict):
+            errors.append(f"Scaffold snapshot entry {index} is not an object")
+            continue
+        relative = str(entry.get("path", ""))
+        path = safe_relative_path(phase_dir, relative, "scaffold snapshot entry", errors)
+        if relative in snapshot_paths:
+            errors.append(f"Duplicate scaffold snapshot path: {relative}")
+            continue
+        if path and path.is_file():
+            snapshot_paths[relative] = path
+            if sha256_file(path) != entry.get("sha256") or path.stat().st_size != entry.get("size"):
+                errors.append(f"Current scaffold file differs from snapshot: {relative}")
+        canonical_entries.append(entry)
+    canonical = json.dumps(canonical_entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    snapshot_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if current_snapshot.get("snapshot_sha256") != snapshot_digest:
+        errors.append("Scaffold snapshot manifest digest is invalid")
+    if current_snapshot.get("henv_id") != henv_id or current_snapshot.get("entry_count") != len(snapshot_entries):
+        errors.append("Scaffold snapshot identity or entry count is invalid")
+    if current_snapshot != verification_snapshot:
+        errors.append("Current scaffold snapshot manifest differs from the sealed HVER snapshot")
+    if (
+        verification.get("source_snapshot_sha256") != snapshot_digest
+        or build_report.get("source_snapshot_sha256") != snapshot_digest
+        or stage_report.get("source_snapshot_sha256") != snapshot_digest
+    ):
+        errors.append("HVER, build report, or Gate 3 references another scaffold snapshot")
+
+    excluded_value = current_snapshot.get("excluded_generated_parts")
+    excluded_parts = set(excluded_value if isinstance(excluded_value, list) else [])
+    if excluded_parts != STAGE3_SNAPSHOT_EXCLUDED_PARTS:
+        errors.append("Scaffold snapshot uses an unauthorized generated-path exclusion set")
+    expected_snapshot_paths: set[str] = set()
+    project = phase_dir / "harmony-project"
+    if project.is_dir():
+        for path in project.rglob("*"):
+            if path.is_symlink():
+                errors.append(f"Symbolic links are prohibited in HarmonyOS project: {path}")
+                continue
+            relative_project = path.relative_to(project)
+            if any(part in STAGE3_SNAPSHOT_EXCLUDED_PARTS for part in relative_project.parts):
+                continue
+            if path.is_file():
+                expected_snapshot_paths.add(path.relative_to(phase_dir).as_posix())
+    expected_snapshot_paths.update(STAGE3_SNAPSHOT_REGISTRIES)
+    expected_snapshot_paths.add(f"environments/{henv_id}/harmony-environment.json")
+    if set(snapshot_paths) != expected_snapshot_paths:
+        errors.append(
+            f"Current scaffold snapshot file set differs; "
+            f"missing={sorted(expected_snapshot_paths - set(snapshot_paths))[:5]}, "
+            f"extra={sorted(set(snapshot_paths) - expected_snapshot_paths)[:5]}"
+        )
+
+    # Enforce the six frozen Phase 3 assignments against the actual registries.
+    role_csv_checks = (
+        ("module-registry.csv", "created_by", expected_toolchain, "module creator"),
+        ("route-registry.csv", "created_by", expected_navigation, "route creator"),
+        ("surface-registry.csv", "created_by", expected_navigation, "surface creator"),
+        ("public-ui-registry.csv", "created_by", expected_public_ui, "public UI creator"),
+        ("capability-contracts.csv", "created_by", expected_capability, "capability contract creator"),
+        ("architecture-decisions.csv", "decided_by", expected_architecture_lead, "architecture decision owner"),
+    )
+    for name, field, expected_actor, label in role_csv_checks:
+        rows = read_csv_rows(phase_dir / name)
+        wrong = [row for row in rows if row.get(field) != expected_actor]
+        if wrong:
+            errors.append(f"{name} contains {len(wrong)} row(s) with the wrong frozen {label}")
+
+    # Phase 3 must carry every frozen Android asset into one safe HarmonyOS placement plan.
+    phase2_asset_rows = read_csv_rows(run_dir / "phase-02-android-inventory" / "asset-inventory.csv")
+    phase2_assets = {row.get("asset_id", ""): row for row in phase2_asset_rows}
+    if len(phase2_assets) != len(phase2_asset_rows):
+        errors.append("Phase 2 asset inventory contains duplicate Asset-IDs")
+    stage3_asset_rows = read_csv_rows(phase_dir / "asset-registry.csv")
+    stage3_assets: dict[str, dict[str, str]] = {}
+    module_rows = read_csv_rows(phase_dir / "module-registry.csv")
+    modules = {row.get("harmony_module_id", ""): row for row in module_rows}
+    seen_symbols: set[tuple[str, str]] = set()
+    allowed_plans = {
+        ("DIRECT_COPY", "COPY_UNCHANGED"),
+        ("FORMAT_CONVERSION", "CONVERT_FORMAT"),
+        ("RECREATE_FROM_PUBLIC_UI", "RECREATE_LATER"),
+    }
+    for row in stage3_asset_rows:
+        asset_id = row.get("asset_id", "")
+        if not ID_RE.fullmatch(asset_id) or asset_id in stage3_assets:
+            errors.append(f"Phase 3 asset registry has an unsafe or duplicate Asset-ID: {asset_id!r}")
+            continue
+        stage3_assets[asset_id] = row
+        source = phase2_assets.get(asset_id)
+        if not source:
+            errors.append(f"Phase 3 asset registry contains an unknown Asset-ID: {asset_id}")
+            continue
+        for field, phase2_field in (
+            ("phase2_archive_path", "archive_path"),
+            ("asset_sha256", "sha256"),
+            ("asset_type", "asset_type"),
+        ):
+            if row.get(field) != source.get(phase2_field):
+                errors.append(f"{asset_id}: frozen {field} differs from Phase 2")
+        for field in ("feature_ids", "page_ids", "state_ids"):
+            source_ids = parse_json_id_list(source.get(field, ""), f"Phase 2 {asset_id}.{field}", errors)
+            target_ids = parse_json_id_list(row.get(field, ""), f"Phase 3 {asset_id}.{field}", errors)
+            if target_ids != source_ids:
+                errors.append(f"{asset_id}: frozen {field} differs from Phase 2")
+        module_id = row.get("target_module_id", "")
+        module = modules.get(module_id)
+        target_relative = row.get("target_path", "")
+        target_pure = PurePosixPath(target_relative)
+        module_relative = str(module.get("module_path", "")) if module else ""
+        module_pure = PurePosixPath(module_relative)
+        if not module or module.get("status") != "READY":
+            errors.append(f"{asset_id}: target module is missing or not READY: {module_id}")
+        if (
+            target_pure.is_absolute()
+            or not target_pure.parts
+            or ".." in target_pure.parts
+            or module_pure.is_absolute()
+            or not module_pure.parts
+            or ".." in module_pure.parts
+            or target_pure.parts[:len(module_pure.parts)] != module_pure.parts
+            or len(target_pure.parts) <= len(module_pure.parts)
+        ):
+            errors.append(f"{asset_id}: target_path is not safely inside its target module")
+        else:
+            current = phase_dir / "harmony-project"
+            for part in target_pure.parts:
+                current = current / part
+                if current.is_symlink():
+                    errors.append(f"{asset_id}: target_path crosses a symbolic link")
+                    break
+        target_symbol = row.get("target_symbol", "")
+        symbol_key = (module_id, target_symbol)
+        if not target_symbol or symbol_key in seen_symbols:
+            errors.append(f"{asset_id}: target_symbol is empty or duplicated inside the module")
+        seen_symbols.add(symbol_key)
+        if (
+            (row.get("planned_mode"), row.get("decision")) not in allowed_plans
+            or row.get("created_by") != expected_architecture_lead
+            or row.get("status") != "READY"
+        ):
+            errors.append(f"{asset_id}: asset plan, owner, or lifecycle is invalid")
+    if set(stage3_assets) != set(phase2_assets):
+        errors.append("Phase 3 asset registry does not exactly cover Phase 2 assets")
+
+    architecture_rows = read_csv_rows(phase_dir / "architecture-map.csv")
+    wrong_mappers = [
+        row for row in architecture_rows
+        if row.get("mapped_by") != (
+            expected_architecture_lead
+            if row.get("mapping_type") == "EXCLUDED_BY_SCOPE"
+            else expected_navigation
+        )
+    ]
+    if wrong_mappers:
+        errors.append(
+            f"architecture-map.csv contains {len(wrong_mappers)} row(s) with the wrong frozen mapper"
+        )
+    migration_rows = read_csv_rows(phase_dir / "migration-status.csv")
+    wrong_status_owners = [
+        row for row in migration_rows
+        if row.get("updated_by") != (
+            expected_architecture_lead
+            if row.get("status") == "EXCLUDED_BY_SCOPE"
+            else expected_capability
+            if row.get("source_kind") == "CAPABILITY_REQUIREMENT"
+            else expected_navigation
+        )
+    ]
+    if wrong_status_owners:
+        errors.append(
+            f"migration-status.csv contains {len(wrong_status_owners)} row(s) with the wrong frozen owner"
+        )
+    if (
+        phase_manifest.get("architecture_lead") != expected_architecture_lead
+        or input_lock.get("locked_by") != expected_architecture_lead
+    ):
+        errors.append("Phase 3 manifest/input lock was not owned by the frozen architecture lead")
+
+    # Recheck every screenshot package and its PNG/hash identity.
+    screenshot_ids: set[str] = set()
+    for row in screenshot_rows:
+        screenshot_id = row.get("screenshot_id", "")
+        if not ID_RE.fullmatch(screenshot_id) or screenshot_id in screenshot_ids:
+            errors.append(f"Unsafe or duplicate Screenshot-ID: {screenshot_id!r}")
+            continue
+        screenshot_ids.add(screenshot_id)
+        expected_relative = f"screenshots/{screenshot_id}"
+        if row.get("relative_path") != expected_relative:
+            errors.append(f"{screenshot_id}: screenshot package path is not canonical")
+            continue
+        screenshot_dir = safe_relative_path(verification_dir, expected_relative, "screenshot package", errors)
+        if not screenshot_dir or not screenshot_dir.is_dir():
+            continue
+        verify_exact_manifest(
+            screenshot_dir, "manifest.sha256", {"manifest.sha256", "COMMITTED"},
+            f"screenshot {screenshot_id} manifest", errors,
+        )
+        screenshot_committed = screenshot_dir / "COMMITTED"
+        if screenshot_committed.is_file():
+            try:
+                if not screenshot_committed.read_text(encoding="utf-8").strip().startswith(
+                    f"{screenshot_id} SEALED "
+                ):
+                    errors.append(f"{screenshot_id}: COMMITTED marker is invalid")
+            except (OSError, UnicodeDecodeError) as exc:
+                errors.append(f"{screenshot_id}: cannot read COMMITTED marker: {exc}")
+        else:
+            errors.append(f"{screenshot_id}: screenshot package is not COMMITTED")
+        screenshot_png = screenshot_dir / "screenshot.png"
+        try:
+            metadata = load_json(screenshot_dir / "metadata.json")
+            width, height = validate_complete_png(screenshot_png)
+            png_digest = sha256_file(screenshot_png)
+            if (
+                row.get("verification_id") != verification_id
+                or row.get("henv_id") != henv_id
+                or row.get("captured_by") != expected_toolchain
+                or row.get("status") != "SEALED"
+                or row.get("device_id") not in screenshot_devices
+                or row.get("png_sha256") != png_digest
+                or metadata.get("png_sha256") != png_digest
+                or metadata.get("screenshot_id") != screenshot_id
+                or metadata.get("verification_id") != verification_id
+                or metadata.get("henv_id") != henv_id
+                or metadata.get("captured_by") != expected_toolchain
+                or str(width) != row.get("width")
+                or str(height) != row.get("height")
+            ):
+                errors.append(f"{screenshot_id}: screenshot identity or PNG hash differs")
+        except (ValueError, OSError) as exc:
+            errors.append(f"{screenshot_id}: {exc}")
+    verification_screenshot_value = verification.get("screenshot_ids")
+    verification_screenshot_ids = set(
+        verification_screenshot_value if isinstance(verification_screenshot_value, list) else []
+    )
+    if (
+        not screenshot_ids
+        or verification_screenshot_ids != screenshot_ids
+        or build_report.get("screenshot_count") != len(screenshot_ids)
+        or counts.get("screenshots") != len(screenshot_ids)
+    ):
+        errors.append("HVER, build report, Gate 3, and screenshot index counts/IDs differ")
+
+    # Built artifacts are checked against both the sealed HVER and current project bytes.
+    artifacts = artifact_manifest.get("artifacts") if isinstance(artifact_manifest.get("artifacts"), list) else []
+    artifact_hashes: list[str] = []
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            errors.append(f"Artifact manifest entry {index} is not an object")
+            continue
+        path = safe_relative_path(project, str(artifact.get("path", "")), "HarmonyOS build artifact", errors)
+        digest = str(artifact.get("sha256", ""))
+        if not SHA256_RE.fullmatch(digest):
+            errors.append(f"Artifact {index} has an invalid SHA-256")
+            continue
+        artifact_hashes.append(digest)
+        if path and path.is_file() and (
+            sha256_file(path) != digest or path.stat().st_size != artifact.get("size")
+        ):
+            errors.append(f"Current build artifact differs from sealed HVER: {artifact.get('path')}")
+    if not artifact_hashes:
+        errors.append("Selected HVER has no built artifact")
+    if build_report.get("artifacts") != artifacts or build_report.get("artifact_count") != len(artifacts):
+        errors.append("Build report differs from sealed artifact manifest")
+    if stage_report.get("artifact_hashes") != artifact_hashes:
+        errors.append("Gate 3 artifact hashes differ from sealed HVER artifacts")
+
+    local_phase3_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
+    local_open_rework = [
+        row for row in local_phase3_rework if row.get("status", "").upper() != "CLOSED"
+    ]
+    if local_open_rework:
+        errors.append(f"Phase 3 has open local rework tickets: {len(local_open_rework)}")
+    local_ids = [row.get("ticket_id", "") for row in local_phase3_rework]
+    controller_ids = [row.get("rework_id", "") for row in controller_phase3_rework]
+    if len(local_ids) != len(set(local_ids)) or len(controller_ids) != len(set(controller_ids)):
+        errors.append("Phase 3 rework ledger or controller mirror contains duplicate Ticket-ID values")
+    if set(local_ids) != set(controller_ids):
+        errors.append("Phase 3 rework ledger and controller mirror contain different Ticket-ID sets")
+    for local in local_phase3_rework:
+        ticket_id = str(local.get("ticket_id", ""))
+        problem_type = str(local.get("problem_type", "")).upper()
+        route = STAGE3_REWORK_ROUTES.get(problem_type)
+        if not ID_RE.fullmatch(ticket_id) or route is None:
+            errors.append(f"Phase 3 rework ticket identity or type is invalid: {ticket_id!r}")
+        else:
+            expected_role, actor_key = route
+            if (
+                local.get("responsible_role") != expected_role
+                or local.get("responsible_agent") != phase3_ownership.get(actor_key)
+            ):
+                errors.append(f"Phase 3 rework ticket differs from frozen routing: {ticket_id}")
+        if (
+            local.get("severity") not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+            or local.get("opened_by") != expected_acceptance
+            or local.get("confirmed_by") != expected_architecture_lead
+            or local.get("status", "").upper() not in {"OPEN", "CLOSED"}
+        ):
+            errors.append(f"Phase 3 rework ticket authority or lifecycle is invalid: {ticket_id}")
+        matches = [row for row in controller_phase3_rework if row.get("rework_id") == ticket_id]
+        if len(matches) != 1:
+            errors.append(f"Phase 3 rework ticket is not uniquely mirrored: {ticket_id}")
+            continue
+        mirrored = matches[0]
+        expected_fields = {
+            "created_at": local.get("opened_at", ""),
+            "record_id": local.get("source_or_mapping_id", ""),
+            "evidence_id": local.get("failed_verification_id", ""),
+            "gate_rule": problem_type,
+            "reason": local.get("notes", ""),
+            "assigned_to": local.get("responsible_agent", ""),
+        }
+        if any(mirrored.get(field, "") != value for field, value in expected_fields.items()):
+            errors.append(f"Controller rework mirror content differs: {ticket_id}")
+        if not mirrored.get("completion_condition", ""):
+            errors.append(f"Controller rework mirror lacks completion condition: {ticket_id}")
+        if local.get("status", "").upper() == "CLOSED":
+            if (
+                local.get("closed_by") != expected_acceptance
+                or mirrored.get("status") != "CLOSED"
+                or mirrored.get("resolved_at") != local.get("closed_at")
+                or mirrored.get("resolution_evidence_id")
+                != local.get("correction_verification_id")
+                or mirrored.get("reviewed_by") != expected_acceptance
+            ):
+                errors.append(f"Closed Phase 3 rework mirror differs: {ticket_id}")
+        elif mirrored.get("status") != "REWORK":
+            errors.append(f"Open Phase 3 rework mirror status differs: {ticket_id}")
+
+    return (
+        errors,
+        warnings,
+        henv_id if ID_RE.fullmatch(henv_id) else None,
+        verification_id if ID_RE.fullmatch(verification_id) else None,
+        str(expected_architecture_lead) if expected_architecture_lead else None,
+        work_order_id if ID_RE.fullmatch(work_order_id) else None,
+    )
+
+
+def validate_phase4(
+    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any]
+) -> tuple[list[str], list[str], list[str], list[str], str | None, str | None]:
+    """Independently recheck the controller-issued and fully sealed Phase 4 result."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    phase_dir = run_dir / "phase-04-harmony-implementation"
+    required = (
+        "stage-04-input-lock.json", "phase-manifest.json", "initial-project-snapshot.json",
+        "implementation-ledger.csv",
+        "feature-work-order-registry.csv", "feature-work-orders",
+        "parity-map.csv", "visual-elements.csv", "asset-migration.csv",
+        "asset-policy.json", "asset-conversion-contracts.json", "asset-conversions",
+        "capability-implementation.csv", "nativeization-decisions.csv", "evidence-index.csv",
+        "acceptance-ledger.csv", "rework-tickets.csv", "environments/h4env-registry.csv",
+        "harmony-project", "builds", "evidence", "reviews", "stage-04-gate-report.json",
+        "stage-04-closure-manifest.sha256", "CLOSED",
+    )
+    for relative in required:
+        candidate = phase_dir / relative
+        if not candidate.exists() or candidate.is_symlink():
+            errors.append(f"Missing or unsafe Phase 4 artifact: {candidate}")
+    try:
+        phase_manifest = load_json(phase_dir / "phase-manifest.json")
+        input_lock = load_json(phase_dir / "stage-04-input-lock.json")
+        stage_report = load_json(phase_dir / "stage-04-gate-report.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings, [], [], None, None
+
+    verify_phase4_closure(phase_dir, errors)
+    stage_report_path = phase_dir / "stage-04-gate-report.json"
+    closed_path = phase_dir / "CLOSED"
+    if stage_report_path.is_file() and closed_path.is_file():
+        try:
+            if closed_path.read_bytes() != (sha256_file(stage_report_path) + "\n").encode("ascii"):
+                errors.append("Phase 4 CLOSED marker does not bind the current gate report")
+        except OSError as exc:
+            errors.append(f"Cannot read Phase 4 CLOSED marker: {exc}")
+    if any(path.is_file() and path.suffix.lower() == ".mp4" for path in phase_dir.rglob("*")):
+        errors.append("MP4 is prohibited in Phase 4")
+    expected_input_lock_keys = {
+        "schema_version", "stage", "run_id", "created_at", "locked_by", "work_order_id",
+        "work_order_sha256", "ownership", "controller_gate3_snapshot_sha256",
+        "phase3_work_order_id", "phase3_work_order_sha256", "inputs", "android_evidence",
+        "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
+        "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
+        "phase3_source_snapshot_sha256",
+    }
+    expected_phase_manifest_keys = {
+        "schema_version", "run_id", "project_id", "phase", "status", "initialized_at",
+        "work_order_id", "work_order_sha256", "work_order_relative_path", "ownership",
+        "roles", "input_lock_sha256", "initial_project_snapshot_sha256",
+        "asset_conversion_contracts_sha256", "formal_evidence_device_type", "mp4_allowed",
+        "source_first_assets_required",
+    }
+    if (
+        set(phase_manifest) != expected_phase_manifest_keys
+        or phase_manifest.get("schema_version") != "1.0"
+        or phase_manifest.get("phase") != 4
+        or phase_manifest.get("status") != "IN_PROGRESS"
+        or not phase_manifest.get("initialized_at")
+        or phase_manifest.get("formal_evidence_device_type") != "emulator"
+        or phase_manifest.get("mp4_allowed") is not False
+        or phase_manifest.get("source_first_assets_required") is not True
+        or set(input_lock) != expected_input_lock_keys
+        or input_lock.get("schema_version") != "1.0"
+        or input_lock.get("stage") != 4
+        or not input_lock.get("created_at")
+        or phase_manifest.get("run_id") != scope.get("run_id")
+        or input_lock.get("run_id") != scope.get("run_id")
+    ):
+        errors.append("Phase 4 manifest/input-lock identity differs from controller scope")
+    for frozen_name in (
+        "stage-04-input-lock.json", "phase-manifest.json", "initial-project-snapshot.json",
+        "asset-conversion-contracts.json",
+    ):
+        frozen_path = phase_dir / frozen_name
+        if frozen_path.is_file() and frozen_path.stat().st_mode & 0o222:
+            errors.append(f"Frozen Phase 4 governance record is writable: {frozen_name}")
+
+    # Resolve the unique immutable Phase 4 order and the upstream Phase 3 order it cites.
+    registry_rows = read_csv_rows(run_dir / "controller" / "work-order-registry.csv")
+    work_order_id = str(phase_manifest.get("work_order_id") or input_lock.get("work_order_id") or "")
+    active_phase4 = [
+        row for row in registry_rows
+        if row.get("phase") == "4" and row.get("status", "").upper() != "SUPERSEDED"
+    ]
+    matches = [row for row in registry_rows if row.get("phase") == "4" and row.get("work_order_id") == work_order_id]
+    work_order: dict[str, Any] = {}
+    work_order_path: Path | None = None
+    work_order_sha256: str | None = None
+    if not ID_RE.fullmatch(work_order_id):
+        errors.append("Phase 4 lacks a safe registered Work-Order-ID")
+    if len(active_phase4) != 1 or (active_phase4 and active_phase4[0].get("work_order_id") != work_order_id):
+        errors.append("Controller must have exactly one active Phase 4 work order")
+    if len(matches) != 1:
+        errors.append("Phase 4 work order is not uniquely registered")
+    else:
+        row = matches[0]
+        work_order_path = safe_relative_path(run_dir, row.get("relative_path", ""), "Phase 4 work order", errors)
+        if work_order_path and work_order_path.is_file():
+            try:
+                work_order = load_json(work_order_path)
+                work_order_sha256 = sha256_file(work_order_path)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if (
+            row.get("relative_path") != f"controller/work-orders/{work_order_id}.json"
+            or
+            row.get("status") != "ISSUED"
+            or row.get("scope_sha256") != phase1_facts.get("scope_sha256")
+            or row.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or row.get("work_order_sha256") != work_order_sha256
+        ):
+            errors.append("Registered Phase 4 work order is changed, unauthorized, or bound to another scope")
+
+    phase4_ownership = work_order.get("ownership") if isinstance(work_order.get("ownership"), dict) else {}
+    role_values: list[str] = []
+    for key in STAGE4_ROLE_KEYS:
+        value = phase4_ownership.get(key)
+        if not isinstance(value, str) or not ACTOR_RE.fullmatch(value):
+            errors.append(f"Phase 4 work order has invalid ownership.{key}")
+        else:
+            role_values.append(value)
+    if len(role_values) != len(STAGE4_ROLE_KEYS) or len(role_values) != len(set(role_values)):
+        errors.append("All four frozen Phase 4 actor IDs must be present and distinct")
+
+    upstream_order_path: Path | None = None
+    upstream_order: dict[str, Any] = {}
+    upstream_relative = str(work_order.get("upstream_phase3_work_order_relative_path", ""))
+    if upstream_relative:
+        upstream_order_path = safe_relative_path(run_dir, upstream_relative, "upstream Phase 3 work order", errors)
+        if upstream_order_path and upstream_order_path.is_file():
+            try:
+                upstream_order = load_json(upstream_order_path)
+            except ValueError as exc:
+                errors.append(str(exc))
+    else:
+        errors.append("Phase 4 work order lacks the upstream Phase 3 work-order path")
+    phase3_ownership = upstream_order.get("ownership") if isinstance(upstream_order.get("ownership"), dict) else {}
+    prior_actor_ids = actor_ids(scope.get("ownership", {})) | actor_ids(phase3_ownership)
+    overlap = sorted(set(role_values) & prior_actor_ids)
+    if overlap:
+        errors.append(f"Phase 4 actors overlap frozen Phase 1–3 actors: {overlap}")
+    if (
+        work_order.get("work_order_id") != work_order_id
+        or work_order.get("phase") != 4
+        or work_order.get("status") != "ISSUED"
+        or work_order.get("run_id") != scope.get("run_id")
+        or work_order.get("scope_sha256") != phase1_facts.get("scope_sha256")
+        or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+        or work_order.get("required_skill") != "harmonyos-feature-implementation"
+        or work_order.get("included_features") != scope.get("migration_scope", {}).get("included_features")
+        or work_order.get("excluded_features") != scope.get("migration_scope", {}).get("excluded_features")
+        or work_order.get("mp4_allowed") is not False
+    ):
+        errors.append("Phase 4 work-order identity, scope, or authority is invalid")
+    if (
+        not upstream_order_path
+        or sha256_file(upstream_order_path) != work_order.get("upstream_phase3_work_order_sha256")
+        or upstream_order.get("work_order_id") != work_order.get("upstream_phase3_work_order_id")
+        or upstream_order.get("phase") != 3
+    ):
+        errors.append("Phase 4 work order is not bound to the registered Phase 3 work order")
+    if (
+        phase_manifest.get("work_order_id") != work_order_id
+        or input_lock.get("work_order_id") != work_order_id
+        or phase_manifest.get("work_order_sha256") != work_order_sha256
+        or input_lock.get("work_order_sha256") != work_order_sha256
+        or phase_manifest.get("ownership") != phase4_ownership
+        or input_lock.get("ownership") != phase4_ownership
+        or input_lock.get("locked_by") != phase4_ownership.get("implementation_lead_id")
+        or input_lock.get("controller_gate3_snapshot_sha256") != work_order.get("controller_gate3_sha256")
+        or input_lock.get("phase3_work_order_id") != work_order.get("upstream_phase3_work_order_id")
+        or input_lock.get("phase3_work_order_sha256") != work_order.get("upstream_phase3_work_order_sha256")
+        or phase_manifest.get("project_id") != scope.get("project_id")
+        or phase_manifest.get("work_order_relative_path") != f"controller/work-orders/{work_order_id}.json"
+        or phase_manifest.get("roles") != {
+            "implementation_lead": phase4_ownership.get("implementation_lead_id"),
+            "asset_agent": phase4_ownership.get("visual_asset_agent_id"),
+            "verification_executor": phase4_ownership.get("verification_executor_id"),
+            "parity_checker": phase4_ownership.get("parity_acceptance_agent_id"),
+        }
+    ):
+        errors.append("Phase 4 manifest/input lock differs from the controller work order")
+
+    gate_snapshot = safe_relative_path(
+        run_dir,
+        str(work_order.get("controller_gate3_snapshot_relative_path", "")),
+        "controller-owned Gate 3 snapshot",
+        errors,
+    )
+    if (
+        not gate_snapshot
+        or work_order.get("controller_gate3_snapshot_relative_path")
+        != f"controller/work-orders/{work_order_id}.phase-03-gate-report.json"
+        or sha256_file(gate_snapshot) != work_order.get("controller_gate3_sha256")
+    ):
+        errors.append("Controller-owned Gate 3 snapshot differs from the Phase 4 work order")
+    else:
+        try:
+            frozen_gate = load_json(gate_snapshot)
+            if (
+                frozen_gate.get("phase") != 3
+                or frozen_gate.get("verdict") != "PASS"
+                or frozen_gate.get("scope_sha256") != phase1_facts.get("scope_sha256")
+                or frozen_gate.get("errors")
+            ):
+                errors.append("Frozen controller Gate 3 snapshot is not a complete PASS")
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    # Every small upstream input is copied into Phase 4 and bound to its canonical source.
+    raw_inputs = input_lock.get("inputs")
+    source_records: dict[Path, dict[str, Any]] = {}
+    snapshot_paths: set[Path] = set()
+    input_labels: set[str] = set()
+    if not isinstance(raw_inputs, list):
+        errors.append("Phase 4 input lock inputs must be an array")
+        raw_inputs = []
+    for index, record in enumerate(raw_inputs):
+        if not isinstance(record, dict):
+            errors.append(f"Phase 4 input record {index} is not an object")
+            continue
+        try:
+            if set(record) != {"label", "source_path", "snapshot_path", "sha256", "size"} or not record.get("label"):
+                raise ValueError("input record keys or label differ from the contract")
+            label_value = str(record.get("label"))
+            if label_value in input_labels:
+                raise ValueError("duplicate input label")
+            source_value = Path(str(record.get("source_path", ""))).expanduser()
+            snapshot_value = Path(str(record.get("snapshot_path", ""))).expanduser()
+            if not source_value.is_absolute() or not snapshot_value.is_absolute():
+                raise ValueError("source_path and snapshot_path must be absolute")
+            source = source_value.resolve()
+            snapshot = snapshot_value.resolve()
+            source.relative_to(run_dir)
+            snapshot.relative_to((phase_dir / "inputs" / "upstream").resolve())
+            if source in source_records or snapshot in snapshot_paths:
+                raise ValueError("duplicate source or snapshot path")
+            if source_value.is_symlink() or snapshot_value.is_symlink() or not source.is_file() or not snapshot.is_file():
+                raise ValueError("source or snapshot is missing/symbolic")
+            digest = str(record.get("sha256", ""))
+            size = record.get("size")
+            if (
+                not SHA256_RE.fullmatch(digest)
+                or sha256_file(source) != digest
+                or sha256_file(snapshot) != digest
+                or source.stat().st_size != size
+                or snapshot.stat().st_size != size
+            ):
+                raise ValueError("source/snapshot hash or size differs")
+            source_records[source] = record
+            snapshot_paths.add(snapshot)
+            input_labels.add(label_value)
+        except (OSError, ValueError) as exc:
+            errors.append(f"Invalid Phase 4 input record {index}: {exc}")
+
+    expected_sources: dict[Path, str] = {}
+    scope_path = (run_dir / "controller" / "scope.json").resolve()
+    if scope_path.is_file():
+        expected_sources[scope_path] = str(phase1_facts.get("scope_sha256"))
+    if work_order_path:
+        expected_sources[work_order_path.resolve()] = str(work_order_sha256)
+    if gate_snapshot:
+        expected_sources[gate_snapshot.resolve()] = str(work_order.get("controller_gate3_sha256"))
+    if upstream_order_path:
+        expected_sources[upstream_order_path.resolve()] = str(work_order.get("upstream_phase3_work_order_sha256"))
+    for digest_key, relative in STAGE4_INPUT_RELATIVES.items():
+        source = safe_relative_path(run_dir, relative, digest_key, errors)
+        digest = str(work_order.get(digest_key, ""))
+        relative_key = digest_key.removesuffix("_sha256") + "_relative_path"
+        if work_order.get(relative_key) != relative:
+            errors.append(f"Phase 4 work order has a noncanonical input path: {relative_key}")
+        if not SHA256_RE.fullmatch(digest) or not source or sha256_file(source) != digest:
+            errors.append(f"Phase 4 work order input changed: {digest_key}")
+        elif source:
+            expected_sources[source.resolve()] = digest
+
+    henv_records = work_order.get("phase3_henvs")
+    henv_by_id: dict[str, dict[str, str]] = {}
+    if not isinstance(henv_records, list):
+        errors.append("Phase 4 work order lacks phase3_henvs")
+        henv_records = []
+    for record in henv_records:
+        if not isinstance(record, dict):
+            errors.append("Phase 4 phase3_henvs contains a non-object record")
+            continue
+        henv_id = str(record.get("henv_id", ""))
+        relative = str(record.get("relative_path", ""))
+        digest = str(record.get("sha256", ""))
+        if not ID_RE.fullmatch(henv_id) or henv_id in henv_by_id:
+            errors.append(f"Unsafe or duplicate Phase 3 HENV-ID in Phase 4 work order: {henv_id!r}")
+            continue
+        source = safe_relative_path(run_dir, relative, f"Phase 3 HENV {henv_id}", errors)
+        if not source or not SHA256_RE.fullmatch(digest) or sha256_file(source) != digest:
+            errors.append(f"Frozen Phase 3 HENV changed: {henv_id}")
+            continue
+        henv_by_id[henv_id] = {"relative_path": relative, "sha256": digest}
+        expected_sources[source.resolve()] = digest
+    if set(source_records) != set(expected_sources):
+        errors.append(
+            "Phase 4 small-input snapshots differ from the work order; "
+            f"missing={sorted(str(path) for path in set(expected_sources) - set(source_records))[:5]}, "
+            f"extra={sorted(str(path) for path in set(source_records) - set(expected_sources))[:5]}"
+        )
+    for source, digest in expected_sources.items():
+        record = source_records.get(source)
+        if record and record.get("sha256") != digest:
+            errors.append(f"Phase 4 input snapshot binds another digest: {source}")
+
+    input_lock_path = phase_dir / "stage-04-input-lock.json"
+    input_lock_sha256 = sha256_file(input_lock_path) if input_lock_path.is_file() else None
+    if phase_manifest.get("input_lock_sha256") != input_lock_sha256:
+        errors.append("Phase 4 manifest references another input lock")
+
+    # Recheck frozen Phase 4 environment identities and executable contracts.
+    env_rows = read_csv_rows(phase_dir / "environments" / "h4env-registry.csv")
+    env_index = index_unique_rows(env_rows, "h4env_id", "H4ENV registry", errors)
+    required_h4env_value = input_lock.get("required_h4env_ids")
+    required_h4env_ids = set(required_h4env_value if isinstance(required_h4env_value, list) else [])
+    if not required_h4env_ids or set(env_index) != required_h4env_ids:
+        errors.append("Phase 4 H4ENV registry differs from the frozen required H4ENV set")
+    required_categories = {
+        "TOOLCHAIN", "CLEAN_BUILD", "BUNDLE_CHECK", "SIGNING_CHECK", "DEVICE_CHECK",
+        "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH",
+        "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    }
+    environments: dict[str, dict[str, Any]] = {}
+    scope_environments = {
+        str(item.get("env_id", "")): item
+        for item in scope.get("environments", []) if isinstance(item, dict)
+    }
+    for h4env_id, row in env_index.items():
+        env_path = phase_dir / "environments" / h4env_id / "phase4-environment.json"
+        try:
+            environment = load_json(env_path)
+            environments[h4env_id] = environment
+            base_henv_id = str(environment.get("base_henv_id", ""))
+            base = henv_by_id.get(base_henv_id)
+            source_environment = scope_environments.get(str(environment.get("source_android_env_id", "")), {})
+            base_environment = (
+                load_json(run_dir / str(base.get("relative_path", ""))) if base else {}
+            )
+            business_profile_fields = (
+                "account_id", "account_role", "seed_data_id", "seed_reset_ref",
+                "network_profile", "network_conditions_ref", "network_toggle_available",
+                "locale", "theme", "font_scale", "timezone", "permissions_profile", "orientation",
+            )
+            expected_business_profile = {
+                field: source_environment.get(field) for field in business_profile_fields
+            }
+            emulator = environment.get("emulator") if isinstance(environment.get("emulator"), dict) else {}
+            application = (
+                environment.get("base_application")
+                if isinstance(environment.get("base_application"), dict) else {}
+            )
+            serial = str(emulator.get("serial", ""))
+            bundle = str(application.get("bundle_name", ""))
+            selector = environment.get("device_selector_tokens")
+            comparison = environment.get("comparison") if isinstance(environment.get("comparison"), dict) else {}
+            resolution_match = re.fullmatch(r"(\d+)x(\d+)", str(emulator.get("resolution", "")))
+            expected_environment_keys = {
+                "h4env_id", "source_android_env_id", "base_henv_id", "device_id",
+                "device_serial", "bundle_name", "created_by", "required", "frozen_at",
+                "device_selector_tokens", "category_contracts", "comparison", "business_profile",
+                "base_henv_sha256", "base_application", "base_toolchain", "emulator",
+            }
+            if (
+                set(environment) != expected_environment_keys
+                or row.get("status") != "FROZEN"
+                or row.get("required") != "true"
+                or row.get("frozen_by") != phase4_ownership.get("implementation_lead_id")
+                or row.get("environment_sha256") != sha256_file(env_path)
+                or environment.get("h4env_id") != h4env_id
+                or row.get("source_android_env_id") != environment.get("source_android_env_id")
+                or row.get("base_henv_id") != base_henv_id
+                or row.get("device_id") != environment.get("device_id")
+                or environment.get("source_android_env_id") not in scope_environments
+                or environment.get("created_by") != phase4_ownership.get("implementation_lead_id")
+                or environment.get("required") is not True
+                or not environment.get("frozen_at")
+                or not base
+                or environment.get("base_henv_sha256") != base.get("sha256")
+                or str(environment.get("emulator", {}).get("device_type", "")).lower() != "emulator"
+                or environment.get("device_id") != emulator.get("device_id")
+                or environment.get("device_serial") != serial
+                or environment.get("bundle_name") != bundle
+                or not serial or not bundle
+                or not isinstance(selector, list) or not selector or serial not in selector
+                or environment.get("business_profile") != expected_business_profile
+                or not resolution_match
+                or comparison.get("screenshot_width") != int(resolution_match.group(1))
+                or comparison.get("screenshot_height") != int(resolution_match.group(2))
+                or not isinstance(comparison.get("content_bounds"), list)
+                or len(comparison.get("content_bounds", [])) != 4
+                or not isinstance(comparison.get("geometry_tolerance_px"), int)
+                or comparison.get("geometry_tolerance_px", -1) < 0
+                or env_path.stat().st_mode & 0o222
+            ):
+                errors.append(f"{h4env_id}: frozen environment identity or ownership is invalid")
+            contracts = environment.get("category_contracts")
+            if not isinstance(contracts, dict) or set(contracts) != required_categories:
+                errors.append(f"{h4env_id}: executable contract category coverage differs")
+            else:
+                for category, contract in contracts.items():
+                    executable = Path(str(contract.get("resolved_executable", ""))).expanduser()
+                    required_tokens = contract.get("required_argv_tokens")
+                    success_tokens = contract.get("success_output_contains")
+                    error_tokens = contract.get("error_output_contains")
+                    if (
+                        set(contract) != {
+                            "resolved_executable", "executable_sha256", "required_argv_tokens",
+                            "success_output_contains", "error_output_contains",
+                        }
+                        or not executable.is_absolute()
+                        or str(executable.resolve()) != str(executable)
+                        or not executable.is_file()
+                        or not os.access(executable, os.X_OK)
+                        or sha256_file(executable) != contract.get("executable_sha256")
+                        or any(
+                            not isinstance(values, list) or not values
+                            or any(not isinstance(item, str) or not item for item in values)
+                            for values in (required_tokens, success_tokens, error_tokens)
+                        )
+                        or (category in {
+                            "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET",
+                            "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE",
+                            "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                        } and serial not in required_tokens)
+                        or (category in {
+                            "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET",
+                            "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
+                            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                        } and bundle not in required_tokens)
+                    ):
+                        errors.append(f"{h4env_id}: invalid frozen executable contract: {category}")
+                base_contracts = (
+                    base_environment.get("toolchain", {}).get("category_contracts", {})
+                    if isinstance(base_environment.get("toolchain"), dict) else {}
+                )
+                base_category_map = {
+                    "TOOLCHAIN": "TOOLCHAIN", "CLEAN_BUILD": "CLEAN_BUILD",
+                    "BUNDLE_CHECK": "BUNDLE_CHECK", "SIGNING_CHECK": "SIGNING_CHECK",
+                    "DEVICE_CHECK": "DEVICE", "CLEAN_INSTALL": "INSTALL", "LAUNCH": "LAUNCH",
+                    "SCREENSHOT_CAPTURE": "SCREENSHOT_CAPTURE",
+                }
+                for category, base_category in base_category_map.items():
+                    phase4_contract = contracts.get(category, {})
+                    base_contract = base_contracts.get(base_category, {})
+                    if (
+                        phase4_contract.get("resolved_executable") != base_contract.get("resolved_executable")
+                        or phase4_contract.get("executable_sha256") != base_contract.get("executable_sha256")
+                    ):
+                        errors.append(f"{h4env_id}: {category} executable differs from base HENV")
+        except (ValueError, OSError) as exc:
+            errors.append(f"{h4env_id}: {exc}")
+
+    locked_h4envs = input_lock.get("h4envs")
+    if not isinstance(locked_h4envs, list):
+        errors.append("Phase 4 input lock h4envs must be an array")
+        locked_h4envs = []
+    locked_h4env_by_id: dict[str, dict[str, Any]] = {}
+    h4env_record_keys = {
+        "h4env_id", "source_android_env_id", "base_henv_id", "device_id", "relative_path", "sha256",
+    }
+    for record in locked_h4envs:
+        if not isinstance(record, dict):
+            errors.append("Phase 4 h4envs contains a non-object record")
+            continue
+        h4env_id = str(record.get("h4env_id", ""))
+        environment = environments.get(h4env_id)
+        relative = f"environments/{h4env_id}/phase4-environment.json"
+        env_path = phase_dir / relative
+        if (
+            set(record) != h4env_record_keys
+            or not environment
+            or h4env_id in locked_h4env_by_id
+            or record.get("relative_path") != relative
+            or record.get("source_android_env_id") != environment.get("source_android_env_id")
+            or record.get("base_henv_id") != environment.get("base_henv_id")
+            or record.get("device_id") != environment.get("device_id")
+            or not env_path.is_file()
+            or record.get("sha256") != sha256_file(env_path)
+        ):
+            errors.append(f"Phase 4 input-lock H4ENV record differs: {h4env_id!r}")
+            continue
+        locked_h4env_by_id[h4env_id] = record
+    if set(locked_h4env_by_id) != set(environments):
+        errors.append("Phase 4 input-lock H4ENV records do not exactly cover frozen environments")
+
+    project = phase_dir / "harmony-project"
+    source_snapshot_sha256, _ = phase4_project_snapshot(project, errors)
+
+    # Final HBUILD packages must be one-to-one with the required H4ENV set.
+    build_ids_value = stage_report.get("build_ids")
+    build_ids = build_ids_value if isinstance(build_ids_value, list) else []
+    if len(build_ids) != len(set(build_ids)) or any(not isinstance(item, str) or not ID_RE.fullmatch(item) for item in build_ids):
+        errors.append("Phase 4 report has unsafe or duplicate final HBUILD-IDs")
+        build_ids = []
+    builds: dict[str, dict[str, Any]] = {}
+    build_by_env: dict[str, str] = {}
+    artifact_hashes: list[str] = []
+    for build_id in build_ids:
+        build_dir = phase_dir / "builds" / build_id
+        verify_sealed_package(build_dir, build_id, "PASS", f"HBUILD {build_id}", errors)
+        try:
+            metadata = load_json(build_dir / "metadata.json")
+            artifact_manifest = load_json(build_dir / "artifact-manifest.json")
+            builds[build_id] = metadata
+            h4env_id = str(metadata.get("h4env_id", ""))
+            environment = environments.get(h4env_id, {})
+            if h4env_id in build_by_env:
+                errors.append(f"More than one final HBUILD is selected for {h4env_id}")
+            build_by_env[h4env_id] = build_id
+            if (
+                metadata.get("hbuild_id") != build_id
+                or metadata.get("status") != "PASS"
+                or metadata.get("executed_by") != phase4_ownership.get("verification_executor_id")
+                or metadata.get("input_lock_sha256") != input_lock_sha256
+                or metadata.get("source_snapshot_sha256") != source_snapshot_sha256
+                or h4env_id not in environments
+                or not metadata.get("created_at")
+                or metadata.get("bundle_name") != environment.get("base_application", {}).get("bundle_name")
+                or metadata.get("device_id") != environment.get("device_id")
+                or metadata.get("device_serial") != environment.get("emulator", {}).get("serial")
+                or metadata.get("environment_sha256")
+                != sha256_file(phase_dir / "environments" / h4env_id / "phase4-environment.json")
+            ):
+                errors.append(f"{build_id}: build metadata, executor, or snapshot is invalid")
+            if environment:
+                validate_phase4_commands(
+                    build_dir,
+                    metadata.get("commands"),
+                    environment,
+                    ["TOOLCHAIN", "CLEAN_BUILD", "BUNDLE_CHECK", "SIGNING_CHECK"],
+                    f"HBUILD {build_id}",
+                    errors,
+                )
+            artifacts = artifact_manifest.get("artifacts") if isinstance(artifact_manifest.get("artifacts"), list) else []
+            primary = metadata.get("primary_artifact") if isinstance(metadata.get("primary_artifact"), dict) else {}
+            if metadata.get("artifact_count") != 1 or len(artifacts) != 1 or primary != artifacts[0]:
+                errors.append(f"{build_id}: artifact manifest/count/primary artifact differs")
+            for artifact in artifacts:
+                if not isinstance(artifact, dict):
+                    errors.append(f"{build_id}: artifact entry is not an object")
+                    continue
+                sealed = safe_relative_path(
+                    build_dir, str(artifact.get("sealed_relative_path", "")), f"{build_id} artifact", errors
+                )
+                digest = str(artifact.get("sha256", ""))
+                if (
+                    not sealed
+                    or not sealed.is_file()
+                    or not SHA256_RE.fullmatch(digest)
+                    or sha256_file(sealed) != digest
+                    or sealed.stat().st_size != artifact.get("size")
+                    or not zipfile.is_zipfile(sealed)
+                ):
+                    errors.append(f"{build_id}: sealed HAP artifact is invalid")
+                else:
+                    try:
+                        with zipfile.ZipFile(sealed) as archive:
+                            members = archive.infolist()
+                            if (
+                                not members
+                                or len(members) > 100_000
+                                or sum(item.file_size for item in members) > 2 * 1024 * 1024 * 1024
+                                or archive.testzip() is not None
+                                or any(
+                                    Path(item.filename).is_absolute() or ".." in Path(item.filename).parts
+                                    for item in members
+                                )
+                                or not any(Path(item.filename).name in {"module.json", "config.json"} for item in members)
+                            ):
+                                raise ValueError("invalid HAP structure")
+                    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                        errors.append(f"{build_id}: sealed HAP structure is invalid: {exc}")
+                    artifact_hashes.append(digest)
+            source_snapshot = load_json(build_dir / "source-snapshot.json")
+            if source_snapshot.get("snapshot_sha256") != source_snapshot_sha256:
+                errors.append(f"{build_id}: source-snapshot.json differs from the current project")
+            clean_commands = [
+                item for item in metadata.get("commands", [])
+                if isinstance(item, dict) and item.get("category") == "CLEAN_BUILD"
+            ]
+            if len(clean_commands) != 1:
+                errors.append(f"{build_id}: CLEAN_BUILD command is not unique")
+            elif artifacts:
+                clean_state = clean_commands[0].get("artifact_state_after_clean_build")
+                if (
+                    not isinstance(clean_state, dict)
+                    or clean_state.get("sha256") != artifacts[0].get("sha256")
+                    or clean_state.get("size") != artifacts[0].get("size")
+                    or artifacts[0].get("produced_by_command_id") != clean_commands[0].get("command_id")
+                ):
+                    errors.append(f"{build_id}: CLEAN_BUILD does not bind the final HAP")
+        except (ValueError, OSError) as exc:
+            errors.append(f"{build_id}: {exc}")
+    if set(build_by_env) != required_h4env_ids:
+        errors.append("Final HBUILD coverage differs from the frozen H4ENV set")
+
+    # Android source evidence is copied once into the sealed Phase 4 input archive.
+    phase2_inventory_rows = [
+        row for row in read_csv_rows(run_dir / "phase-02-android-inventory" / "inventory.csv")
+        if row.get("row_status") != "SUPERSEDED"
+    ]
+    phase2_inventory = index_unique_rows(
+        phase2_inventory_rows, "inventory_id", "active Phase 2 inventory", errors
+    )
+    locked_inventory_ids = input_lock.get("phase2_inventory_ids")
+    if not isinstance(locked_inventory_ids, list) or set(locked_inventory_ids) != set(phase2_inventory):
+        errors.append("Phase 4 input lock inventory IDs differ from active Phase 2 inventory")
+    phase2_asset_rows = read_csv_rows(run_dir / "phase-02-android-inventory" / "asset-inventory.csv")
+    phase2_assets = index_unique_rows(phase2_asset_rows, "asset_id", "Phase 2 asset inventory", errors)
+    locked_asset_ids = input_lock.get("phase2_asset_ids")
+    if not isinstance(locked_asset_ids, list) or set(locked_asset_ids) != set(phase2_assets):
+        errors.append("Phase 4 input lock Asset-IDs differ from Phase 2")
+    locked_asset_files = input_lock.get("phase2_asset_files")
+    if not isinstance(locked_asset_files, list):
+        errors.append("Phase 4 input lock lacks phase2_asset_files")
+        locked_asset_files = []
+    locked_assets_by_id: dict[str, dict[str, Any]] = {}
+    locked_asset_snapshots: set[Path] = set()
+    for record in locked_asset_files:
+        if not isinstance(record, dict):
+            errors.append("Phase 4 phase2_asset_files contains a non-object record")
+            continue
+        asset_id = str(record.get("asset_id", ""))
+        source_row = phase2_assets.get(asset_id)
+        if (
+            set(record) != {"asset_id", "source_path", "snapshot_path", "sha256", "size"}
+            or not source_row
+            or asset_id in locked_assets_by_id
+        ):
+            errors.append(f"Phase 4 asset input has an unknown or duplicate Asset-ID: {asset_id!r}")
+            continue
+        try:
+            source = Path(str(record.get("source_path", ""))).expanduser().resolve()
+            snapshot = Path(str(record.get("snapshot_path", ""))).expanduser().resolve()
+            expected_source = (
+                run_dir / "phase-02-android-inventory" / str(source_row.get("archive_path", ""))
+            ).resolve()
+            expected_snapshot = (
+                phase_dir / "inputs" / "phase2-assets" / "files" / asset_id / expected_source.name
+            ).resolve()
+            source.relative_to((run_dir / "phase-02-android-inventory" / "asset-package").resolve())
+            snapshot.relative_to((phase_dir / "inputs" / "phase2-assets").resolve())
+            digest = str(record.get("sha256", ""))
+            if (
+                source != expected_source
+                or snapshot != expected_snapshot
+                or snapshot in locked_asset_snapshots
+                or not source.is_file()
+                or not snapshot.is_file()
+                or source.is_symlink()
+                or snapshot.is_symlink()
+                or digest != source_row.get("sha256")
+                or sha256_file(source) != digest
+                or sha256_file(snapshot) != digest
+                or source.stat().st_size != record.get("size")
+                or snapshot.stat().st_size != record.get("size")
+                or snapshot.stat().st_mode & 0o222
+            ):
+                raise ValueError("source/snapshot path, hash, or size differs")
+            locked_assets_by_id[asset_id] = record
+            locked_asset_snapshots.add(snapshot)
+        except (OSError, ValueError) as exc:
+            errors.append(f"Phase 4 asset input {asset_id}: {exc}")
+    if set(locked_assets_by_id) != set(phase2_assets):
+        errors.append("Phase 4 asset snapshots do not exactly cover Phase 2 asset inventory")
+    phase2_evidence_rows = read_csv_rows(run_dir / "phase-02-android-inventory" / "evidence-index.csv")
+    phase2_evidence = index_unique_rows(phase2_evidence_rows, "evidence_id", "Phase 2 evidence index", errors)
+    expected_android_evidence_ids = {row.get("evidence_id", "") for row in phase2_inventory.values()}
+    package_record_values = input_lock.get("android_evidence")
+    if not isinstance(package_record_values, list):
+        errors.append("Phase 4 input lock android_evidence must be an array")
+        package_record_values = []
+    package_records: dict[str, dict[str, Any]] = {}
+    android_record_keys = {
+        "evidence_id", "inventory_id", "source_path", "snapshot_path", "manifest_sha256",
+        "metadata_sha256", "screenshot_sha256", "layout_sha256", "sha256", "size", "file_count",
+    }
+    for value in package_record_values:
+        if not isinstance(value, dict):
+            errors.append("Phase 4 android_evidence contains a non-object record")
+            continue
+        evidence_id = str(value.get("evidence_id", ""))
+        if set(value) != android_record_keys or not ID_RE.fullmatch(evidence_id) or evidence_id in package_records:
+            errors.append(f"Invalid or duplicate Phase 4 Android evidence record: {evidence_id!r}")
+            continue
+        package_records[evidence_id] = value
+    if set(package_records) != expected_android_evidence_ids:
+        errors.append("Phase 4 Android evidence archive does not exactly cover active inventory")
+    android_copies: dict[str, Path] = {}
+    for evidence_id in sorted(expected_android_evidence_ids):
+        record = package_records.get(evidence_id)
+        index_row = phase2_evidence.get(evidence_id)
+        if not isinstance(record, dict) or not index_row:
+            continue
+        try:
+            source = Path(str(record.get("source_path", ""))).expanduser().resolve()
+            snapshot = Path(str(record.get("snapshot_path", ""))).expanduser().resolve()
+            expected_source = (
+                run_dir / "phase-02-android-inventory" / str(index_row.get("relative_path", ""))
+            ).resolve()
+            expected_snapshot = (phase_dir / "inputs" / "android-evidence" / evidence_id).resolve()
+            source.relative_to((run_dir / "phase-02-android-inventory").resolve())
+            snapshot.relative_to((phase_dir / "inputs" / "android-evidence").resolve())
+            if source != expected_source or snapshot != expected_snapshot or not source.is_dir() or not snapshot.is_dir():
+                raise ValueError("source/snapshot evidence path is noncanonical")
+            source_manifest = verify_exact_manifest(
+                source, "manifest.sha256", {"manifest.sha256", "COMMITTED"},
+                f"Android evidence source {evidence_id}", errors,
+            )
+            snapshot_manifest = verify_exact_manifest(
+                snapshot, "manifest.sha256", {"manifest.sha256", "COMMITTED"},
+                f"Android evidence snapshot {evidence_id}", errors,
+            )
+            if source_manifest != snapshot_manifest:
+                errors.append(f"Android evidence snapshot differs from source: {evidence_id}")
+            expected_hashes = {
+                "manifest_sha256": sha256_file(snapshot / "manifest.sha256"),
+                "metadata_sha256": sha256_file(snapshot / "metadata.json"),
+                "screenshot_sha256": sha256_file(snapshot / "screenshot.png"),
+                "layout_sha256": sha256_file(snapshot / "layout.json"),
+            }
+            package_sha256, package_size, package_file_count = directory_snapshot_facts(snapshot)
+            source_sha256, source_size, source_file_count = directory_snapshot_facts(source)
+            android_metadata = load_json(snapshot / "metadata.json")
+            try:
+                android_layout = json.loads(
+                    (snapshot / "layout.json").read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Android layout JSON is invalid: {exc}") from exc
+            validate_complete_png(snapshot / "screenshot.png")
+            if (
+                record.get("inventory_id") != index_row.get("inventory_id")
+                or android_metadata.get("evidence_id") != evidence_id
+                or android_metadata.get("inventory_id") != index_row.get("inventory_id")
+                or android_metadata.get("status") != "SEALED"
+                or not android_layout
+                or not (snapshot / "steps.md").is_file()
+                or any(record.get(key) != value for key, value in expected_hashes.items())
+                or record.get("sha256") != package_sha256
+                or record.get("size") != package_size
+                or record.get("file_count") != package_file_count
+                or (package_sha256, package_size, package_file_count)
+                != (source_sha256, source_size, source_file_count)
+            ):
+                errors.append(f"Android evidence input-lock hashes differ: {evidence_id}")
+            marker = snapshot / "COMMITTED"
+            if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != evidence_id:
+                errors.append(f"Android evidence snapshot is not COMMITTED: {evidence_id}")
+            if any(path.stat().st_mode & 0o222 for path in (snapshot, *snapshot.rglob("*"))):
+                errors.append(f"Android evidence snapshot is not read-only: {evidence_id}")
+            android_copies[evidence_id] = snapshot
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"Android evidence {evidence_id}: {exc}")
+
+    phase3_snapshot_path = run_dir / STAGE4_INPUT_RELATIVES["phase3_scaffold_snapshot_sha256"]
+    try:
+        phase3_snapshot = load_json(phase3_snapshot_path)
+        if input_lock.get("phase3_source_snapshot_sha256") != phase3_snapshot.get("snapshot_sha256"):
+            errors.append("Phase 4 input lock cites another Phase 3 source snapshot")
+        raw_phase3_entries = phase3_snapshot.get("entries")
+        expected_initial_entries: list[dict[str, Any]] = []
+        if not isinstance(raw_phase3_entries, list):
+            raise ValueError("Phase 3 snapshot entries are missing")
+        for entry in raw_phase3_entries:
+            if not isinstance(entry, dict):
+                raise ValueError("Phase 3 snapshot contains a malformed entry")
+            path_value = str(entry.get("path", ""))
+            prefix = "harmony-project/"
+            if not path_value.startswith(prefix):
+                continue
+            expected_initial_entries.append({
+                "path": path_value.removeprefix(prefix),
+                "sha256": entry.get("sha256"),
+                "size": entry.get("size"),
+            })
+        phase3_initial_assets = index_unique_rows(
+            read_csv_rows(run_dir / "phase-03-harmony-scaffold" / "asset-registry.csv"),
+            "asset_id", "Phase 3 asset registry for initial snapshot", errors,
+        )
+        for asset_id, placement in phase3_initial_assets.items():
+            if placement.get("planned_mode") != "DIRECT_COPY":
+                continue
+            source_asset = phase2_assets.get(asset_id, {})
+            locked_asset = locked_assets_by_id.get(asset_id, {})
+            snapshot_path = Path(str(locked_asset.get("snapshot_path", ""))).expanduser()
+            if not snapshot_path.is_file():
+                errors.append(f"Initial DIRECT_COPY asset snapshot is missing: {asset_id}")
+                continue
+            direct_entry = {
+                "path": str(placement.get("target_path", "")),
+                "sha256": source_asset.get("sha256"),
+                "size": snapshot_path.stat().st_size,
+            }
+            existing_direct = next(
+                (item for item in expected_initial_entries if item.get("path") == direct_entry["path"]),
+                None,
+            )
+            if existing_direct and existing_direct != direct_entry:
+                errors.append(f"Phase 3 project conflicts with DIRECT_COPY asset: {asset_id}")
+            elif not existing_direct:
+                expected_initial_entries.append(direct_entry)
+        expected_initial_entries.sort(key=lambda item: str(item.get("path", "")))
+        initial_snapshot = load_json(phase_dir / "initial-project-snapshot.json")
+        initial_canonical = json.dumps(
+            expected_initial_entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        expected_initial_sha = hashlib.sha256(initial_canonical.encode("utf-8")).hexdigest()
+        if (
+            set(initial_snapshot) != {"entry_count", "entries", "snapshot_sha256"}
+            or initial_snapshot.get("entry_count") != len(expected_initial_entries)
+            or initial_snapshot.get("entries") != expected_initial_entries
+            or initial_snapshot.get("snapshot_sha256") != expected_initial_sha
+            or phase_manifest.get("initial_project_snapshot_sha256") != expected_initial_sha
+        ):
+            errors.append(
+                "Phase 4 initial project snapshot differs from accepted Phase 3 source; "
+                f"expected={expected_initial_sha}/{len(expected_initial_entries)}, "
+                f"actual={initial_snapshot.get('snapshot_sha256')}/{initial_snapshot.get('entry_count')}"
+            )
+    except ValueError as exc:
+        errors.append(str(exc))
+
+    # Every active Android state gets one accepted parity row on each mapped H4ENV.
+    included_features = set(scope.get("migration_scope", {}).get("included_features", []))
+    source_rows = {
+        inventory_id: row for inventory_id, row in phase2_inventory.items()
+        if row.get("feature_id") in included_features
+    }
+    expected_pairs: set[tuple[str, str]] = set()
+    for inventory_id, source in source_rows.items():
+        matched = [
+            h4env_id for h4env_id, environment in environments.items()
+            if environment.get("source_android_env_id") == source.get("env_id")
+        ]
+        if not matched:
+            errors.append(f"No required H4ENV maps active inventory row {inventory_id}")
+        expected_pairs.update((inventory_id, h4env_id) for h4env_id in matched)
+    parity_rows = read_csv_rows(phase_dir / "parity-map.csv")
+    parity = index_unique_rows(parity_rows, "parity_id", "Phase 4 parity map", errors)
+    actual_pairs = {(row.get("inventory_id", ""), row.get("h4env_id", "")) for row in parity.values()}
+    if actual_pairs != expected_pairs or len(actual_pairs) != len(parity):
+        errors.append(
+            "Phase 4 parity coverage differs from active Android states × required H4ENV; "
+            f"missing={sorted(expected_pairs - actual_pairs)[:5]}, extra={sorted(actual_pairs - expected_pairs)[:5]}"
+        )
+
+    # Recompute every feature work order. Gate 4 must not trust self-declared implementation rows.
+    phase3_dir = run_dir / "phase-03-harmony-scaffold"
+    architecture = index_unique_rows(
+        read_csv_rows(phase3_dir / "architecture-map.csv"),
+        "source_row_key", "Phase 3 architecture map", errors,
+    )
+    modules = index_unique_rows(
+        read_csv_rows(phase3_dir / "module-registry.csv"),
+        "harmony_module_id", "Phase 3 module registry", errors,
+    )
+    phase3_capabilities_for_orders = index_unique_rows(
+        read_csv_rows(phase3_dir / "capability-contracts.csv"),
+        "capability_requirement_id", "Phase 3 capability contracts", errors,
+    )
+    feature_registry_rows = read_csv_rows(phase_dir / "feature-work-order-registry.csv")
+    feature_registry = index_unique_rows(
+        feature_registry_rows, "work_order_id", "Phase 4 feature work-order registry", errors,
+    )
+    registry_by_feature: dict[str, list[dict[str, str]]] = {}
+    for row in feature_registry_rows:
+        if row.get("status") == "ISSUED":
+            registry_by_feature.setdefault(row.get("feature_id", ""), []).append(row)
+    if set(registry_by_feature) != included_features or any(
+        len(rows) != 1 for rows in registry_by_feature.values()
+    ):
+        errors.append("Phase 4 must have exactly one active feature work order per included feature")
+    feature_order_keys = {
+        "schema_version", "work_order_id", "run_id", "phase", "feature_id", "status",
+        "issued_at", "issued_by", "phase4_manifest_sha256", "stage04_input_lock_sha256",
+        "ownership", "visual_asset_agent_id", "source_inventory_ids", "parity_ids",
+        "harmony_module_ids", "targets", "required_h4env_ids", "asset_ids",
+        "capability_requirement_ids", "capability_contract_ids", "exclusive_code_paths",
+        "completion_conditions",
+    }
+    feature_role_keys = {
+        "feature_owner_id", "ui_agent_id", "business_data_agent_id",
+        "native_capability_agent_id",
+    }
+    feature_orders: dict[str, dict[str, Any]] = {}
+    feature_actor_ids: dict[str, set[str]] = {}
+    feature_exclusive_paths: dict[str, list[Path]] = {}
+    all_exclusive_paths: list[tuple[Path, str]] = []
+    phase4_manifest_sha256 = sha256_file(phase_dir / "phase-manifest.json")
+    for feature_id in sorted(included_features):
+        rows = registry_by_feature.get(feature_id, [])
+        if len(rows) != 1:
+            continue
+        registry_row = rows[0]
+        feature_order_id = str(registry_row.get("work_order_id", ""))
+        relative = f"feature-work-orders/{feature_order_id}.json"
+        order_path = safe_relative_path(
+            phase_dir, relative, f"feature work order {feature_order_id}", errors
+        )
+        if (
+            not ID_RE.fullmatch(feature_order_id)
+            or registry_row.get("relative_path") != relative
+            or registry_row.get("status") != "ISSUED"
+            or not order_path
+            or not order_path.is_file()
+        ):
+            errors.append(f"Invalid registered feature work order: {feature_id}")
+            continue
+        try:
+            order = load_json(order_path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        actors = order.get("ownership") if isinstance(order.get("ownership"), dict) else {}
+        actor_values = {
+            str(actors.get(key, "")) for key in feature_role_keys
+            if isinstance(actors.get(key), str) and ACTOR_RE.fullmatch(str(actors.get(key)))
+        }
+        feature_sources = {
+            inventory_id: source for inventory_id, source in source_rows.items()
+            if source.get("feature_id") == feature_id
+        }
+        feature_parity = {
+            parity_id: row for parity_id, row in parity.items()
+            if row.get("feature_id") == feature_id
+        }
+        expected_modules: set[str] = set()
+        expected_targets: list[dict[str, str]] = []
+        expected_assets: set[str] = set()
+        for inventory_id, source in feature_sources.items():
+            try:
+                row_key = phase4_source_row_key(source)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            mapping = architecture.get(row_key, {})
+            module_id = str(mapping.get("harmony_module_id", ""))
+            mapping_type = str(mapping.get("mapping_type", ""))
+            target_id = str(
+                mapping.get("route_id", "")
+                if mapping_type == "ROUTE_PAGE"
+                else mapping.get("surface_shell_id", "")
+            )
+            if module_id:
+                expected_modules.add(module_id)
+            expected_targets.append({
+                "source_row_key": row_key,
+                "harmony_module_id": module_id,
+                "target_kind": mapping_type,
+                "target_id": target_id,
+            })
+            for asset_id in phase4_json_string_list(
+                source.get("asset_ids", "[]"), f"{inventory_id}.asset_ids", errors
+            ):
+                if asset_id != "NONE_FOUND":
+                    expected_assets.add(asset_id)
+        expected_targets.sort(key=lambda item: item["source_row_key"])
+        feature_capabilities = {
+            requirement_id: row for requirement_id, row in phase3_capabilities_for_orders.items()
+            if row.get("source_feature_id") == feature_id
+        }
+        expected_h4envs = sorted({row.get("h4env_id", "") for row in feature_parity.values()})
+        if (
+            set(order) != feature_order_keys
+            or registry_row.get("work_order_sha256") != sha256_file(order_path)
+            or registry_row.get("issued_by") != phase4_ownership.get("implementation_lead_id")
+            or registry_row.get("issued_at") != order.get("issued_at")
+            or order_path.stat().st_mode & 0o222
+            or order.get("schema_version") != "1.0"
+            or order.get("work_order_id") != feature_order_id
+            or order.get("run_id") != scope.get("run_id")
+            or order.get("phase") != 4
+            or order.get("feature_id") != feature_id
+            or order.get("status") != "ISSUED"
+            or order.get("issued_by") != phase4_ownership.get("implementation_lead_id")
+            or order.get("phase4_manifest_sha256") != phase4_manifest_sha256
+            or order.get("stage04_input_lock_sha256") != input_lock_sha256
+            or set(actors) != feature_role_keys
+            or len(actor_values) != len(feature_role_keys)
+            or actor_values & set(role_values)
+            or order.get("visual_asset_agent_id") != phase4_ownership.get("visual_asset_agent_id")
+            or order.get("source_inventory_ids") != sorted(feature_sources)
+            or order.get("parity_ids") != sorted(feature_parity)
+            or order.get("harmony_module_ids") != sorted(expected_modules)
+            or order.get("targets") != expected_targets
+            or order.get("required_h4env_ids") != expected_h4envs
+            or order.get("asset_ids") != sorted(expected_assets)
+            or order.get("capability_requirement_ids") != sorted(feature_capabilities)
+            or order.get("capability_contract_ids")
+            != sorted({row.get("capability_contract_id", "") for row in feature_capabilities.values()})
+            or not isinstance(order.get("completion_conditions"), list)
+            or not order.get("completion_conditions")
+            or any(not isinstance(item, str) or not item.strip() for item in order.get("completion_conditions", []))
+        ):
+            errors.append(f"Feature work order identity, actors, or frozen coverage differs: {feature_id}")
+        raw_code_paths = order.get("exclusive_code_paths")
+        code_paths: list[Path] = []
+        if (
+            not isinstance(raw_code_paths, list)
+            or not raw_code_paths
+            or any(not isinstance(item, str) or not item for item in raw_code_paths)
+            or raw_code_paths != sorted(set(raw_code_paths))
+        ):
+            errors.append(f"Feature work order has invalid exclusive code paths: {feature_id}")
+        else:
+            for code_relative in raw_code_paths:
+                code_path = safe_relative_path(
+                    project, code_relative, f"exclusive code path for {feature_id}", errors
+                )
+                if not code_path:
+                    continue
+                if any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in code_path.relative_to(project).parts):
+                    errors.append(f"Feature code ownership points into generated output: {feature_id}")
+                    continue
+                for existing, existing_feature in all_exclusive_paths:
+                    overlaps = False
+                    try:
+                        code_path.relative_to(existing)
+                        overlaps = True
+                    except ValueError:
+                        try:
+                            existing.relative_to(code_path)
+                            overlaps = True
+                        except ValueError:
+                            pass
+                    if overlaps:
+                        errors.append(
+                            f"Feature exclusive code ownership overlaps: {feature_id}/{existing_feature}"
+                        )
+                code_paths.append(code_path)
+                all_exclusive_paths.append((code_path, feature_id))
+        feature_orders[feature_id] = order
+        feature_actor_ids[feature_id] = actor_values
+        feature_exclusive_paths[feature_id] = code_paths
+
+    # Bind final parity implementation claims and visual rows to real, feature-owned source files.
+    expected_visual_ids: set[str] = set()
+    parity_visual_ids: dict[str, set[str]] = {}
+    parity_asset_ids: dict[str, set[str]] = {}
+    parity_decision_ids: dict[str, set[str]] = {}
+    for parity_id, row in parity.items():
+        feature_id = str(row.get("feature_id", ""))
+        source = source_rows.get(row.get("inventory_id", ""), {})
+        try:
+            row_key = phase4_source_row_key(source)
+        except ValueError as exc:
+            errors.append(f"{parity_id}: {exc}")
+            continue
+        mapping = architecture.get(row_key, {})
+        mapping_type = str(mapping.get("mapping_type", ""))
+        target_id = str(
+            mapping.get("route_id", "")
+            if mapping_type == "ROUTE_PAGE"
+            else mapping.get("surface_shell_id", "")
+        )
+        visual_ids = phase4_json_string_list(
+            row.get("visual_element_ids", "[]"), f"{parity_id}.visual_element_ids", errors,
+            allow_empty=False,
+        )
+        asset_ids = phase4_json_string_list(
+            row.get("asset_ids", "[]"), f"{parity_id}.asset_ids", errors
+        )
+        decision_ids = phase4_json_string_list(
+            row.get("nativeization_decision_ids", "[]"),
+            f"{parity_id}.nativeization_decision_ids", errors,
+        )
+        expected_source_assets = {
+            item for item in phase4_json_string_list(
+                source.get("asset_ids", "[]"), f"{parity_id}.source_asset_ids", errors
+            ) if item != "NONE_FOUND"
+        }
+        source_refs = phase4_json_string_list(
+            row.get("harmony_source_refs", "[]"), f"{parity_id}.harmony_source_refs", errors,
+            allow_empty=False,
+        )
+        for reference in source_refs:
+            if ":" not in reference:
+                errors.append(f"{parity_id}: source reference lacks a line number: {reference}")
+                continue
+            relative, line_value = reference.rsplit(":", 1)
+            source_path = safe_relative_path(project, relative, f"{parity_id} source reference", errors)
+            try:
+                line = int(line_value)
+            except ValueError:
+                line = 0
+            if (
+                not source_path or not source_path.is_file() or line <= 0
+                or line > len(source_path.read_text(encoding="utf-8", errors="replace").splitlines())
+            ):
+                errors.append(f"{parity_id}: invalid source reference: {reference}")
+                continue
+            owned = False
+            for owned_path in feature_exclusive_paths.get(feature_id, []):
+                if source_path == owned_path:
+                    owned = True
+                    break
+                if owned_path.is_dir():
+                    try:
+                        source_path.relative_to(owned_path)
+                        owned = True
+                        break
+                    except ValueError:
+                        pass
+            if not owned:
+                errors.append(f"{parity_id}: source reference is outside frozen feature ownership")
+        if (
+            row.get("source_row_key") != row_key
+            or row.get("harmony_module_id") != mapping.get("harmony_module_id")
+            or row.get("target_kind") != mapping_type
+            or row.get("target_id") != target_id
+            or row.get("implemented_by") not in feature_actor_ids.get(feature_id, set())
+            or set(asset_ids) != expected_source_assets
+            or row.get("status") != "ACCEPTED"
+        ):
+            errors.append(f"{parity_id}: implementation source, target, assets, or actor differs")
+        expected_visual_ids.update(visual_ids)
+        parity_visual_ids[parity_id] = set(visual_ids)
+        parity_asset_ids[parity_id] = set(asset_ids)
+        parity_decision_ids[parity_id] = set(decision_ids)
+
+    visual_rows = read_csv_rows(phase_dir / "visual-elements.csv")
+    visual_elements = index_unique_rows(
+        visual_rows, "visual_element_id", "Phase 4 visual elements", errors,
+    )
+    if set(visual_elements) != expected_visual_ids:
+        errors.append("Phase 4 visual-element registry differs from parity declarations")
+    scope_envs_for_visual = {
+        str(item.get("env_id", "")): item
+        for item in scope.get("environments", []) if isinstance(item, dict)
+    }
+    for visual_id, visual in visual_elements.items():
+        parity_id = str(visual.get("parity_id", ""))
+        parity_row = parity.get(parity_id, {})
+        feature_id = str(parity_row.get("feature_id", ""))
+        android_geometry = phase4_geometry(
+            visual.get("android_geometry", ""), f"{visual_id}.android_geometry", errors
+        )
+        harmony_geometry = phase4_geometry(
+            visual.get("harmony_geometry", ""), f"{visual_id}.harmony_geometry", errors
+        )
+        android_env = scope_envs_for_visual.get(parity_row.get("source_env_id", ""), {})
+        resolution_match = re.fullmatch(r"(\d+)x(\d+)", str(android_env.get("resolution", "")))
+        harmony_comparison = environments.get(parity_row.get("h4env_id", ""), {}).get("comparison", {})
+        if android_geometry and resolution_match and (
+            android_geometry["x"] + android_geometry["width"] > int(resolution_match.group(1))
+            or android_geometry["y"] + android_geometry["height"] > int(resolution_match.group(2))
+        ):
+            errors.append(f"{visual_id}: Android geometry escapes the frozen screenshot")
+        if harmony_geometry and isinstance(harmony_comparison, dict) and (
+            harmony_geometry["x"] + harmony_geometry["width"]
+            > float(harmony_comparison.get("screenshot_width", 0))
+            or harmony_geometry["y"] + harmony_geometry["height"]
+            > float(harmony_comparison.get("screenshot_height", 0))
+        ):
+            errors.append(f"{visual_id}: Harmony geometry escapes the frozen screenshot")
+        try:
+            android_spec = json.loads(visual.get("android_visual_spec", ""))
+            harmony_spec = json.loads(visual.get("harmony_visual_spec", ""))
+        except (TypeError, json.JSONDecodeError):
+            android_spec = harmony_spec = None
+        harmony_file = safe_relative_path(
+            project, visual.get("harmony_file", ""), f"{visual_id} Harmony source", errors
+        )
+        symbol = str(visual.get("harmony_symbol", ""))
+        source_text = (
+            harmony_file.read_text(encoding="utf-8", errors="replace")
+            if harmony_file and harmony_file.is_file() else ""
+        )
+        asset_id = str(visual.get("asset_id", ""))
+        decision_id = str(visual.get("nativeization_decision_id", ""))
+        if (
+            visual_id not in parity_visual_ids.get(parity_id, set())
+            or visual.get("android_evidence_id") != parity_row.get("android_evidence_id")
+            or not visual.get("element_kind")
+            or not isinstance(android_spec, dict) or not android_spec
+            or not isinstance(harmony_spec, dict) or not harmony_spec
+            or not harmony_file or not harmony_file.is_file()
+            or not symbol or not re.search(rf"\b{re.escape(symbol)}\b", source_text)
+            or visual.get("implemented_by") not in feature_actor_ids.get(feature_id, set())
+            or visual.get("status") != "ACCEPTED"
+            or (asset_id and (asset_id not in phase2_assets or asset_id not in parity_asset_ids.get(parity_id, set())))
+            or (decision_id and decision_id not in parity_decision_ids.get(parity_id, set()))
+        ):
+            errors.append(f"{visual_id}: visual source/spec/asset/actor binding differs")
+
+    evidence_rows = read_csv_rows(phase_dir / "evidence-index.csv")
+    evidence_index = index_unique_rows(evidence_rows, "evidence_id", "Phase 4 evidence index", errors)
+    active_evidence = {key: row for key, row in evidence_index.items() if row.get("status") == "SEALED"}
+    used_evidence_ids: set[str] = set()
+    for parity_id, row in parity.items():
+        source = source_rows.get(row.get("inventory_id", ""))
+        if not source:
+            errors.append(f"{parity_id}: parity references out-of-scope or missing inventory")
+        else:
+            for field, source_field in (
+                ("feature_id", "feature_id"), ("page_id", "page_id"), ("state_id", "state_id"),
+                ("source_env_id", "env_id"), ("android_evidence_id", "evidence_id"),
+            ):
+                if row.get(field) != source.get(source_field):
+                    errors.append(f"{parity_id}: {field} differs from frozen Android inventory")
+        if row.get("status") != "ACCEPTED":
+            errors.append(f"{parity_id}: final parity status is not ACCEPTED")
+        evidence_id = row.get("harmony_evidence_id", "")
+        evidence_row = active_evidence.get(evidence_id)
+        if not evidence_row or evidence_id in used_evidence_ids:
+            errors.append(f"{parity_id}: final HEVD is missing, not SEALED, or reused")
+            continue
+        used_evidence_ids.add(evidence_id)
+        for field in (
+            "parity_id", "inventory_id", "feature_id", "page_id", "state_id", "h4env_id",
+            "android_evidence_id",
+        ):
+            if evidence_row.get(field) != row.get(field):
+                errors.append(f"{evidence_id}: evidence index {field} differs from parity")
+        if evidence_row.get("hbuild_id") != build_by_env.get(row.get("h4env_id", "")):
+            errors.append(f"{evidence_id}: evidence does not use the final HBUILD for its H4ENV")
+    if used_evidence_ids != set(active_evidence):
+        errors.append("Phase 4 active HEVD set does not exactly cover parity rows")
+
+    # Recompute every final HEVD package, emulator screenshot, assertion, and artifact binding.
+    capability_assertion_evidence: dict[str, set[str]] = {}
+    for evidence_id in sorted(used_evidence_ids):
+        row = active_evidence[evidence_id]
+        expected_relative = (
+            f"evidence/{row.get('h4env_id', '')}/{row.get('feature_id', '')}/"
+            f"{row.get('page_id', '')}/{row.get('state_id', '')}/{evidence_id}"
+        )
+        if row.get("relative_path") != expected_relative:
+            errors.append(f"{evidence_id}: HEVD path is not canonical")
+            continue
+        evidence_dir = safe_relative_path(phase_dir, expected_relative, f"HEVD {evidence_id}", errors)
+        if not evidence_dir or not evidence_dir.is_dir():
+            continue
+        verify_sealed_package(evidence_dir, evidence_id, "SEALED", f"HEVD {evidence_id}", errors)
+        try:
+            metadata_path = evidence_dir / "metadata.json"
+            metadata = load_json(metadata_path)
+            h4env_id = str(row.get("h4env_id", ""))
+            environment = environments[h4env_id]
+            build_id = str(row.get("hbuild_id", ""))
+            build = builds[build_id]
+            primary = build.get("primary_artifact", {})
+            for field in (
+                "evidence_id", "parity_id", "inventory_id", "feature_id", "page_id", "state_id",
+                "h4env_id", "hbuild_id", "android_evidence_id",
+            ):
+                expected = evidence_id if field == "evidence_id" else row.get(field)
+                if metadata.get(field) != expected:
+                    errors.append(f"{evidence_id}: metadata {field} differs from evidence index")
+            if (
+                row.get("metadata_sha256") != sha256_file(metadata_path)
+                or metadata.get("status") != "SEALED"
+                or row.get("captured_by") != phase4_ownership.get("verification_executor_id")
+                or metadata.get("captured_by") != phase4_ownership.get("verification_executor_id")
+                or metadata.get("captured_at") != row.get("captured_at")
+                or metadata.get("input_lock_sha256") != input_lock_sha256
+                or metadata.get("source_snapshot_sha256") != source_snapshot_sha256
+                or row.get("source_snapshot_sha256") != source_snapshot_sha256
+                or metadata.get("build_artifact_sha256") != primary.get("sha256")
+                or row.get("build_artifact_sha256") != primary.get("sha256")
+                or str(metadata.get("device_type", "")).lower() != "emulator"
+                or metadata.get("device_id") != environment.get("device_id")
+                or metadata.get("device_serial") != environment.get("emulator", {}).get("serial")
+                or metadata.get("bundle_name") != environment.get("base_application", {}).get("bundle_name")
+                or metadata.get("target_kind") != parity.get(str(metadata.get("parity_id", "")), {}).get("target_kind")
+                or metadata.get("target_id") != parity.get(str(metadata.get("parity_id", "")), {}).get("target_id")
+            ):
+                errors.append(f"{evidence_id}: executor, snapshot, emulator, or artifact binding differs")
+            screenshot = evidence_dir / "screenshot.png"
+            width, height = validate_complete_png(screenshot)
+            screenshot_digest = sha256_file(screenshot)
+            screenshot_record = metadata.get("screenshot") if isinstance(metadata.get("screenshot"), dict) else {}
+            ui_tree_record = metadata.get("ui_tree") if isinstance(metadata.get("ui_tree"), dict) else {}
+            assertion_record = metadata.get("assertions") if isinstance(metadata.get("assertions"), dict) else {}
+            comparison = environment.get("comparison") if isinstance(environment.get("comparison"), dict) else {}
+            if (
+                row.get("screenshot_sha256") != screenshot_digest
+                or screenshot_record.get("sha256") != screenshot_digest
+                or screenshot_record.get("width") != width
+                or screenshot_record.get("height") != height
+                or (width, height)
+                != (comparison.get("screenshot_width"), comparison.get("screenshot_height"))
+            ):
+                errors.append(f"{evidence_id}: screenshot bytes, metadata, or dimensions differ")
+            ui_tree = load_json(evidence_dir / "ui-tree.json")
+            ui_device = ui_tree.get("device") if isinstance(ui_tree.get("device"), dict) else {}
+            ui_bounds = ui_tree.get("bounds") if isinstance(ui_tree.get("bounds"), dict) else {}
+            if (
+                not ui_tree
+                or ui_tree.get("bundle_name") != environment.get("base_application", {}).get("bundle_name")
+                or not isinstance(ui_tree.get("window"), dict)
+                or not ui_tree.get("window")
+                or not isinstance(ui_tree.get("root"), dict)
+                or not ui_tree.get("root")
+                or not isinstance(ui_tree.get("nodes"), list)
+                or not ui_tree.get("nodes")
+                or ui_device.get("device_id") != environment.get("device_id")
+                or ui_device.get("serial") != environment.get("emulator", {}).get("serial")
+                or any(
+                    not isinstance(ui_bounds.get(field), (int, float))
+                    for field in ("x", "y", "width", "height")
+                )
+                or not isinstance(ui_bounds.get("width"), (int, float))
+                or ui_bounds.get("width", 0) <= 0
+                or ui_bounds.get("height", 0) <= 0
+                or ui_tree_record.get("path") != "ui-tree.json"
+                or ui_tree_record.get("sha256") != sha256_file(evidence_dir / "ui-tree.json")
+            ):
+                errors.append(f"{evidence_id}: UI tree is empty")
+            assertions = load_json(evidence_dir / "assertions.json")
+            assertion_rows = assertions.get("assertions") if isinstance(assertions.get("assertions"), list) else []
+            assertion_kinds = {
+                str(item.get("kind", "")) for item in assertion_rows if isinstance(item, dict)
+            }
+            if (
+                assertions.get("parity_id") != row.get("parity_id")
+                or assertions.get("hbuild_id") != build_id
+                or assertions.get("h4env_id") != h4env_id
+                or assertions.get("device_id") != environment.get("device_id")
+                or assertions.get("device_serial") != environment.get("emulator", {}).get("serial")
+                or assertions.get("bundle_name") != environment.get("base_application", {}).get("bundle_name")
+                or assertion_record.get("path") != "assertions.json"
+                or assertion_record.get("sha256") != sha256_file(evidence_dir / "assertions.json")
+                or not assertion_rows
+                or any(not isinstance(item, dict) or item.get("status") != "PASS" for item in assertion_rows)
+                or {"VISUAL_STATE", "BUSINESS_RESULT", "INTERACTION"} - assertion_kinds
+            ):
+                errors.append(f"{evidence_id}: live assertions are missing, failing, or misbound")
+            for assertion in assertion_rows:
+                if not isinstance(assertion, dict) or assertion.get("kind") != "CAPABILITY_RESULT":
+                    continue
+                subjects = assertion.get("subject_ids")
+                if not isinstance(subjects, list):
+                    errors.append(f"{evidence_id}: capability assertion lacks subject IDs")
+                    continue
+                for requirement_id in subjects:
+                    if isinstance(requirement_id, str) and requirement_id:
+                        capability_assertion_evidence.setdefault(requirement_id, set()).add(evidence_id)
+            validate_phase4_commands(
+                evidence_dir,
+                metadata.get("commands"),
+                environment,
+                [
+                    "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
+                    "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
+                    "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                ],
+                f"HEVD {evidence_id}",
+                errors,
+            )
+            result_bindings = {
+                "BUSINESS_ASSERT": ("assertions.json", evidence_dir / "assertions.json"),
+                "SCREENSHOT_CAPTURE": ("screenshot.png", screenshot),
+                "UI_TREE_CAPTURE": ("ui-tree.json", evidence_dir / "ui-tree.json"),
+            }
+            for command in metadata.get("commands", []):
+                if not isinstance(command, dict):
+                    continue
+                expected_result = result_bindings.get(command.get("category"))
+                if expected_result and (
+                    command.get("result_path") != expected_result[0]
+                    or command.get("result_sha256") != sha256_file(expected_result[1])
+                ):
+                    errors.append(f"{evidence_id}: command result hash differs")
+        except (KeyError, OSError, ValueError) as exc:
+            errors.append(f"{evidence_id}: {exc}")
+
+    # Final review is one immutable HREV per parity and recomputes both evidence sides.
+    acceptance_rows = read_csv_rows(phase_dir / "acceptance-ledger.csv")
+    review_local_decisions = index_unique_rows(
+        read_csv_rows(phase_dir / "nativeization-decisions.csv"),
+        "decision_id", "Phase 4 nativeization decisions for review", errors,
+    )
+    review_controller_decisions = index_unique_rows(
+        read_csv_rows(run_dir / "controller" / "decision-log.csv"),
+        "decision_id", "controller decisions for Phase 4 review", errors,
+    )
+    superseded_review_controller_decisions = {
+        item.get("supersedes_id", "")
+        for item in review_controller_decisions.values() if item.get("supersedes_id")
+    }
+    hrev_keys = {
+        "parity_id", "visual_result", "functional_result", "asset_result",
+        "reviewed_visual_element_ids", "differences", "notes", "review_id",
+        "inventory_id", "android_evidence_id", "harmony_evidence_id",
+        "android_manifest_sha256", "android_screenshot_sha256", "android_layout_sha256",
+        "harmony_manifest_sha256", "harmony_screenshot_sha256", "harmony_ui_tree_sha256",
+        "harmony_assertions_sha256", "reviewer_id", "reviewed_at", "decision",
+        "attestations",
+    }
+    active_reviews = [row for row in acceptance_rows if row.get("status") != "SUPERSEDED"]
+    reviews_by_parity: dict[str, list[dict[str, str]]] = {}
+    for row in active_reviews:
+        reviews_by_parity.setdefault(row.get("parity_id", ""), []).append(row)
+    if set(reviews_by_parity) != set(parity) or any(len(rows) != 1 for rows in reviews_by_parity.values()):
+        errors.append("Acceptance ledger does not contain exactly one active review per parity row")
+    for parity_id, parity_row in parity.items():
+        rows = reviews_by_parity.get(parity_id, [])
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        review_id = row.get("review_id", "")
+        android_evidence_id = parity_row.get("android_evidence_id", "")
+        harmony_evidence_id = parity_row.get("harmony_evidence_id", "")
+        android_dir = android_copies.get(android_evidence_id)
+        harmony_row = active_evidence.get(harmony_evidence_id)
+        harmony_dir = (
+            phase_dir / str(harmony_row.get("relative_path", "")) if harmony_row else None
+        )
+        review_path = phase_dir / "reviews" / f"{review_id}.json"
+        try:
+            review = load_json(review_path)
+            review_attestations = (
+                review.get("attestations")
+                if isinstance(review.get("attestations"), dict)
+                else {}
+            )
+            expected_hashes = {
+                "android_manifest_sha256": sha256_file(android_dir / "manifest.sha256"),
+                "android_screenshot_sha256": sha256_file(android_dir / "screenshot.png"),
+                "android_layout_sha256": sha256_file(android_dir / "layout.json"),
+                "harmony_manifest_sha256": sha256_file(harmony_dir / "manifest.sha256"),
+                "harmony_screenshot_sha256": sha256_file(harmony_dir / "screenshot.png"),
+                "harmony_ui_tree_sha256": sha256_file(harmony_dir / "ui-tree.json"),
+                "harmony_assertions_sha256": sha256_file(harmony_dir / "assertions.json"),
+                "comparison_sha256": sha256_file(review_path),
+            }
+            results = {
+                dimension: str(review.get(f"{dimension}_result", ""))
+                for dimension in ("visual", "functional", "asset")
+            }
+            reviewed_visual_ids = review.get("reviewed_visual_element_ids")
+            differences = review.get("differences")
+            difference_dimensions: set[str] = set()
+            approved_difference_ids: set[str] = set()
+            if isinstance(differences, list):
+                for difference in differences:
+                    if not isinstance(difference, dict):
+                        errors.append(f"{parity_id}: review difference is not an object")
+                        continue
+                    dimension = str(difference.get("dimension", "")).lower()
+                    difference_dimensions.add(dimension)
+                    if (
+                        dimension not in {"visual", "functional", "asset"}
+                        or not str(difference.get("android_observation", "")).strip()
+                        or not str(difference.get("harmony_observation", "")).strip()
+                    ):
+                        errors.append(f"{parity_id}: review difference is incomplete")
+                    if results.get(dimension) == "APPROVED_DIFFERENCE":
+                        decision_id = str(difference.get("decision_id", ""))
+                        if not ID_RE.fullmatch(decision_id):
+                            errors.append(f"{parity_id}: approved difference lacks a Decision-ID")
+                        else:
+                            approved_difference_ids.add(decision_id)
+            nonmatch_dimensions = {
+                dimension for dimension, result in results.items() if result != "MATCH"
+            }
+            if (
+                set(review) != hrev_keys
+                or review_path.stat().st_mode & 0o222
+                or not isinstance(reviewed_visual_ids, list)
+                or reviewed_visual_ids != sorted(parity_visual_ids.get(parity_id, set()))
+                or not isinstance(differences, list)
+                or difference_dimensions != nonmatch_dimensions
+                or (bool(nonmatch_dimensions) != bool(differences))
+            ):
+                errors.append(f"{parity_id}: sealed review coverage or difference structure differs")
+            for decision_id in approved_difference_ids:
+                local_decision = review_local_decisions.get(decision_id, {})
+                affected = phase4_json_string_list(
+                    local_decision.get("affected_parity_ids", "[]"),
+                    f"{decision_id}.affected_parity_ids", errors,
+                )
+                controller_decision_id = str(local_decision.get("controller_decision_id", ""))
+                controller_decision = review_controller_decisions.get(controller_decision_id, {})
+                if (
+                    local_decision.get("status") != "APPROVED"
+                    or local_decision.get("approved_by")
+                    != phase4_ownership.get("parity_acceptance_agent_id")
+                    or parity_id not in affected
+                    or controller_decision_id in superseded_review_controller_decisions
+                    or controller_decision.get("decided_by")
+                    != scope.get("ownership", {}).get("migration_controller_id")
+                    or not str(controller_decision.get("decision", "")).strip()
+                    or not str(controller_decision.get("rationale", "")).strip()
+                ):
+                    errors.append(f"{parity_id}: approved difference lacks live dual approval")
+            if (
+                not ID_RE.fullmatch(review_id)
+                or row.get("status") != "ACCEPTED"
+                or row.get("reviewer_id") != phase4_ownership.get("parity_acceptance_agent_id")
+                or row.get("inventory_id") != parity_row.get("inventory_id")
+                or row.get("android_evidence_id") != android_evidence_id
+                or row.get("harmony_evidence_id") != harmony_evidence_id
+                or any(row.get(key) != value for key, value in expected_hashes.items())
+                or review.get("review_id") != review_id
+                or review.get("parity_id") != parity_id
+                or review.get("inventory_id") != parity_row.get("inventory_id")
+                or review.get("android_evidence_id") != android_evidence_id
+                or review.get("harmony_evidence_id") != harmony_evidence_id
+                or review.get("decision") != "ACCEPTED"
+                or review.get("reviewer_id") != phase4_ownership.get("parity_acceptance_agent_id")
+                or review.get("reviewed_at") != row.get("reviewed_at")
+                or any(
+                    review.get(field) not in {"MATCH", "APPROVED_DIFFERENCE"}
+                    for field in ("visual_result", "functional_result", "asset_result")
+                )
+                or not all(
+                    review_attestations.get(field) is True
+                    for field in ("opened_both_screenshots", "functional_results", "asset_provenance")
+                )
+                or any(review.get(key) != value for key, value in expected_hashes.items() if key != "comparison_sha256")
+            ):
+                errors.append(f"{parity_id}: acceptance review identity or evidence hashes differ")
+        except (OSError, TypeError, ValueError) as exc:
+            errors.append(f"{parity_id}: cannot verify acceptance review: {exc}")
+    expected_review_ids = {
+        row.get("review_id", "") for row in acceptance_rows if row.get("review_id")
+    }
+    actual_review_ids = {
+        path.stem for path in (phase_dir / "reviews").glob("*.json")
+        if path.is_file() and not path.is_symlink()
+    }
+    if expected_review_ids != actual_review_ids:
+        errors.append("Phase 4 review files do not exactly match the acceptance ledger")
+
+    implementation_rows = read_csv_rows(phase_dir / "implementation-ledger.csv")
+    implementation = index_unique_rows(
+        implementation_rows, "feature_id", "Phase 4 implementation ledger", errors
+    )
+    if set(implementation) != included_features:
+        errors.append("Phase 4 implementation ledger differs from included feature scope")
+    forbidden_implementers = {
+        phase4_ownership.get("verification_executor_id"),
+        phase4_ownership.get("parity_acceptance_agent_id"),
+    }
+    for feature_id, row in implementation.items():
+        feature_order = feature_orders.get(feature_id, {})
+        frozen_feature_actors = (
+            feature_order.get("ownership")
+            if isinstance(feature_order.get("ownership"), dict)
+            else {}
+        )
+        actors = {
+            row.get("feature_owner_id"), row.get("ui_agent_id"), row.get("business_data_agent_id"),
+            row.get("native_capability_agent_id"), row.get("asset_agent_id"),
+        }
+        ledger_inventory_ids = phase4_json_string_list(
+            row.get("source_inventory_ids", "[]"), f"{feature_id}.source_inventory_ids", errors,
+            allow_empty=False,
+        )
+        ledger_module_ids = phase4_json_string_list(
+            row.get("harmony_module_ids", "[]"), f"{feature_id}.harmony_module_ids", errors,
+            allow_empty=False,
+        )
+        if (
+            row.get("status") != "ACCEPTED"
+            or "" in actors
+            or actors & forbidden_implementers
+            or row.get("work_order_id") != feature_order.get("work_order_id")
+            or any(row.get(key) != frozen_feature_actors.get(key) for key in feature_role_keys)
+            or row.get("asset_agent_id") != phase4_ownership.get("visual_asset_agent_id")
+            or ledger_inventory_ids != feature_order.get("source_inventory_ids")
+            or ledger_module_ids != feature_order.get("harmony_module_ids")
+            or row.get("updated_by") not in {
+                phase4_ownership.get("implementation_lead_id"),
+                phase4_ownership.get("parity_acceptance_agent_id"),
+            }
+        ):
+            errors.append(f"{feature_id}: implementation ledger differs from its frozen accepted work order")
+
+    phase3_assets = index_unique_rows(
+        read_csv_rows(run_dir / "phase-03-harmony-scaffold" / "asset-registry.csv"),
+        "asset_id", "Phase 3 asset registry", errors,
+    )
+    asset_rows = read_csv_rows(phase_dir / "asset-migration.csv")
+    migrated_assets = index_unique_rows(asset_rows, "asset_id", "Phase 4 asset migration", errors)
+    conversion_contracts: dict[str, dict[str, Any]] = {}
+    try:
+        conversion_contract_file = load_json(phase_dir / "asset-conversion-contracts.json")
+        if (
+            set(conversion_contract_file) != {"schema_version", "created_at", "locked_by", "contracts"}
+            or conversion_contract_file.get("schema_version") != "1.0"
+            or conversion_contract_file.get("locked_by") != phase4_ownership.get("implementation_lead_id")
+            or not conversion_contract_file.get("created_at")
+            or not isinstance(conversion_contract_file.get("contracts"), list)
+            or input_lock.get("asset_conversion_contracts_sha256")
+            != sha256_file(phase_dir / "asset-conversion-contracts.json")
+        ):
+            errors.append("Phase 4 asset-conversion contract registry identity is invalid")
+        raw_contracts = conversion_contract_file.get("contracts")
+        if not isinstance(raw_contracts, list):
+            raw_contracts = []
+        contract_keys = {
+            "contract_id", "source_extensions", "target_extensions", "resolved_executable",
+            "executable_sha256", "argv_template", "required_argv_tokens",
+            "success_output_contains", "error_output_contains",
+        }
+        for contract in raw_contracts:
+            if not isinstance(contract, dict):
+                errors.append("Asset-conversion contract contains a non-object entry")
+                continue
+            contract_id = str(contract.get("contract_id", ""))
+            executable = Path(str(contract.get("resolved_executable", ""))).expanduser()
+            source_extensions = contract.get("source_extensions")
+            target_extensions = contract.get("target_extensions")
+            argv_template = contract.get("argv_template")
+            if (
+                set(contract) != contract_keys
+                or not ID_RE.fullmatch(contract_id)
+                or contract_id in conversion_contracts
+                or not isinstance(source_extensions, list)
+                or not source_extensions
+                or not isinstance(target_extensions, list)
+                or not target_extensions
+                or any(
+                    not isinstance(item, str) or not re.fullmatch(r"\.[a-z0-9]+", item)
+                    for item in source_extensions + target_extensions
+                )
+                or not executable.is_absolute()
+                or not executable.is_file()
+                or not os.access(executable, os.X_OK)
+                or sha256_file(executable) != contract.get("executable_sha256")
+                or not isinstance(argv_template, list)
+                or not argv_template
+                or argv_template[0] != str(executable.resolve())
+                or sum(str(token).count("{SOURCE}") for token in argv_template) != 1
+                or sum(str(token).count("{TARGET}") for token in argv_template) != 1
+                or any(
+                    not isinstance(contract.get(key), list)
+                    for key in (
+                        "required_argv_tokens", "success_output_contains", "error_output_contains"
+                    )
+                )
+            ):
+                errors.append(f"Invalid asset-conversion contract: {contract_id!r}")
+                continue
+            conversion_contracts[contract_id] = contract
+    except (OSError, ValueError) as exc:
+        errors.append(f"Cannot validate asset-conversion contracts: {exc}")
+    local_decisions = index_unique_rows(
+        read_csv_rows(phase_dir / "nativeization-decisions.csv"),
+        "decision_id", "Phase 4 nativeization decisions", errors,
+    )
+    controller_decisions = index_unique_rows(
+        read_csv_rows(run_dir / "controller" / "decision-log.csv"),
+        "decision_id", "controller decision log", errors,
+    )
+    superseded_controller_decisions = {
+        row.get("supersedes_id", "") for row in controller_decisions.values() if row.get("supersedes_id")
+    }
+    used_conversion_ids: set[str] = set()
+    if set(migrated_assets) != set(phase2_assets) or set(migrated_assets) != set(phase3_assets):
+        errors.append("Phase 4 asset migration does not exactly cover the frozen asset chain")
+    for asset_id, row in migrated_assets.items():
+        source = phase2_assets.get(asset_id, {})
+        placement = phase3_assets.get(asset_id, {})
+        source_digest = source.get("sha256") or source.get("source_sha256")
+        row_source_digest = row.get("source_sha256") or row.get("asset_sha256")
+        target_relative = row.get("target_resource_path") or row.get("target_path")
+        target_digest = row.get("target_sha256")
+        target = safe_relative_path(project, target_relative, f"Phase 4 asset target {asset_id}", errors)
+        mode = row.get("migration_mode")
+        verification_evidence_id = row.get("verification_evidence_id", "")
+        expected_asset_lock = locked_assets_by_id.get(asset_id, {})
+        try:
+            expected_archive_relative = Path(
+                str(expected_asset_lock.get("snapshot_path", ""))
+            ).resolve().relative_to(phase_dir.resolve()).as_posix()
+        except (OSError, ValueError):
+            expected_archive_relative = ""
+        source_features = phase4_json_string_list(
+            source.get("feature_ids", "[]"), f"{asset_id}.source_feature_ids", errors
+        )
+        source_pages = phase4_json_string_list(
+            source.get("page_ids", "[]"), f"{asset_id}.source_page_ids", errors
+        )
+        source_states = phase4_json_string_list(
+            source.get("state_ids", "[]"), f"{asset_id}.source_state_ids", errors
+        )
+        row_features = phase4_json_string_list(
+            row.get("feature_ids", "[]"), f"{asset_id}.feature_ids", errors
+        )
+        row_pages = phase4_json_string_list(
+            row.get("page_ids", "[]"), f"{asset_id}.page_ids", errors
+        )
+        row_states = phase4_json_string_list(
+            row.get("state_ids", "[]"), f"{asset_id}.state_ids", errors
+        )
+        expected_status = {
+            "DIRECT_COPY": "DIRECT_COPY_VERIFIED",
+            "FORMAT_CONVERSION": "CONVERSION_VERIFIED",
+            "RECREATE_FROM_PUBLIC_UI": "RECREATED_VERIFIED",
+        }.get(mode)
+        if (
+            row_source_digest != source_digest
+            or row.get("source_path") != source.get("source_path")
+            or row.get("archive_relative_path") != expected_archive_relative
+            or row.get("file_type") != source.get("asset_type")
+            or row_features != source_features
+            or row_pages != source_pages
+            or row_states != source_states
+            or row.get("target_module_id") != placement.get("target_module_id")
+            or target_relative != placement.get("target_path")
+            or row.get("target_resource_symbol") != placement.get("target_symbol")
+            or mode != placement.get("planned_mode")
+            or row.get("status") != expected_status
+            or row.get("migrated_by") != phase4_ownership.get("visual_asset_agent_id")
+            or not target
+            or not target.is_file()
+            or not SHA256_RE.fullmatch(str(target_digest))
+            or sha256_file(target) != target_digest
+        ):
+            errors.append(f"{asset_id}: final asset bytes, placement, or frozen owner differs")
+        if mode == "DIRECT_COPY" and (
+            target_digest != source_digest
+            or row.get("conversion_record_id")
+            or row.get("conversion_record_sha256")
+            or verification_evidence_id
+            or row.get("nativeization_decision_id")
+        ):
+            errors.append(f"{asset_id}: DIRECT_COPY bytes or empty audit fields differ")
+        elif mode == "FORMAT_CONVERSION":
+            conversion_id = row.get("conversion_record_id", "")
+            if not ID_RE.fullmatch(conversion_id):
+                errors.append(f"{asset_id}: invalid conversion record ID: {conversion_id!r}")
+                continue
+            if conversion_id in used_conversion_ids:
+                errors.append(f"Asset conversion record is reused: {conversion_id}")
+            used_conversion_ids.add(conversion_id)
+            conversion_dir = phase_dir / "asset-conversions" / conversion_id
+            conversion_entries = verify_sealed_package(
+                conversion_dir, conversion_id, "PASS", f"asset conversion {conversion_id}", errors
+            )
+            try:
+                metadata_path = conversion_dir / "metadata.json"
+                metadata = load_json(metadata_path)
+                contract_id = str(metadata.get("contract_id", ""))
+                contract = conversion_contracts.get(contract_id, {})
+                source_record = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+                target_record = metadata.get("target") if isinstance(metadata.get("target"), dict) else {}
+                command = metadata.get("command") if isinstance(metadata.get("command"), dict) else {}
+                success_matches = command.get("success_output_matches")
+                error_matches = command.get("error_output_matches")
+                argv = command.get("argv")
+                source_snapshot = Path(str(source_record.get("snapshot_path", ""))).expanduser().resolve()
+                expected_asset_lock = locked_assets_by_id.get(asset_id, {})
+                sealed_target = safe_relative_path(
+                    conversion_dir,
+                    str(target_record.get("sealed_relative_path", "")),
+                    f"conversion target {conversion_id}",
+                    errors,
+                )
+                stdout = safe_relative_path(
+                    conversion_dir, str(command.get("stdout_path", "")),
+                    f"conversion stdout {conversion_id}", errors,
+                )
+                stderr = safe_relative_path(
+                    conversion_dir, str(command.get("stderr_path", "")),
+                    f"conversion stderr {conversion_id}", errors,
+                )
+                source_extension = PurePosixPath(str(source.get("archive_path", ""))).suffix.lower()
+                target_extension = PurePosixPath(target_relative).suffix.lower()
+                if (
+                    set(conversion_entries)
+                    != {
+                        "metadata.json", f"output/{PurePosixPath(target_relative).name}",
+                        "logs/stdout.log", "logs/stderr.log",
+                    }
+                    or
+                    not ID_RE.fullmatch(conversion_id)
+                    or row.get("conversion_record_sha256") != sha256_file(metadata_path)
+                    or row.get("nativeization_decision_id")
+                    or metadata.get("schema_version") != 1
+                    or metadata.get("conversion_id") != conversion_id
+                    or metadata.get("asset_id") != asset_id
+                    or metadata.get("executed_by") != phase4_ownership.get("visual_asset_agent_id")
+                    or not metadata.get("executed_at")
+                    or metadata.get("status") != "PASS"
+                    or metadata.get("input_lock_sha256") != input_lock_sha256
+                    or not contract
+                    or source_extension not in contract.get("source_extensions", [])
+                    or target_extension not in contract.get("target_extensions", [])
+                    or str(source_snapshot) != str(expected_asset_lock.get("snapshot_path", ""))
+                    or source_record.get("sha256") != source_digest
+                    or not source_snapshot.is_file()
+                    or sha256_file(source_snapshot) != source_digest
+                    or source_record.get("size") != source_snapshot.stat().st_size
+                    or source_record.get("extension") != source_extension
+                    or target_record.get("project_relative_path") != target_relative
+                    or target_record.get("sealed_relative_path") != f"output/{PurePosixPath(target_relative).name}"
+                    or not sealed_target
+                    or not sealed_target.is_file()
+                    or target_record.get("sha256") != target_digest
+                    or sha256_file(sealed_target) != target_digest
+                    or target_record.get("size") != sealed_target.stat().st_size
+                    or target_record.get("extension") != target_extension
+                    or command.get("category") != "ASSET_FORMAT_CONVERSION"
+                    or command.get("argv_template") != contract.get("argv_template")
+                    or command.get("resolved_executable") != contract.get("resolved_executable")
+                    or command.get("executable_sha256") != contract.get("executable_sha256")
+                    or command.get("required_argv_tokens") != contract.get("required_argv_tokens")
+                    or command.get("success_output_contains") != contract.get("success_output_contains")
+                    or command.get("error_output_contains") != contract.get("error_output_contains")
+                    or success_matches != contract.get("success_output_contains")
+                    or not isinstance(error_matches, list)
+                    or bool(error_matches)
+                    or not isinstance(argv, list)
+                    or not argv
+                    or argv[0] != contract.get("resolved_executable")
+                    or any(
+                        token not in command.get("argv_template", [])
+                        for token in contract.get("required_argv_tokens", [])
+                    )
+                    or len(argv) != len(command.get("argv_template", []))
+                    or any(
+                        actual != planned
+                        if planned not in {"{SOURCE}", "{TARGET}"}
+                        else (
+                            actual != str(source_snapshot)
+                            if planned == "{SOURCE}"
+                            else PurePosixPath(target_relative).name not in str(actual)
+                        )
+                        for planned, actual in zip(command.get("argv_template", []), argv)
+                    )
+                    or not any(str(source_snapshot) in str(token) for token in argv)
+                    or not any(PurePosixPath(target_relative).name in str(token) for token in argv)
+                    or not command.get("cwd")
+                    or command.get("stdout_path") != "logs/stdout.log"
+                    or command.get("stderr_path") != "logs/stderr.log"
+                    or command.get("command_verdict") != "PASS"
+                    or command.get("exit_code") != 0
+                    or command.get("timed_out") is not False
+                    or command.get("semantic_error") is not False
+                    or not stdout
+                    or not stderr
+                    or not stdout.is_file()
+                    or not stderr.is_file()
+                    or command.get("stdout_sha256") != sha256_file(stdout)
+                    or command.get("stderr_sha256") != sha256_file(stderr)
+                    or verification_evidence_id not in used_evidence_ids
+                ):
+                    errors.append(f"{asset_id}: sealed conversion record, contract, output, or HEVD differs")
+                if stdout and stderr and stdout.is_file() and stderr.is_file() and contract:
+                    combined = stdout.read_text(encoding="utf-8", errors="replace") + "\n" + stderr.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    successes = [
+                        item for item in contract.get("success_output_contains", []) if item in combined
+                    ]
+                    failures = [
+                        item for item in contract.get("error_output_contains", [])
+                        if item.lower() in combined.lower()
+                    ]
+                    if (
+                        successes != command.get("success_output_matches")
+                        or failures != command.get("error_output_matches")
+                        or failures
+                    ):
+                        errors.append(f"{asset_id}: conversion output verdict differs from sealed logs")
+            except (OSError, ValueError) as exc:
+                errors.append(f"{asset_id}: cannot validate conversion package: {exc}")
+        elif mode == "RECREATE_FROM_PUBLIC_UI":
+            decision_id = row.get("nativeization_decision_id", "")
+            decision = local_decisions.get(decision_id, {})
+            controller_decision_id = decision.get("controller_decision_id", "")
+            controller_decision = controller_decisions.get(controller_decision_id, {})
+            evidence_row = active_evidence.get(verification_evidence_id, {})
+            try:
+                feature_ids = set(json.loads(source.get("feature_ids", "[]")))
+                page_ids = set(json.loads(source.get("page_ids", "[]")))
+                state_ids = set(json.loads(source.get("state_ids", "[]")))
+                affected_parity_ids = set(json.loads(decision.get("affected_parity_ids", "[]")))
+            except (TypeError, json.JSONDecodeError):
+                feature_ids = page_ids = state_ids = affected_parity_ids = set()
+            if (
+                not decision_id
+                or row.get("conversion_record_id")
+                or row.get("conversion_record_sha256")
+                or decision.get("decision_class") != "ASSET_RECREATION"
+                or decision.get("status") != "APPROVED"
+                or decision.get("approved_by") != phase4_ownership.get("parity_acceptance_agent_id")
+                or not controller_decision
+                or controller_decision_id in superseded_controller_decisions
+                or controller_decision.get("decided_by") != scope.get("ownership", {}).get("migration_controller_id")
+                or verification_evidence_id not in used_evidence_ids
+                or evidence_row.get("feature_id") not in feature_ids
+                or evidence_row.get("page_id") not in page_ids
+                or evidence_row.get("state_id") not in state_ids
+                or decision.get("feature_id") != evidence_row.get("feature_id")
+                or decision.get("page_id") != evidence_row.get("page_id")
+                or decision.get("state_id") != evidence_row.get("state_id")
+                or evidence_row.get("parity_id") not in affected_parity_ids
+            ):
+                errors.append(f"{asset_id}: recreated asset lacks accepted HEVD and live dual approval")
+        elif mode not in {"DIRECT_COPY", "FORMAT_CONVERSION", "RECREATE_FROM_PUBLIC_UI"}:
+            errors.append(f"{asset_id}: unsupported Phase 4 asset migration mode: {mode!r}")
+
+    referenced_decision_ids: set[str] = set()
+    for decision_ids in parity_decision_ids.values():
+        referenced_decision_ids.update(decision_ids)
+    referenced_decision_ids.update(
+        row.get("nativeization_decision_id", "")
+        for row in migrated_assets.values() if row.get("nativeization_decision_id")
+    )
+    if set(local_decisions) != referenced_decision_ids:
+        errors.append("Phase 4 nativeization decisions are missing, unused, or not parity-bound")
+    for decision_id, decision in local_decisions.items():
+        affected = phase4_json_string_list(
+            decision.get("affected_parity_ids", "[]"),
+            f"{decision_id}.affected_parity_ids", errors, allow_empty=False,
+        )
+        invariants = phase4_json_string_list(
+            decision.get("invariants", "[]"), f"{decision_id}.invariants", errors,
+            allow_empty=False,
+        )
+        controller_decision_id = str(decision.get("controller_decision_id", ""))
+        controller_decision = controller_decisions.get(controller_decision_id, {})
+        bound_rows = [parity.get(parity_id, {}) for parity_id in affected]
+        if (
+            not decision.get("decision_class")
+            or decision.get("status") != "APPROVED"
+            or decision.get("approved_by") != phase4_ownership.get("parity_acceptance_agent_id")
+            or not decision.get("approved_at")
+            or not str(decision.get("android_behavior", "")).strip()
+            or not str(decision.get("harmony_behavior", "")).strip()
+            or not str(decision.get("reason", "")).strip()
+            or not invariants
+            or any(not row for row in bound_rows)
+            or any(row.get("feature_id") != decision.get("feature_id") for row in bound_rows)
+            or any(row.get("page_id") != decision.get("page_id") for row in bound_rows)
+            or any(row.get("state_id") != decision.get("state_id") for row in bound_rows)
+            or decision.get("android_evidence_id")
+            not in {row.get("android_evidence_id") for row in bound_rows}
+            or not controller_decision
+            or controller_decision_id in superseded_controller_decisions
+            or controller_decision.get("decided_by")
+            != scope.get("ownership", {}).get("migration_controller_id")
+            or not str(controller_decision.get("decision", "")).strip()
+            or not str(controller_decision.get("rationale", "")).strip()
+        ):
+            errors.append(f"{decision_id}: nativeization decision lacks complete parity-bound dual approval")
+
+    conversion_root = phase_dir / "asset-conversions"
+    conversion_children = list(conversion_root.iterdir()) if conversion_root.is_dir() else []
+    actual_conversion_ids = {
+        path.name for path in conversion_children
+        if path.is_dir() and not path.is_symlink()
+    }
+    if not conversion_root.is_dir() or actual_conversion_ids != used_conversion_ids or any(
+        path.is_file() or path.is_symlink() for path in conversion_children
+    ):
+        errors.append("Phase 4 asset-conversion packages do not exactly match converted assets")
+
+    # Enforce the source-first asset policy independently of the mutable policy file.
+    try:
+        asset_policy = load_json(phase_dir / "asset-policy.json")
+        required_policy_keys = {
+            "policy_version", "direct_copy_hash_required", "format_conversion_requires_command",
+            "native_system_resource_requires_decision", "unregistered_project_visuals_allowed",
+            "allowed_visual_extensions", "allowed_untracked_visual_paths", "forbidden_inline_glyphs",
+            "forbidden_implementation_tokens", "mp4_allowed",
+        }
+        required_forbidden_tokens = {"TODO", "FIXME", "MOCK_ONLY", "STUB_ONLY", "FAKE_DATA"}
+        visual_extensions = asset_policy.get("allowed_visual_extensions")
+        forbidden_tokens = asset_policy.get("forbidden_implementation_tokens")
+        forbidden_glyphs = asset_policy.get("forbidden_inline_glyphs")
+        if (
+            set(asset_policy) != required_policy_keys
+            or asset_policy.get("policy_version") != 1
+            or asset_policy.get("direct_copy_hash_required") is not True
+            or asset_policy.get("format_conversion_requires_command") is not True
+            or asset_policy.get("native_system_resource_requires_decision") is not True
+            or asset_policy.get("unregistered_project_visuals_allowed") is not False
+            or asset_policy.get("allowed_untracked_visual_paths") != []
+            or asset_policy.get("mp4_allowed") is not False
+            or not isinstance(visual_extensions, list)
+            or not visual_extensions
+            or any(not isinstance(item, str) or not re.fullmatch(r"\.[a-z0-9]+", item) for item in visual_extensions)
+            or not isinstance(forbidden_tokens, list)
+            or not required_forbidden_tokens <= set(forbidden_tokens)
+            or not isinstance(forbidden_glyphs, list)
+            or not forbidden_glyphs
+        ):
+            errors.append("Phase 4 asset policy is weakened or malformed")
+            visual_extensions = []
+            forbidden_tokens = sorted(required_forbidden_tokens)
+            forbidden_glyphs = ["✓", "✔"]
+        registered_visual_paths = {
+            str(row.get("target_resource_path") or row.get("target_path") or "")
+            for row in migrated_assets.values()
+        }
+        actual_visual_paths: set[str] = set()
+        source_extensions = {".ets", ".ts", ".js", ".json", ".json5", ".c", ".cc", ".cpp", ".h", ".hpp"}
+        for path in project.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(project)
+            if any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in relative.parts):
+                continue
+            suffix = path.suffix.lower()
+            if suffix in set(visual_extensions):
+                actual_visual_paths.add(relative.as_posix())
+            if suffix in source_extensions:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for token in set(forbidden_tokens) | required_forbidden_tokens:
+                    if token and token in text:
+                        errors.append(f"Production source contains forbidden token {token!r}: {relative}")
+                for glyph in forbidden_glyphs:
+                    if isinstance(glyph, str) and glyph and glyph in text:
+                        errors.append(f"Production source contains forbidden inline glyph {glyph!r}: {relative}")
+        if actual_visual_paths != registered_visual_paths:
+            errors.append(
+                "Project visual files differ from the frozen asset migration registry; "
+                f"missing={sorted(registered_visual_paths - actual_visual_paths)[:5]}, "
+                f"extra={sorted(actual_visual_paths - registered_visual_paths)[:5]}"
+            )
+    except (OSError, ValueError) as exc:
+        errors.append(f"Cannot validate the Phase 4 asset policy/project scan: {exc}")
+
+    capability_source = index_unique_rows(
+        read_csv_rows(run_dir / "phase-03-harmony-scaffold" / "capability-contracts.csv"),
+        "capability_requirement_id", "Phase 3 capability contracts", errors,
+    )
+    capability = index_unique_rows(
+        read_csv_rows(phase_dir / "capability-implementation.csv"),
+        "capability_requirement_id", "Phase 4 capability implementation", errors,
+    )
+    if set(capability) != set(capability_source):
+        errors.append("Phase 4 capability implementation coverage differs from Phase 3")
+    for requirement_id, row in capability.items():
+        source_contract = capability_source.get(requirement_id, {})
+        try:
+            evidence_ids = json.loads(row.get("verification_evidence_ids", ""))
+        except json.JSONDecodeError:
+            evidence_ids = None
+        feature_id = str(row.get("feature_id", ""))
+        feature_order = feature_orders.get(feature_id, {})
+        feature_ownership = (
+            feature_order.get("ownership")
+            if isinstance(feature_order.get("ownership"), dict)
+            else {}
+        )
+        implementation_file = safe_relative_path(
+            project, row.get("implementation_file", ""),
+            f"capability implementation {requirement_id}", errors,
+        )
+        implementation_symbol = str(row.get("implementation_symbol", ""))
+        implementation_text = (
+            implementation_file.read_text(encoding="utf-8", errors="replace")
+            if implementation_file and implementation_file.is_file() else ""
+        )
+        if (
+            row.get("status") != "IMPLEMENTED"
+            or row.get("capability_contract_id") != source_contract.get("capability_contract_id")
+            or feature_id != source_contract.get("source_feature_id")
+            or row.get("harmony_module_id") != source_contract.get("harmony_module_id")
+            or row.get("contract_file") != source_contract.get("contract_file")
+            or row.get("contract_symbol") != source_contract.get("contract_symbol")
+            or row.get("implemented_by") != feature_ownership.get("native_capability_agent_id")
+            or row.get("implemented_by") in forbidden_implementers
+            or not isinstance(evidence_ids, list)
+            or not evidence_ids
+            or evidence_ids != sorted(set(evidence_ids))
+            or any(item not in used_evidence_ids for item in evidence_ids)
+            or not set(evidence_ids) <= capability_assertion_evidence.get(requirement_id, set())
+            or not implementation_file
+            or not implementation_file.is_file()
+            or not implementation_symbol
+            or not re.search(rf"\b{re.escape(implementation_symbol)}\b", implementation_text)
+        ):
+            errors.append(f"{requirement_id}: capability implementation, actor, source, or evidence differs")
+
+    # Local Phase 4 rework and the controller mirror must be an exact closed double ledger.
+    local_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
+    controller_rework = [
+        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
+        if row.get("phase") == "4"
+    ]
+    local_ids = [row.get("ticket_id", "") for row in local_rework]
+    controller_ids = [row.get("rework_id", "") for row in controller_rework]
+    if (
+        len(local_ids) != len(set(local_ids))
+        or len(controller_ids) != len(set(controller_ids))
+        or set(local_ids) != set(controller_ids)
+    ):
+        errors.append("Phase 4 rework ledger and controller mirror contain different or duplicate Ticket-IDs")
+    allowed_responsible = prior_actor_ids | {
+        phase4_ownership.get("implementation_lead_id"),
+        phase4_ownership.get("visual_asset_agent_id"),
+        phase4_ownership.get("verification_executor_id"),
+    }
+    for actors in feature_actor_ids.values():
+        allowed_responsible.update(actors)
+    for local in local_rework:
+        ticket_id = local.get("ticket_id", "")
+        matches = [row for row in controller_rework if row.get("rework_id") == ticket_id]
+        if (
+            not ID_RE.fullmatch(ticket_id)
+            or local.get("status") != "CLOSED"
+            or local.get("opened_by") != phase4_ownership.get("parity_acceptance_agent_id")
+            or local.get("closed_by") != phase4_ownership.get("parity_acceptance_agent_id")
+            or local.get("responsible_agent") not in allowed_responsible
+            or local.get("responsible_agent") == phase4_ownership.get("parity_acceptance_agent_id")
+            or local.get("resolution_evidence_id") not in used_evidence_ids
+            or len(matches) != 1
+        ):
+            errors.append(f"Phase 4 rework authority or lifecycle is invalid: {ticket_id!r}")
+            continue
+        mirrored = matches[0]
+        expected_fields = {
+            "created_at": local.get("opened_at", ""),
+            "record_id": local.get("parity_or_record_id", ""),
+            "evidence_id": local.get("failed_evidence_id", ""),
+            "gate_rule": local.get("problem_type", ""),
+            "reason": local.get("notes", ""),
+            "assigned_to": local.get("responsible_agent", ""),
+            "completion_condition": local.get("completion_condition", ""),
+            "status": "CLOSED",
+            "resolved_at": local.get("closed_at", ""),
+            "resolution_evidence_id": local.get("resolution_evidence_id", ""),
+            "reviewed_by": local.get("closed_by", ""),
+        }
+        if any(mirrored.get(field, "") != value for field, value in expected_fields.items()):
+            errors.append(f"Phase 4 controller rework mirror differs: {ticket_id}")
+    if any(row.get("status") != "CLOSED" for row in controller_rework):
+        errors.append("Controller has open Phase 4 rework")
+
+    # The final independent report is itself bound by CLOSED; verify its reviewer and summaries.
+    report_counts = stage_report.get("counts") if isinstance(stage_report.get("counts"), dict) else {}
+    expected_counts = {
+        "features": len(implementation),
+        "parity_rows": len(parity),
+        "active_evidence": len(used_evidence_ids),
+        "assets": len(migrated_assets),
+        "capabilities": len(capability),
+        "nativeization_decisions": len(local_decisions),
+        "open_rework": 0,
+    }
+    if any(report_counts.get(key) != value for key, value in expected_counts.items()):
+        errors.append("Phase 4 report counts differ from the sealed ledgers")
+    report_artifacts = stage_report.get("artifact_hashes")
+    if (
+        not isinstance(report_artifacts, list)
+        or sorted(report_artifacts) != sorted(artifact_hashes)
+    ):
+        errors.append("Phase 4 report artifact hashes differ from final HBUILD packages")
+    if (
+        stage_report.get("phase") != 4
+        or stage_report.get("run_id") != scope.get("run_id")
+        or stage_report.get("verdict") != "PASS"
+        or stage_report.get("final_verdict") != "PASS"
+        or stage_report.get("implementation_chain_closed") is not True
+        or stage_report.get("reviewer_role") != "parity-acceptance-agent"
+        or stage_report.get("reviewer_id") != phase4_ownership.get("parity_acceptance_agent_id")
+        or stage_report.get("work_order_id") != work_order_id
+        or stage_report.get("input_lock_sha256") != input_lock_sha256
+        or stage_report.get("source_snapshot_sha256") != source_snapshot_sha256
+        or stage_report.get("build_ids") != sorted(build_ids)
+        or stage_report.get("errors") != []
+    ):
+        errors.append("Phase 4 final report identity, reviewer, snapshot, or verdict is invalid")
+
+    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
+    phase3_tasks = [row for row in ledger_rows if row.get("phase") == "3"]
+    phase4_tasks = [row for row in ledger_rows if row.get("phase") == "4"]
+    if (
+        len(phase3_tasks) != 1
+        or phase3_tasks[0].get("status") != "PASS"
+        or phase3_tasks[0].get("owner") != phase3_ownership.get("architecture_lead_id")
+    ):
+        errors.append("Controller task ledger does not retain the frozen Phase 3 PASS")
+    if (
+        len(phase4_tasks) != 1
+        or phase4_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
+        or phase4_tasks[0].get("owner") != phase4_ownership.get("implementation_lead_id")
+    ):
+        errors.append("Controller task ledger does not have the assigned Phase 4 task")
+
+    return (
+        errors,
+        warnings,
+        sorted(build_ids),
+        sorted(used_evidence_ids),
+        str(phase4_ownership.get("implementation_lead_id") or "") or None,
+        work_order_id if ID_RE.fullmatch(work_order_id) else None,
+    )
+
+
+def phase56_closure_excluded(relative: PurePosixPath, phase: int) -> bool:
+    exact = STAGE5_CLOSURE_EXACT_EXCLUDES if phase == 5 else STAGE6_CLOSURE_EXACT_EXCLUDES
+    if relative.as_posix() in exact or any(part in PHASE56_TRANSIENT_PARTS for part in relative.parts):
+        return True
+    if relative.suffix in {".tmp", ".pyc"} or relative.name.endswith(".lock"):
+        return True
+    return bool(
+        phase == 5
+        and relative.parts
+        and relative.parts[0] == "harmony-project"
+        and any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in relative.parts[1:])
+    )
+
+
+def verify_phase56_closure(workspace: Path, phase: int, errors: list[str]) -> dict[str, str]:
+    manifest_name = f"stage-0{phase}-closure-manifest.sha256"
+    manifest = workspace / manifest_name
+    if not manifest.is_file() or manifest.is_symlink():
+        errors.append(f"Phase {phase} closure manifest is missing or unsafe")
+        return {}
+    expected = parse_sha256_manifest(manifest, f"Phase {phase} closure manifest", errors)
+    actual: dict[str, Path] = {}
+    for path in workspace.rglob("*"):
+        relative = PurePosixPath(path.relative_to(workspace).as_posix())
+        if phase56_closure_excluded(relative, phase):
+            continue
+        if path.is_symlink():
+            errors.append(f"Symbolic links are prohibited in Phase {phase} closure: {path}")
+            continue
+        if path.is_file():
+            if path.suffix.lower() == ".mp4":
+                errors.append(f"MP4 is prohibited in formal Phase {phase} evidence: {relative}")
+            actual[relative.as_posix()] = path
+    if set(expected) != set(actual):
+        errors.append(
+            f"Phase {phase} closure file set changed; "
+            f"missing={sorted(set(expected) - set(actual))[:5]}, "
+            f"extra={sorted(set(actual) - set(expected))[:5]}"
+        )
+    for relative in sorted(set(expected) & set(actual)):
+        if sha256_file(actual[relative]) != expected[relative]:
+            errors.append(f"Phase {phase} closure hash mismatch: {relative}")
+    return expected
+
+
+def verify_closed_marker(workspace: Path, phase: int, errors: list[str]) -> None:
+    report = workspace / f"stage-0{phase}-gate-report.json"
+    marker = workspace / "CLOSED"
+    if not report.is_file() or report.is_symlink() or not marker.is_file() or marker.is_symlink():
+        errors.append(f"Phase {phase} final report or CLOSED marker is missing/unsafe")
+        return
+    try:
+        if marker.read_text(encoding="utf-8").strip() != sha256_file(report):
+            errors.append(f"Phase {phase} CLOSED marker does not bind its final report")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"Cannot read Phase {phase} CLOSED marker: {exc}")
+
+
+def json_string_array(value: str, label: str, errors: list[str], *, allow_empty: bool = True) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        errors.append(f"{label} is not a JSON string array")
+        return []
+    if (
+        not isinstance(parsed, list) or (not allow_empty and not parsed)
+        or any(not isinstance(item, str) or not item for item in parsed)
+        or parsed != sorted(set(parsed))
+    ):
+        errors.append(f"{label} must be a sorted unique JSON string array")
+        return []
+    return parsed
+
+
+def phase56_prior_actor_ids(
+    run_dir: Path, scope: dict[str, Any], registry_rows: list[dict[str, str]], phase: int,
+    errors: list[str],
+) -> set[str]:
+    actors = actor_ids(scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {})
+    for row in registry_rows:
+        try:
+            row_phase = int(str(row.get("phase", "0")))
+        except ValueError:
+            continue
+        if row_phase >= phase or row.get("status", "").upper() == "SUPERSEDED":
+            continue
+        path = safe_relative_path(run_dir, row.get("relative_path", ""), f"Phase {row_phase} work order", errors)
+        if path and path.is_file():
+            try:
+                order = load_json(path)
+                ownership = order.get("ownership") if isinstance(order.get("ownership"), dict) else {}
+                actors.update(actor_ids(ownership))
+            except ValueError as exc:
+                errors.append(str(exc))
+    if phase > 4:
+        feature_root = run_dir / "phase-04-harmony-implementation"
+        for row in read_csv_rows(feature_root / "feature-work-order-registry.csv"):
+            if row.get("status", "").upper() == "SUPERSEDED":
+                continue
+            relative = row.get("relative_path") or row.get("work_order_relative_path") or ""
+            path = safe_relative_path(feature_root, relative, "Phase 4 feature work order", errors)
+            if path and path.is_file():
+                try:
+                    order = load_json(path)
+                    ownership = order.get("ownership") if isinstance(order.get("ownership"), dict) else {}
+                    actors.update(actor_ids(ownership))
+                except ValueError as exc:
+                    errors.append(str(exc))
+    return actors
+
+
+def validate_phase56_work_order(
+    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any], phase: int,
+    manifest: dict[str, Any], input_lock: dict[str, Any], role_keys: tuple[str, ...],
+    expected_skill: str, errors: list[str],
+) -> tuple[dict[str, Any], dict[str, Any], str | None, str | None]:
+    registry_rows = read_csv_rows(run_dir / "controller" / "work-order-registry.csv")
+    work_order_id = str(manifest.get("work_order_id") or input_lock.get("work_order_id") or "")
+    if not work_order_id and isinstance(input_lock.get("work_order"), dict):
+        work_order_id = str(input_lock["work_order"].get("work_order_id", ""))
+    active = [
+        row for row in registry_rows
+        if row.get("phase") == str(phase) and row.get("status", "").upper() != "SUPERSEDED"
+    ]
+    matches = [row for row in active if row.get("work_order_id") == work_order_id]
+    work_order: dict[str, Any] = {}
+    work_order_sha256: str | None = None
+    if not ID_RE.fullmatch(work_order_id) or len(active) != 1 or len(matches) != 1:
+        errors.append(f"Controller must have exactly one active registered Phase {phase} work order")
+        return work_order, {}, None, None
+    registry = matches[0]
+    path = safe_relative_path(run_dir, registry.get("relative_path", ""), f"Phase {phase} work order", errors)
+    if path and path.is_file():
+        try:
+            work_order = load_json(path)
+            work_order_sha256 = sha256_file(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+    if (
+        registry.get("status") != "ISSUED"
+        or registry.get("scope_sha256") != phase1_facts.get("scope_sha256")
+        or registry.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+        or registry.get("work_order_sha256") != work_order_sha256
+    ):
+        errors.append(f"Registered Phase {phase} work order is changed or unauthorized")
+    ownership = work_order.get("ownership") if isinstance(work_order.get("ownership"), dict) else {}
+    values = [ownership.get(key) for key in role_keys]
+    prior = phase56_prior_actor_ids(run_dir, scope, registry_rows, phase, errors)
+    if (
+        work_order.get("schema_version") != "1.0"
+        or work_order.get("work_order_id") != work_order_id
+        or work_order.get("run_id") != scope.get("run_id")
+        or work_order.get("phase") != phase
+        or work_order.get("status") != "ISSUED"
+        or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+        or work_order.get("required_skill") != expected_skill
+        or set(ownership) != set(role_keys)
+        or any(not isinstance(value, str) or not ACTOR_RE.fullmatch(value) for value in values)
+        or len(values) != len(set(values))
+        or set(str(value) for value in values) & prior
+        or work_order.get("forbidden_prior_actor_ids") != sorted(prior)
+    ):
+        errors.append(f"Phase {phase} work order identity, role separation, or authority is invalid")
+    return work_order, ownership, work_order_sha256, work_order_id
+
+
+def validate_frozen_file_record(
+    run_dir: Path, record: Any, label: str, errors: list[str], *, require_live: bool = True,
+) -> tuple[Path | None, Path | None]:
+    if not isinstance(record, dict):
+        errors.append(f"{label} record is not an object")
+        return None, None
+    live = (
+        safe_relative_path(run_dir, str(record.get("relative_path", "")), f"{label} live input", errors)
+        if require_live else None
+    )
+    snapshot = safe_relative_path(
+        run_dir, str(record.get("snapshot_relative_path", "")), f"{label} controller snapshot", errors
+    )
+    digest = str(record.get("sha256", ""))
+    if (
+        not SHA256_RE.fullmatch(digest)
+        or (require_live and (not live or not live.is_file() or sha256_file(live) != digest))
+        or not snapshot or not snapshot.is_file() or sha256_file(snapshot) != digest
+        or (require_live and live and snapshot and live.read_bytes() != snapshot.read_bytes())
+    ):
+        errors.append(f"{label} live bytes, controller snapshot, or declared hash differ")
+    return live, snapshot
+
+
+def verify_sealed_tree(directory: Path, package_id: str, label: str, errors: list[str]) -> dict[str, str]:
+    expected = verify_exact_manifest(
+        directory, "manifest.sha256", {"manifest.sha256", "COMMITTED"}, label, errors
+    )
+    marker = directory / "COMMITTED"
+    manifest = directory / "manifest.sha256"
+    if not marker.is_file() or marker.is_symlink() or not manifest.is_file():
+        errors.append(f"{label} is not committed")
+    else:
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+            if not value.startswith(f"{package_id} ") or f"manifest_sha256={sha256_file(manifest)}" not in value:
+                errors.append(f"{label} COMMITTED marker does not bind its manifest")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"Cannot read {label} COMMITTED marker: {exc}")
+    if directory.exists():
+        for path in (directory, *directory.rglob("*")):
+            if path.stat().st_mode & 0o222:
+                errors.append(f"{label} contains a writable sealed path: {path}")
+                break
+    return expected
+
+
+def validate_phase5(
+    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any]
+) -> tuple[list[str], list[str], str | None, str | None, str | None]:
+    """Independently recheck the closed Phase 5 candidate and whole-app regression."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    phase_dir = run_dir / "phase-05-harmony-regression"
+    required = (
+        "stage-05-input-lock.json", "phase-manifest.json", "release-candidate-registry.csv",
+        "flow-edge-registry.csv", "lifecycle-invariants.csv", "no-cross-flow.csv",
+        "scenario-registry.csv", "scenario-acceptance.csv", "evidence-index.csv",
+        "rework-tickets.csv", "inputs", "environments/h5env-registry.csv", "harmony-project",
+        "release-candidates", "scenarios", "evidence", "reviews", "stage-05-gate-report.json",
+        "stage-05-closure-manifest.sha256", "CLOSED",
+    )
+    for relative in required:
+        candidate = phase_dir / relative
+        if not candidate.exists() or candidate.is_symlink():
+            errors.append(f"Missing or unsafe Phase 5 artifact: {candidate}")
+    try:
+        input_lock = load_json(phase_dir / "stage-05-input-lock.json")
+        manifest = load_json(phase_dir / "phase-manifest.json")
+        report = load_json(phase_dir / "stage-05-gate-report.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings, None, None, None
+
+    verify_phase56_closure(phase_dir, 5, errors)
+    verify_closed_marker(phase_dir, 5, errors)
+    work_order, ownership, work_order_sha256, work_order_id = validate_phase56_work_order(
+        run_dir, scope, phase1_facts, 5, manifest, input_lock, STAGE5_ROLE_KEYS,
+        "harmonyos-system-regression", errors,
+    )
+    expected_permissions = {
+        "source_modification_allowed": False,
+        "new_feature_allowed": False,
+        "mp4_allowed": False,
+        "external_publish_allowed": False,
+    }
+    if work_order.get("permissions") != expected_permissions:
+        errors.append("Phase 5 work order permissions do not prohibit source/new-feature/MP4/publishing")
+    if (
+        manifest.get("schema_version") != "1.0"
+        or manifest.get("phase") != 5
+        or manifest.get("run_id") != scope.get("run_id")
+        or manifest.get("status") != "IN_PROGRESS"
+        or manifest.get("work_order_id") != work_order_id
+        or manifest.get("work_order_sha256") != work_order_sha256
+        or manifest.get("ownership") != ownership
+        or manifest.get("created_by") != ownership.get("regression_lead_id")
+        or input_lock.get("schema_version") != "1.0"
+        or input_lock.get("phase") != 5
+        or input_lock.get("run_id") != scope.get("run_id")
+        or input_lock.get("work_order_id") != work_order_id
+        or input_lock.get("work_order_sha256") != work_order_sha256
+        or input_lock.get("ownership") != ownership
+        or input_lock.get("created_by") != ownership.get("regression_lead_id")
+        or manifest.get("input_lock_sha256") != sha256_file(phase_dir / "stage-05-input-lock.json")
+    ):
+        errors.append("Phase 5 manifest/input lock identity, hashes, or ownership differ")
+
+    order_inputs = work_order.get("inputs") if isinstance(work_order.get("inputs"), dict) else {}
+    expected_input_keys = {
+        "scope", "gate4_report", "phase4_work_order", "phase4_input_lock", "phase4_manifest",
+        "phase4_report", "phase4_closure_manifest", "phase4_closed", "phase4_project",
+        "phase4_final_builds",
+    }
+    if set(order_inputs) != expected_input_keys:
+        errors.append("Phase 5 work order input key set differs")
+    for key in sorted(expected_input_keys - {"phase4_project", "phase4_final_builds"}):
+        validate_frozen_file_record(
+            run_dir, order_inputs.get(key), f"Phase 5 {key}", errors,
+            require_live=(key != "gate4_report"),
+        )
+    gate4_record = order_inputs.get("gate4_report")
+    if isinstance(gate4_record, dict):
+        gate4_snapshot = safe_relative_path(
+            run_dir, str(gate4_record.get("snapshot_relative_path", "")), "Gate 4 snapshot", errors
+        )
+        if gate4_snapshot and gate4_snapshot.is_file():
+            try:
+                gate4 = load_json(gate4_snapshot)
+                if gate4.get("phase") != 4 or gate4.get("verdict") != "PASS" or gate4.get("errors"):
+                    errors.append("Phase 5 work order Gate 4 snapshot is not PASS")
+            except ValueError as exc:
+                errors.append(str(exc))
+
+    project_record = order_inputs.get("phase4_project")
+    project = phase_dir / "harmony-project"
+    source_snapshot_sha256, source_entries = phase4_project_snapshot(project, errors)
+    if (
+        not isinstance(project_record, dict)
+        or project_record.get("relative_path") != "phase-04-harmony-implementation/harmony-project"
+        or project_record.get("snapshot_sha256") != source_snapshot_sha256
+        or project_record.get("entry_count") != len(source_entries)
+        or input_lock.get("phase4_source_snapshot_sha256") != source_snapshot_sha256
+        or input_lock.get("phase4_source_entry_count") != len(source_entries)
+    ):
+        errors.append("Phase 5 project no longer equals the Gate 4 source snapshot")
+
+    final_builds = order_inputs.get("phase4_final_builds")
+    if not isinstance(final_builds, list) or not final_builds:
+        errors.append("Phase 5 work order has no frozen final Phase 4 builds")
+        final_builds = []
+    seen_h4envs: set[str] = set()
+    for build in final_builds:
+        if not isinstance(build, dict):
+            errors.append("Phase 5 final build record is not an object")
+            continue
+        h4env_id = str(build.get("h4env_id", ""))
+        hbuild_id = str(build.get("hbuild_id", ""))
+        if not ID_RE.fullmatch(h4env_id) or not ID_RE.fullmatch(hbuild_id) or h4env_id in seen_h4envs:
+            errors.append(f"Phase 5 has an unsafe/duplicate frozen Phase 4 build: {hbuild_id}")
+            continue
+        metadata_path = safe_relative_path(
+            run_dir, str(build.get("build_record_relative_path", "")), f"{hbuild_id} metadata", errors
+        )
+        if (
+            not metadata_path or not metadata_path.is_file()
+            or build.get("build_record_sha256") != sha256_file(metadata_path)
+            or build.get("source_snapshot_sha256") != source_snapshot_sha256
+        ):
+            errors.append(f"Phase 5 frozen Phase 4 build metadata differs: {hbuild_id}")
+        artifacts = build.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            errors.append(f"Phase 5 frozen Phase 4 build has no artifacts: {hbuild_id}")
+        else:
+            for item in artifacts:
+                if not isinstance(item, dict):
+                    errors.append(f"Invalid Phase 4 artifact record in {hbuild_id}")
+                    continue
+                path = safe_relative_path(
+                    run_dir, str(item.get("relative_path", "")), f"{hbuild_id} artifact", errors
+                )
+                if (
+                    not path or not path.is_file() or not SHA256_RE.fullmatch(str(item.get("sha256", "")))
+                    or sha256_file(path) != item.get("sha256") or path.stat().st_size != item.get("size")
+                ):
+                    errors.append(f"Phase 5 frozen Phase 4 artifact bytes differ: {hbuild_id}")
+        seen_h4envs.add(h4env_id)
+
+    profile = work_order.get("release_profile") if isinstance(work_order.get("release_profile"), dict) else {}
+    profile_snapshot = safe_relative_path(
+        run_dir, str(profile.get("snapshot_relative_path", "")), "release profile snapshot", errors
+    )
+    raw_profile: dict[str, Any] = {}
+    if profile_snapshot and profile_snapshot.is_file():
+        try:
+            raw_profile = load_json(profile_snapshot)
+        except ValueError as exc:
+            errors.append(str(exc))
+    profile_keys = {
+        "profile_id", "bundle_id", "version_name", "version_code", "target_api", "device_types",
+        "build_mode", "signing_mode", "signing_identity", "primary_artifact_path",
+        "candidate_artifact_paths",
+    }
+    if (
+        not raw_profile or set(raw_profile) != profile_keys
+        or profile.get("sha256") != (sha256_file(profile_snapshot) if profile_snapshot and profile_snapshot.is_file() else None)
+        or any(profile.get(key) != raw_profile.get(key) for key in profile_keys)
+    ):
+        errors.append("Phase 5 release profile snapshot/public fields differ")
+    authorization = work_order.get("signing_authorization")
+    needs_auth = raw_profile.get("signing_mode") in {"LOCAL_PRODUCTION", "REMOTE"}
+    if not isinstance(authorization, dict) or authorization.get("required") is not needs_auth or authorization.get("present") is not needs_auth:
+        errors.append("Phase 5 signing authorization does not match signing mode")
+    elif needs_auth:
+        validate_frozen_file_record(run_dir, authorization, "Phase 5 signing authorization", errors, require_live=False)
+
+    required_h5envs = work_order.get("required_h5env_ids")
+    order_h5envs = work_order.get("h5envs")
+    if (
+        not isinstance(required_h5envs, list) or not required_h5envs
+        or required_h5envs != sorted(set(required_h5envs)) or not isinstance(order_h5envs, list)
+    ):
+        errors.append("Phase 5 required H5ENV set is invalid")
+        required_h5envs, order_h5envs = [], []
+    registry_h5 = index_unique_rows(
+        read_csv_rows(phase_dir / "environments" / "h5env-registry.csv"),
+        "h5env_id", "Phase 5 H5ENV registry", errors,
+    )
+    order_h5_by_id = {
+        str(item.get("h5env_id", "")): item for item in order_h5envs if isinstance(item, dict)
+    }
+    if set(registry_h5) != set(required_h5envs) or set(order_h5_by_id) != set(required_h5envs):
+        errors.append("Phase 5 H5ENV registry/work order coverage differs")
+    for h5env_id in required_h5envs:
+        record = order_h5_by_id.get(h5env_id, {})
+        snapshot = safe_relative_path(
+            run_dir, str(record.get("snapshot_relative_path", "")), f"{h5env_id} controller snapshot", errors
+        )
+        row = registry_h5.get(h5env_id, {})
+        local = safe_relative_path(phase_dir, row.get("relative_path", ""), f"{h5env_id} local environment", errors)
+        if (
+            record.get("required") is not True or row.get("required") != "true"
+            or row.get("status") != "FROZEN" or row.get("frozen_by") != ownership.get("regression_lead_id")
+            or row.get("base_h4env_id") != record.get("base_h4env_id")
+            or not snapshot or not local or not snapshot.is_file() or not local.is_file()
+            or record.get("sha256") != sha256_file(snapshot)
+            or row.get("environment_sha256") != sha256_file(local)
+            or snapshot.read_bytes() != local.read_bytes()
+        ):
+            errors.append(f"Phase 5 H5ENV snapshot/registry differs: {h5env_id}")
+
+    candidate_rows = read_csv_rows(phase_dir / "release-candidate-registry.csv")
+    active_candidates = [row for row in candidate_rows if row.get("status") == "SEALED"]
+    if len(candidate_rows) != 1 or len(active_candidates) != 1:
+        errors.append("Phase 5 must contain exactly one sealed Release-Candidate-ID")
+        candidate_row: dict[str, str] = {}
+    else:
+        candidate_row = active_candidates[0]
+    release_candidate_id = str(candidate_row.get("release_candidate_id", ""))
+    candidate_record_path = safe_relative_path(
+        phase_dir, candidate_row.get("relative_path", ""), "release candidate record", errors
+    )
+    candidate_dir = phase_dir / "release-candidates" / release_candidate_id
+    candidate_record: dict[str, Any] = {}
+    if ID_RE.fullmatch(release_candidate_id) and candidate_dir.is_dir() and not candidate_dir.is_symlink():
+        package_entries = verify_sealed_tree(
+            candidate_dir, release_candidate_id, f"Release candidate {release_candidate_id}", errors
+        )
+        manifest_path = candidate_dir / "manifest.sha256"
+        if manifest_path.is_file() and candidate_row.get("candidate_manifest_sha256") != sha256_file(manifest_path):
+            errors.append("Release candidate registry manifest hash differs")
+        if candidate_record_path and candidate_record_path.is_file():
+            try:
+                candidate_record = load_json(candidate_record_path)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if "candidate-record.json" not in package_entries:
+            errors.append("Release candidate package lacks candidate-record.json")
+    else:
+        errors.append("Release candidate package path/ID is unsafe or missing")
+    candidate_artifacts = candidate_record.get("candidate_artifacts")
+    if not isinstance(candidate_artifacts, list) or not candidate_artifacts:
+        errors.append("Release candidate record has no artifacts")
+        candidate_artifacts = []
+    artifact_map: dict[str, str] = {}
+    report_artifacts: list[dict[str, Any]] = []
+    for item in candidate_artifacts:
+        if not isinstance(item, dict):
+            errors.append("Release candidate artifact record is not an object")
+            continue
+        relative = str(item.get("relative_path", ""))
+        prefix = f"release-candidates/{release_candidate_id}/"
+        local_relative = relative[len(prefix):] if relative.startswith(prefix) else ""
+        path = safe_relative_path(candidate_dir, local_relative, "release candidate artifact", errors)
+        digest = str(item.get("sha256", ""))
+        if (
+            not path or not path.is_file() or not SHA256_RE.fullmatch(digest)
+            or sha256_file(path) != digest or path.stat().st_size != item.get("size")
+        ):
+            errors.append(f"Release candidate artifact bytes differ: {relative}")
+        artifact_map[relative] = digest
+        report_artifacts.append({"relative_path": relative, "sha256": digest, "size": item.get("size")})
+    try:
+        row_artifacts = json.loads(candidate_row.get("artifact_sha256s", ""))
+    except json.JSONDecodeError:
+        row_artifacts = None
+    profile_projection = {
+        key: raw_profile.get(key) for key in (
+            "bundle_id", "version_name", "version_code", "target_api", "device_types",
+            "build_mode", "signing_identity",
+        )
+    }
+    if (
+        candidate_record.get("release_candidate_id") != release_candidate_id
+        or candidate_record.get("run_id") != scope.get("run_id")
+        or candidate_record.get("work_order_id") != work_order_id
+        or candidate_record.get("source_snapshot_sha256") != source_snapshot_sha256
+        or candidate_record.get("built_by") != ownership.get("candidate_build_agent_id")
+        or candidate_record.get("status") != "SEALED"
+        or row_artifacts != artifact_map
+        or candidate_row.get("source_snapshot_sha256") != source_snapshot_sha256
+        or candidate_row.get("built_by") != ownership.get("candidate_build_agent_id")
+        or candidate_row.get("artifact_count") != str(len(artifact_map))
+        or any(candidate_record.get(key) != value for key, value in profile_projection.items())
+        or any(
+            candidate_row.get(key) != (
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                if key == "device_types" else str(value)
+            )
+            for key, value in profile_projection.items()
+        )
+    ):
+        errors.append("Release candidate identity, source, owner, profile, or registry differs")
+
+    parity_ids = {
+        row.get("parity_id", "") for row in read_csv_rows(
+            run_dir / "phase-04-harmony-implementation" / "parity-map.csv"
+        ) if row.get("status") == "ACCEPTED"
+    }
+    included = set(scope.get("migration_scope", {}).get("included_features", []))
+    flow_rows = read_csv_rows(phase_dir / "flow-edge-registry.csv")
+    invariant_rows = read_csv_rows(phase_dir / "lifecycle-invariants.csv")
+    no_cross_rows = read_csv_rows(phase_dir / "no-cross-flow.csv")
+    flow_index = index_unique_rows(flow_rows, "flow_edge_id", "Phase 5 flow edges", errors)
+    invariant_index = index_unique_rows(
+        invariant_rows, "lifecycle_invariant_id", "Phase 5 invariants", errors
+    )
+    no_cross_index: dict[str, dict[str, str]] = {}
+    feature_coverage: set[str] = set()
+    for row in flow_rows:
+        flow_id = row.get("flow_edge_id", "")
+        envs = json_string_array(row.get("applicable_h5env_ids", ""), f"{flow_id}.H5ENV", errors, allow_empty=False)
+        features = json_string_array(row.get("feature_ids", ""), f"{flow_id}.features", errors, allow_empty=False)
+        basis = json_string_array(row.get("evidence_basis", ""), f"{flow_id}.basis", errors, allow_empty=False)
+        if (
+            row.get("from_parity_id") not in parity_ids or row.get("to_parity_id") not in parity_ids
+            or not set(envs) <= set(required_h5envs) or not set(features) <= included
+            or not basis or row.get("frozen_by") != ownership.get("regression_lead_id")
+            or row.get("status") != "FROZEN" or not row.get("user_action")
+        ):
+            errors.append(f"Phase 5 flow edge is not frozen from real parity evidence: {flow_id}")
+        feature_coverage.update(features)
+    for row in invariant_rows:
+        invariant_id = row.get("lifecycle_invariant_id", "")
+        envs = json_string_array(row.get("applicable_h5env_ids", ""), f"{invariant_id}.H5ENV", errors, allow_empty=False)
+        features = json_string_array(row.get("feature_ids", ""), f"{invariant_id}.features", errors, allow_empty=False)
+        categories = json_string_array(
+            row.get("required_command_categories", ""), f"{invariant_id}.commands", errors, allow_empty=False
+        )
+        if (
+            not set(envs) <= set(required_h5envs) or not set(features) <= included or not categories
+            or not row.get("evidence_basis") or not row.get("rule")
+            or row.get("frozen_by") != ownership.get("regression_lead_id")
+            or row.get("status") != "FROZEN"
+        ):
+            errors.append(f"Phase 5 lifecycle invariant is invalid: {invariant_id}")
+        feature_coverage.update(features)
+    for row in no_cross_rows:
+        feature_id = row.get("feature_id", "")
+        if feature_id in no_cross_index:
+            errors.append(f"Duplicate NO_CROSS_FLOW Feature-ID: {feature_id}")
+        no_cross_index[feature_id] = row
+        if (
+            feature_id not in included or not row.get("evidence_basis") or not row.get("reason")
+            or row.get("frozen_by") != ownership.get("regression_lead_id")
+            or row.get("status") != "FROZEN"
+        ):
+            errors.append(f"NO_CROSS_FLOW is not independently supported: {feature_id}")
+        feature_coverage.add(feature_id)
+    if feature_coverage != included or set(no_cross_index) & {
+        feature for row in flow_rows + invariant_rows
+        for feature in json_string_array(row.get("feature_ids", "[]"), "feature coverage", [], allow_empty=True)
+    }:
+        errors.append("Phase 5 flow/invariant/NO_CROSS_FLOW feature coverage is incomplete or contradictory")
+
+    scenario_rows = read_csv_rows(phase_dir / "scenario-registry.csv")
+    scenario_index = index_unique_rows(scenario_rows, "scenario_id", "Phase 5 scenarios", errors)
+    covered_flows: set[str] = set()
+    covered_invariants: set[str] = set()
+    scenario_env_pairs: set[tuple[str, str]] = set()
+    scenario_hashes: dict[str, str] = {}
+    scenario_checkpoints: dict[str, set[str]] = {}
+    for scenario_id, row in scenario_index.items():
+        scenario_path = safe_relative_path(
+            phase_dir, row.get("scenario_relative_path", ""), f"scenario {scenario_id}", errors
+        )
+        scenario: dict[str, Any] = {}
+        recomputed_scenario_sha = ""
+        if scenario_path and scenario_path.is_file():
+            try:
+                scenario = load_json(scenario_path)
+                hash_value = scenario.pop("scenario_sha256", "")
+                canonical = json.dumps(
+                    scenario, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                )
+                recomputed_scenario_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                scenario["scenario_sha256"] = hash_value
+            except ValueError as exc:
+                errors.append(str(exc))
+        flows = json_string_array(row.get("flow_edge_ids", ""), f"{scenario_id}.flows", errors)
+        invariants = json_string_array(
+            row.get("lifecycle_invariant_ids", ""), f"{scenario_id}.invariants", errors
+        )
+        envs = json_string_array(
+            row.get("applicable_h5env_ids", ""), f"{scenario_id}.H5ENV", errors, allow_empty=False
+        )
+        checkpoints = json_string_array(
+            row.get("checkpoint_ids", ""), f"{scenario_id}.checkpoints", errors, allow_empty=False
+        )
+        row_sha = row.get("scenario_sha256", "")
+        if (
+            not scenario_path or not scenario_path.is_file() or not SHA256_RE.fullmatch(row_sha)
+            or recomputed_scenario_sha != row_sha
+            or scenario.get("scenario_id") != scenario_id
+            or scenario.get("scenario_version") != row.get("scenario_version")
+            or scenario.get("scenario_sha256") != row_sha
+            or row.get("release_candidate_id") != release_candidate_id
+            or row.get("frozen_by") != ownership.get("regression_lead_id")
+            or row.get("status") != "FROZEN"
+            or not set(flows) <= set(flow_index) or not set(invariants) <= set(invariant_index)
+            or not set(envs) <= set(required_h5envs) or not (flows or invariants)
+        ):
+            errors.append(f"Phase 5 scenario identity/coverage is invalid: {scenario_id}")
+        scenario_hashes[scenario_id] = row_sha
+        scenario_checkpoints[scenario_id] = set(checkpoints)
+        covered_flows.update(flows)
+        covered_invariants.update(invariants)
+        scenario_env_pairs.update((scenario_id, env) for env in envs)
+    if covered_flows != set(flow_index) or covered_invariants != set(invariant_index):
+        errors.append("Phase 5 scenarios do not exactly cover all flow edges and invariants")
+
+    evidence_rows = read_csv_rows(phase_dir / "evidence-index.csv")
+    active_evidence = [row for row in evidence_rows if row.get("status") == "SEALED"]
+    evidence_index = index_unique_rows(active_evidence, "evidence_id", "Phase 5 evidence", errors)
+    evidence_by_pair: dict[tuple[str, str], str] = {}
+    candidate_manifest_sha = candidate_row.get("candidate_manifest_sha256", "")
+    for evidence_id, row in evidence_index.items():
+        pair = (row.get("scenario_id", ""), row.get("h5env_id", ""))
+        if pair in evidence_by_pair:
+            errors.append(f"Multiple active Phase 5 evidence packages for {pair}")
+        evidence_by_pair[pair] = evidence_id
+        expected_relative = f"evidence/{pair[1]}/{pair[0]}/{evidence_id}"
+        directory = safe_relative_path(phase_dir, row.get("evidence_relative_path", ""), evidence_id, errors)
+        metadata: dict[str, Any] = {}
+        if directory and directory.is_dir():
+            entries = verify_sealed_tree(directory, evidence_id, f"Regression evidence {evidence_id}", errors)
+            if "metadata.json" not in entries:
+                errors.append(f"Regression evidence lacks metadata: {evidence_id}")
+            try:
+                metadata = load_json(directory / "metadata.json")
+            except ValueError as exc:
+                errors.append(str(exc))
+            manifest_path = directory / "manifest.sha256"
+            if manifest_path.is_file() and row.get("evidence_manifest_sha256") != sha256_file(manifest_path):
+                errors.append(f"Regression evidence manifest hash differs: {evidence_id}")
+        if (
+            pair not in scenario_env_pairs or row.get("evidence_relative_path") != expected_relative
+            or row.get("scenario_version") != scenario_index.get(pair[0], {}).get("scenario_version")
+            or row.get("scenario_sha256") != scenario_hashes.get(pair[0])
+            or row.get("release_candidate_id") != release_candidate_id
+            or row.get("candidate_manifest_sha256") != candidate_manifest_sha
+            or row.get("executed_by") not in {
+                ownership.get("journey_executor_id"), ownership.get("quality_agent_id")
+            }
+            or metadata.get("evidence_id") not in {None, evidence_id}
+            or metadata.get("regression_evidence_id") not in {None, evidence_id}
+            or metadata.get("scenario_id") != pair[0]
+            or metadata.get("h5env_id") != pair[1]
+            or metadata.get("release_candidate_id") != release_candidate_id
+            or metadata.get("candidate_manifest_sha256") != candidate_manifest_sha
+            or metadata.get("scenario_sha256") != scenario_hashes.get(pair[0])
+        ):
+            errors.append(f"Regression evidence identity/candidate/scenario differs: {evidence_id}")
+        metadata_checkpoints = metadata.get("checkpoint_ids")
+        if isinstance(metadata_checkpoints, list) and set(metadata_checkpoints) != scenario_checkpoints.get(pair[0], set()):
+            errors.append(f"Regression evidence checkpoint coverage differs: {evidence_id}")
+    if set(evidence_by_pair) != scenario_env_pairs:
+        errors.append("Phase 5 lacks exactly one active evidence package per scenario/H5ENV")
+
+    acceptance_rows = read_csv_rows(phase_dir / "scenario-acceptance.csv")
+    active_reviews = [row for row in acceptance_rows if row.get("status") == "ACCEPTED"]
+    review_by_evidence: dict[str, dict[str, str]] = {}
+    for row in active_reviews:
+        evidence_id = row.get("evidence_id", "")
+        if evidence_id in review_by_evidence:
+            errors.append(f"Multiple active Phase 5 reviews for evidence: {evidence_id}")
+        review_by_evidence[evidence_id] = row
+        path = safe_relative_path(phase_dir, row.get("review_relative_path", ""), "Phase 5 review", errors)
+        review: dict[str, Any] = {}
+        if path and path.is_file():
+            try:
+                review = load_json(path)
+            except ValueError as exc:
+                errors.append(str(exc))
+        evidence = evidence_index.get(evidence_id, {})
+        if (
+            not path or not path.is_file() or row.get("review_sha256") != sha256_file(path)
+            or row.get("reviewed_by") != ownership.get("system_acceptance_agent_id")
+            or row.get("decision") != "ACCEPTED" or row.get("release_candidate_id") != release_candidate_id
+            or row.get("candidate_manifest_sha256") != candidate_manifest_sha
+            or row.get("scenario_id") != evidence.get("scenario_id")
+            or row.get("h5env_id") != evidence.get("h5env_id")
+            or review.get("evidence_id") not in {None, evidence_id}
+            or review.get("reviewed_by") not in {None, ownership.get("system_acceptance_agent_id")}
+            or review.get("decision") not in {None, "ACCEPTED"}
+        ):
+            errors.append(f"Phase 5 independent scenario review differs: {evidence_id}")
+    if set(review_by_evidence) != set(evidence_index):
+        errors.append("Phase 5 does not have exactly one accepted independent review per evidence")
+
+    local_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
+    controller_rework = [
+        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
+        if row.get("phase") == "5"
+    ]
+    local_ids = [row.get("ticket_id", "") for row in local_rework]
+    controller_ids = [row.get("rework_id", "") for row in controller_rework]
+    if (
+        len(local_ids) != len(set(local_ids)) or len(controller_ids) != len(set(controller_ids))
+        or set(local_ids) != set(controller_ids)
+        or any(row.get("status") != "CLOSED" for row in local_rework + controller_rework)
+    ):
+        errors.append("Phase 5 local/controller rework ledgers are not uniquely mirrored and closed")
+    for local in local_rework:
+        matches = [row for row in controller_rework if row.get("rework_id") == local.get("ticket_id")]
+        if len(matches) != 1:
+            continue
+        mirror = matches[0]
+        expected = {
+            "created_at": local.get("opened_at", ""),
+            "record_id": local.get("scenario_id", ""),
+            "env_id": local.get("h5env_id", ""),
+            "evidence_id": local.get("failed_evidence_id", ""),
+            "gate_rule": local.get("problem_type", ""),
+            "reason": local.get("reason", ""),
+            "assigned_to": local.get("owner_id", ""),
+            "completion_condition": local.get("completion_condition", ""),
+            "resolved_at": local.get("closed_at", ""),
+            "resolution_evidence_id": local.get("resolution_evidence_id", ""),
+            "reviewed_by": local.get("closed_by", ""),
+        }
+        if any(mirror.get(key, "") != value for key, value in expected.items()):
+            errors.append(f"Phase 5 controller rework mirror differs: {local.get('ticket_id')}")
+
+    expected_report_identity = {
+        "phase": 5,
+        "run_id": scope.get("run_id"),
+        "work_order_id": work_order_id,
+        "verdict": "PASS",
+        "final_verdict": "PASS",
+        "reviewer_id": ownership.get("system_acceptance_agent_id"),
+        "release_candidate_id": release_candidate_id,
+        "source_snapshot_sha256": source_snapshot_sha256,
+        "input_lock_sha256": sha256_file(phase_dir / "stage-05-input-lock.json"),
+        "work_order_sha256": work_order_sha256,
+    }
+    if (
+        any(report.get(key) != value for key, value in expected_report_identity.items())
+        or report.get("candidate_artifacts") != sorted(report_artifacts, key=lambda item: item["relative_path"])
+        or report.get("errors") != []
+        or report.get("open_rework") not in {0, None}
+        or report.get("closure_manifest_sha256")
+        != sha256_file(phase_dir / "stage-05-closure-manifest.sha256")
+    ):
+        errors.append("Phase 5 final report identity, reviewer, candidate bytes, or verdict is invalid")
+    for key, value in profile_projection.items():
+        if report.get(key) != value:
+            errors.append(f"Phase 5 final report candidate identity differs: {key}")
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    expected_counts = {
+        "flow_edges": len(flow_rows), "lifecycle_invariants": len(invariant_rows),
+        "no_cross_flow": len(no_cross_rows), "scenarios": len(scenario_rows),
+        "evidence": len(evidence_index), "reviews": len(review_by_evidence), "open_rework": 0,
+    }
+    if counts and any(counts.get(key) != value for key, value in expected_counts.items() if key in counts):
+        errors.append("Phase 5 report counts differ from the sealed ledgers")
+
+    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
+    phase5_tasks = [row for row in ledger_rows if row.get("phase") == "5"]
+    if (
+        len(phase5_tasks) != 1 or phase5_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
+        or phase5_tasks[0].get("owner") != ownership.get("regression_lead_id")
+    ):
+        errors.append("Controller task ledger does not have the assigned Phase 5 task")
+    return (
+        errors, warnings,
+        release_candidate_id if ID_RE.fullmatch(release_candidate_id) else None,
+        str(ownership.get("regression_lead_id") or "") or None,
+        work_order_id,
+    )
+
+
+def phase6_command_words(argv: Any) -> set[str]:
+    if not isinstance(argv, list):
+        return {"<invalid>"}
+    words: set[str] = set()
+    for index, token in enumerate(argv):
+        if not isinstance(token, str) or not token:
+            words.add("<invalid>")
+            continue
+        if token.startswith("{") and token.endswith("}"):
+            continue
+        value = Path(token).name if index == 0 else token
+        value = value.strip().lower().replace("_", "-").lstrip("-").split("=", 1)[0]
+        words.add(value)
+    return words
+
+
+def validate_phase6(
+    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any],
+) -> tuple[list[str], list[str], str | None, str | None, str | None, str | None]:
+    """Independently recheck byte-preserving delivery acceptance without external actions."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    phase_dir = run_dir / "phase-06-harmony-delivery"
+    required = (
+        "stage-06-input-lock.json", "phase-manifest.json", "candidate-custody-registry.csv",
+        "delivery-smoke-index.csv", "material-snapshot-registry.csv", "rework-tickets.csv",
+        "delivery-manifest.json", "inputs", "environments", "candidate-custody",
+        "smoke-evidence", "materials", "stage-06-gate-report.json",
+        "stage-06-closure-manifest.sha256", "CLOSED",
+    )
+    for relative in required:
+        candidate_path = phase_dir / relative
+        if not candidate_path.exists() or candidate_path.is_symlink():
+            errors.append(f"Missing or unsafe Phase 6 artifact: {candidate_path}")
+    try:
+        input_lock = load_json(phase_dir / "stage-06-input-lock.json")
+        manifest = load_json(phase_dir / "phase-manifest.json")
+        report = load_json(phase_dir / "stage-06-gate-report.json")
+        delivery_manifest = load_json(phase_dir / "delivery-manifest.json")
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors, warnings, None, None, None, None
+
+    verify_phase56_closure(phase_dir, 6, errors)
+    verify_closed_marker(phase_dir, 6, errors)
+    work_order, ownership, work_order_sha256, work_order_id = validate_phase56_work_order(
+        run_dir, scope, phase1_facts, 6, manifest, input_lock, STAGE6_ROLE_KEYS,
+        "harmonyos-delivery-acceptance", errors,
+    )
+    expected_permissions = {
+        "rebuild": False, "resign": False, "upload": False, "send": False,
+        "distribute": False, "store": False, "remote_signing": False, "publish": False,
+    }
+    if work_order.get("permissions") != expected_permissions:
+        errors.append("Phase 6 work order does not explicitly prohibit every mutating/external action")
+    if (
+        manifest.get("phase") != 6 or manifest.get("status") != "IN_PROGRESS"
+        or manifest.get("work_order_id") != work_order_id
+        or manifest.get("ownership") != ownership
+        or manifest.get("initialized_by") != ownership.get("delivery_lead_id")
+        or input_lock.get("work_order", {}).get("work_order_id") != work_order_id
+        or input_lock.get("work_order", {}).get("sha256") != work_order_sha256
+        or manifest.get("release_candidate_id") != input_lock.get("release_candidate_id")
+    ):
+        errors.append("Phase 6 manifest/input lock identity, owner, or work order differs")
+
+    order_inputs = work_order.get("inputs") if isinstance(work_order.get("inputs"), dict) else {}
+    expected_input_keys = {
+        "phase5_gate_report", "phase5_work_order", "phase5_input_lock",
+        "phase5_closure_manifest", "phase5_closed", "phase5_release_candidate_registry",
+    }
+    if set(order_inputs) != expected_input_keys:
+        errors.append("Phase 6 work order input key set differs")
+    for key in sorted(expected_input_keys):
+        validate_frozen_file_record(
+            run_dir, order_inputs.get(key), f"Phase 6 {key}", errors, require_live=True
+        )
+    local_inputs = input_lock.get("phase5_inputs") if isinstance(input_lock.get("phase5_inputs"), dict) else {}
+    if set(local_inputs) != expected_input_keys:
+        errors.append("Phase 6 local input lock does not cover the exact Gate 5 chain")
+    for key in sorted(expected_input_keys):
+        local = local_inputs.get(key)
+        order_record = order_inputs.get(key)
+        if not isinstance(local, dict) or not isinstance(order_record, dict):
+            continue
+        frozen = safe_relative_path(
+            phase_dir, str(local.get("frozen_relative_path", "")), f"Phase 6 frozen {key}", errors
+        )
+        if (
+            local.get("sha256") != order_record.get("sha256")
+            or not frozen or not frozen.is_file() or sha256_file(frozen) != local.get("sha256")
+        ):
+            errors.append(f"Phase 6 frozen local input differs: {key}")
+
+    candidate = work_order.get("candidate") if isinstance(work_order.get("candidate"), dict) else {}
+    release_candidate_id = str(candidate.get("release_candidate_id", ""))
+    artifacts = candidate.get("artifacts")
+    if not ID_RE.fullmatch(release_candidate_id) or not isinstance(artifacts, list) or not artifacts:
+        errors.append("Phase 6 work order lacks a safe candidate and artifact set")
+        artifacts = []
+    expected_artifacts: dict[str, dict[str, Any]] = {}
+    for item in artifacts:
+        if not isinstance(item, dict):
+            errors.append("Phase 6 candidate artifact record is not an object")
+            continue
+        relative = str(item.get("relative_path", ""))
+        if not relative.startswith(f"release-candidates/{release_candidate_id}/artifacts/") or relative in expected_artifacts:
+            errors.append(f"Unsafe/duplicate Phase 6 candidate artifact path: {relative}")
+            continue
+        path = safe_relative_path(
+            run_dir / "phase-05-harmony-regression", relative, "Gate 5 candidate artifact", errors
+        )
+        digest = str(item.get("sha256", ""))
+        if (
+            not path or not path.is_file() or not SHA256_RE.fullmatch(digest)
+            or sha256_file(path) != digest or path.stat().st_size != item.get("size")
+        ):
+            errors.append(f"Gate 5 candidate bytes changed before Phase 6: {relative}")
+        expected_artifacts[relative] = item
+    if (
+        input_lock.get("release_candidate_id") != release_candidate_id
+        or manifest.get("release_candidate_id") != release_candidate_id
+        or candidate.get("candidate_registry_sha256")
+        != sha256_file(run_dir / "phase-05-harmony-regression" / "release-candidate-registry.csv")
+    ):
+        errors.append("Phase 6 candidate ID/registry binding differs from Gate 5")
+    candidate_identity = input_lock.get("candidate_identity") if isinstance(input_lock.get("candidate_identity"), dict) else {}
+    for key in (
+        "bundle_id", "version_name", "version_code", "target_api", "device_types",
+        "build_mode", "signing_identity", "source_snapshot_sha256",
+    ):
+        if candidate.get(key) != candidate_identity.get(key):
+            errors.append(f"Phase 6 candidate identity differs from input lock: {key}")
+
+    locked_artifacts = input_lock.get("candidate_artifacts")
+    if not isinstance(locked_artifacts, list) or len(locked_artifacts) != len(expected_artifacts):
+        errors.append("Phase 6 input lock candidate artifact coverage differs")
+        locked_artifacts = []
+    for item in locked_artifacts:
+        if not isinstance(item, dict):
+            errors.append("Phase 6 locked candidate artifact is invalid")
+            continue
+        expected = expected_artifacts.get(str(item.get("relative_path", "")))
+        frozen = safe_relative_path(
+            phase_dir, str(item.get("frozen_relative_path", "")), "frozen Gate 5 candidate", errors
+        )
+        if (
+            not expected or item.get("sha256") != expected.get("sha256")
+            or item.get("size") != expected.get("size") or not frozen or not frozen.is_file()
+            or sha256_file(frozen) != expected.get("sha256") or frozen.stat().st_size != expected.get("size")
+        ):
+            errors.append(f"Phase 6 frozen candidate copy differs: {item.get('relative_path')}")
+
+    required_h6envs = work_order.get("required_h6env_ids")
+    order_envs = work_order.get("h6envs")
+    if (
+        not isinstance(required_h6envs, list) or not required_h6envs
+        or required_h6envs != sorted(set(required_h6envs)) or not isinstance(order_envs, list)
+    ):
+        errors.append("Phase 6 required H6ENV set is invalid")
+        required_h6envs, order_envs = [], []
+    env_by_id = {str(item.get("h6env_id", "")): item for item in order_envs if isinstance(item, dict)}
+    if set(env_by_id) != set(required_h6envs):
+        errors.append("Phase 6 H6ENV work-order coverage differs")
+    for env_id in required_h6envs:
+        record = env_by_id.get(env_id, {})
+        snapshot = safe_relative_path(
+            run_dir, str(record.get("snapshot_relative_path", "")), f"{env_id} controller snapshot", errors
+        )
+        local = phase_dir / "environments" / env_id / "environment.json"
+        environment: dict[str, Any] = {}
+        if local.is_file() and not local.is_symlink():
+            try:
+                environment = load_json(local)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if (
+            record.get("required") is not True or not snapshot or not snapshot.is_file()
+            or not local.is_file() or local.is_symlink() or record.get("sha256") != sha256_file(snapshot)
+            or sha256_file(local) != record.get("sha256") or snapshot.read_bytes() != local.read_bytes()
+            or environment.get("h6env_id") != env_id
+            or environment.get("base_h5env_id") != record.get("base_h5env_id")
+            or environment.get("install_artifact_relative_path") not in expected_artifacts
+        ):
+            errors.append(f"Phase 6 H6ENV snapshot/identity/install artifact differs: {env_id}")
+        env_identity = environment.get("candidate_identity") if isinstance(environment.get("candidate_identity"), dict) else {}
+        identity_projection = {
+            "bundle_id": candidate_identity.get("bundle_id"),
+            "version_name": candidate_identity.get("version_name"),
+            "version_code": candidate_identity.get("version_code"),
+            "target_api": candidate_identity.get("target_api"),
+            "device_types": candidate_identity.get("device_types"),
+            "build_mode": candidate_identity.get("build_mode"),
+            "signing_fingerprint": candidate_identity.get("signing_identity"),
+        }
+        if env_identity != identity_projection:
+            errors.append(f"Phase 6 H6ENV candidate identity differs: {env_id}")
+        contracts = environment.get("command_contracts") if isinstance(environment.get("command_contracts"), dict) else {}
+        expected_categories = {
+            "DEVICE_CHECK", "INSTALL", "IDENTITY_QUERY", "LAUNCH", "SMOKE_ASSERT",
+            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+        }
+        if set(contracts) != expected_categories:
+            errors.append(f"Phase 6 H6ENV command categories differ: {env_id}")
+        for category, contract in contracts.items():
+            argv = contract.get("argv") if isinstance(contract, dict) else None
+            words = phase6_command_words(argv)
+            if words & PHASE6_PROHIBITED_COMMAND_WORDS or "<invalid>" in words:
+                errors.append(f"Phase 6 H6ENV contains a prohibited command: {env_id}/{category}")
+
+    custody_rows = read_csv_rows(phase_dir / "candidate-custody-registry.csv")
+    active_custody = [row for row in custody_rows if row.get("status") == "SEALED"]
+    if len(active_custody) != 1:
+        errors.append("Phase 6 must have exactly one active Candidate-Custody-ID")
+        custody_row: dict[str, str] = {}
+    else:
+        custody_row = active_custody[0]
+    custody_id = str(custody_row.get("custody_id", ""))
+    custody_dir = safe_relative_path(
+        phase_dir, custody_row.get("relative_path", ""), "candidate custody", errors
+    )
+    custody: dict[str, Any] = {}
+    if custody_dir and custody_dir.is_dir() and ID_RE.fullmatch(custody_id):
+        verify_sealed_tree(custody_dir, custody_id, f"Candidate custody {custody_id}", errors)
+        try:
+            custody = load_json(custody_dir / "metadata.json")
+        except ValueError as exc:
+            errors.append(str(exc))
+    custody_artifacts = custody.get("artifacts") if isinstance(custody.get("artifacts"), list) else []
+    custody_by_gate5: dict[str, dict[str, Any]] = {
+        str(item.get("gate5_relative_path", "")): item for item in custody_artifacts if isinstance(item, dict)
+    }
+    if (
+        not ID_RE.fullmatch(custody_id) or custody.get("candidate_custody_id") != custody_id
+        or custody.get("release_candidate_id") != release_candidate_id
+        or custody.get("operation") != "BYTE_COPY_ONLY" or custody.get("rebuild_performed") is not False
+        or custody.get("resign_performed") is not False or custody.get("status") != "SEALED"
+        or custody.get("copied_by") != ownership.get("candidate_custody_agent_id")
+        or set(custody_by_gate5) != set(expected_artifacts)
+    ):
+        errors.append("Phase 6 candidate custody identity, ownership, or byte-only operation differs")
+    for relative, expected in expected_artifacts.items():
+        item = custody_by_gate5.get(relative, {})
+        path = (
+            safe_relative_path(custody_dir, str(item.get("relative_path", "")), "custody artifact", errors)
+            if custody_dir else None
+        )
+        if (
+            item.get("sha256") != expected.get("sha256") or item.get("size") != expected.get("size")
+            or not path or not path.is_file() or sha256_file(path) != expected.get("sha256")
+            or path.stat().st_size != expected.get("size")
+        ):
+            errors.append(f"Candidate custody bytes differ from Gate 5: {relative}")
+
+    smoke_rows = read_csv_rows(phase_dir / "delivery-smoke-index.csv")
+    active_smoke = [row for row in smoke_rows if row.get("status") == "PASS"]
+    smoke_by_env: dict[str, dict[str, str]] = {}
+    for row in active_smoke:
+        env_id = row.get("h6env_id", "")
+        smoke_id = row.get("delivery_smoke_id", "")
+        if env_id in smoke_by_env:
+            errors.append(f"Multiple active Delivery-Smoke-IDs for {env_id}")
+        smoke_by_env[env_id] = row
+        directory = safe_relative_path(phase_dir, row.get("relative_path", ""), smoke_id, errors)
+        metadata: dict[str, Any] = {}
+        if directory and directory.is_dir() and ID_RE.fullmatch(smoke_id):
+            entries = verify_sealed_tree(directory, smoke_id, f"Delivery smoke {smoke_id}", errors)
+            for name in ("metadata.json", "command-records.json", "screenshot.png", "ui-tree.json"):
+                if name not in entries:
+                    errors.append(f"Delivery smoke {smoke_id} lacks {name}")
+            try:
+                metadata = load_json(directory / "metadata.json")
+                validate_complete_png(directory / "screenshot.png")
+                tree = json.loads((directory / "ui-tree.json").read_text(encoding="utf-8"))
+                if tree in ({}, [], None, ""):
+                    errors.append(f"Delivery smoke UI tree is empty: {smoke_id}")
+                commands = json.loads((directory / "command-records.json").read_text(encoding="utf-8"))
+                for command in commands if isinstance(commands, list) else []:
+                    words = phase6_command_words(command.get("argv") if isinstance(command, dict) else None)
+                    if words & PHASE6_PROHIBITED_COMMAND_WORDS or "<invalid>" in words:
+                        errors.append(f"Delivery smoke contains prohibited command: {smoke_id}")
+            except (ValueError, OSError, json.JSONDecodeError) as exc:
+                errors.append(f"Delivery smoke {smoke_id}: {exc}")
+        if (
+            env_id not in required_h6envs or not ID_RE.fullmatch(smoke_id)
+            or row.get("candidate_custody_id") != custody_id
+            or row.get("release_candidate_id") != release_candidate_id
+            or row.get("executed_by") != ownership.get("candidate_validation_agent_id")
+            or metadata.get("delivery_smoke_id") != smoke_id or metadata.get("h6env_id") != env_id
+            or metadata.get("candidate_custody_id") != custody_id
+            or metadata.get("release_candidate_id") != release_candidate_id
+            or metadata.get("executed_by") != ownership.get("candidate_validation_agent_id")
+            or metadata.get("status") != "PASS"
+        ):
+            errors.append(f"Phase 6 delivery smoke identity/owner/candidate differs: {smoke_id}")
+    if set(smoke_by_env) != set(required_h6envs):
+        errors.append("Phase 6 lacks exactly one active smoke package per required H6ENV")
+
+    material_rows = read_csv_rows(phase_dir / "material-snapshot-registry.csv")
+    active_materials = [row for row in material_rows if row.get("status") == "SEALED"]
+    if len(active_materials) != 1:
+        errors.append("Phase 6 must have exactly one active Material-Snapshot-ID")
+        material_row: dict[str, str] = {}
+    else:
+        material_row = active_materials[0]
+    material_id = str(material_row.get("material_snapshot_id", ""))
+    material_dir = safe_relative_path(
+        phase_dir, material_row.get("relative_path", ""), "material snapshot", errors
+    )
+    material: dict[str, Any] = {}
+    if material_dir and material_dir.is_dir() and ID_RE.fullmatch(material_id):
+        verify_sealed_tree(material_dir, material_id, f"Material snapshot {material_id}", errors)
+        try:
+            material = load_json(material_dir / "metadata.json")
+        except ValueError as exc:
+            errors.append(str(exc))
+    if (
+        material.get("material_snapshot_id") != material_id
+        or material.get("candidate_custody_id") != custody_id
+        or material.get("release_candidate_id") != release_candidate_id
+        or material.get("created_by") != ownership.get("material_consistency_agent_id")
+        or material.get("legal_conclusion") != "NOT_PERFORMED" or material.get("status") != "SEALED"
+    ):
+        errors.append("Phase 6 material snapshot identity, authority, or legal boundary differs")
+    for source in material.get("source_evidence", []) if isinstance(material.get("source_evidence"), list) else []:
+        if not isinstance(source, dict):
+            errors.append("Phase 6 material source evidence is invalid")
+            continue
+        path = safe_relative_path(
+            run_dir, str(source.get("relative_path", "")), "material source evidence", errors
+        )
+        if (
+            not path or not path.is_file() or path.suffix.lower() == ".mp4"
+            or sha256_file(path) != source.get("sha256") or path.stat().st_size != source.get("size")
+        ):
+            errors.append(f"Phase 6 material source evidence changed: {source.get('reference')}")
+
+    smoke_ids = {env: row.get("delivery_smoke_id", "") for env, row in sorted(smoke_by_env.items())}
+    external_actions = delivery_manifest.get("external_actions")
+    if (
+        delivery_manifest.get("phase") != 6
+        or not ID_RE.fullmatch(str(delivery_manifest.get("delivery_manifest_id", "")))
+        or delivery_manifest.get("release_candidate_id") != release_candidate_id
+        or delivery_manifest.get("candidate_custody_id") != custody_id
+        or delivery_manifest.get("delivery_smoke_ids") != smoke_ids
+        or delivery_manifest.get("material_snapshot_id") != material_id
+        or delivery_manifest.get("candidate_identity") != candidate_identity
+        or delivery_manifest.get("created_by") != ownership.get("delivery_lead_id")
+        or delivery_manifest.get("status") != "READY_FOR_ACCEPTANCE"
+        or not isinstance(external_actions, dict) or any(value is not False for value in external_actions.values())
+    ):
+        errors.append("Phase 6 delivery manifest identity, coverage, owner, or external-action record differs")
+    rollback = delivery_manifest.get("rollback") if isinstance(delivery_manifest.get("rollback"), dict) else {}
+    if (
+        rollback.get("owner_id") != ownership.get("delivery_lead_id")
+        or not isinstance(rollback.get("conditions"), list) or not rollback.get("conditions")
+        or not isinstance(rollback.get("steps"), list) or not rollback.get("steps")
+    ):
+        errors.append("Phase 6 rollback plan is incomplete or owned by another actor")
+    delivery_files = delivery_manifest.get("delivery_files")
+    if not isinstance(delivery_files, list) or len(delivery_files) != len(expected_artifacts):
+        errors.append("Phase 6 delivery manifest file coverage differs from Gate 5")
+        delivery_files = []
+    for item in delivery_files:
+        if not isinstance(item, dict):
+            errors.append("Phase 6 delivery file record is invalid")
+            continue
+        expected = expected_artifacts.get(str(item.get("gate5_relative_path", "")))
+        path = safe_relative_path(phase_dir, str(item.get("relative_path", "")), "delivery file", errors)
+        if (
+            not expected or item.get("sha256") != expected.get("sha256")
+            or item.get("size") != expected.get("size") or not path or not path.is_file()
+            or sha256_file(path) != expected.get("sha256") or path.stat().st_size != expected.get("size")
+        ):
+            errors.append(f"Phase 6 delivery file differs from Gate 5: {item.get('gate5_relative_path')}")
+
+    local_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
+    controller_rework = [
+        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
+        if row.get("phase") == "6"
+    ]
+    local_ids = [row.get("ticket_id", "") for row in local_rework]
+    controller_ids = [row.get("rework_id", "") for row in controller_rework]
+    if (
+        len(local_ids) != len(set(local_ids)) or len(controller_ids) != len(set(controller_ids))
+        or set(local_ids) != set(controller_ids)
+        or any(row.get("status") != "CLOSED" for row in local_rework + controller_rework)
+    ):
+        errors.append("Phase 6 local/controller rework ledgers are not uniquely mirrored and closed")
+    for local in local_rework:
+        matches = [row for row in controller_rework if row.get("rework_id") == local.get("ticket_id")]
+        if len(matches) != 1:
+            continue
+        mirror = matches[0]
+        expected = {
+            "created_at": local.get("opened_at", ""), "record_id": local.get("record_id", ""),
+            "env_id": local.get("h6env_id", ""), "evidence_id": local.get("record_id", ""),
+            "gate_rule": "GATE6", "reason": local.get("reason", ""),
+            "assigned_to": local.get("owner_id", ""),
+            "completion_condition": local.get("completion_condition", ""),
+            "resolved_at": local.get("closed_at", ""),
+            "resolution_evidence_id": local.get("resolution_record_id", ""),
+            "reviewed_by": local.get("closed_by", ""),
+        }
+        if any(mirror.get(key, "") != value for key, value in expected.items()):
+            errors.append(f"Phase 6 controller rework mirror differs: {local.get('ticket_id')}")
+
+    report_identity = {
+        "phase": 6,
+        "run_id": scope.get("run_id"),
+        "work_order_id": work_order_id,
+        "verdict": "PASS",
+        "final_verdict": "PASS",
+        "release_candidate_id": release_candidate_id,
+        "candidate_custody_id": custody_id,
+        "material_snapshot_id": material_id,
+        "delivery_manifest_id": delivery_manifest.get("delivery_manifest_id"),
+        "reviewer_id": ownership.get("delivery_acceptance_agent_id"),
+    }
+    if (
+        any(report.get(key) != value for key, value in report_identity.items())
+        or report.get("candidate_artifacts") != sorted(
+            [
+                {"relative_path": relative, "sha256": item.get("sha256"), "size": item.get("size")}
+                for relative, item in expected_artifacts.items()
+            ], key=lambda item: item["relative_path"],
+        )
+        or report.get("errors") != [] or report.get("open_rework") not in {0, None}
+        or report.get("external_actions_performed") not in {False, None}
+    ):
+        errors.append("Phase 6 final report identity, reviewer, candidate bytes, or verdict is invalid")
+
+    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
+    phase6_tasks = [row for row in ledger_rows if row.get("phase") == "6"]
+    if (
+        len(phase6_tasks) != 1 or phase6_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
+        or phase6_tasks[0].get("owner") != ownership.get("delivery_lead_id")
+    ):
+        errors.append("Controller task ledger does not have the assigned Phase 6 task")
+    return (
+        errors, warnings,
+        release_candidate_id if ID_RE.fullmatch(release_candidate_id) else None,
+        str(delivery_manifest.get("delivery_manifest_id") or "") or None,
+        str(ownership.get("delivery_lead_id") or "") or None,
+        work_order_id,
+    )
+
+
+def atomic_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"Refusing to replace symbolic-link target: {path}")
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def update_task_ledger(
+    run_dir: Path,
+    phase: int,
+    verdict: str,
+    errors: list[str],
+    ownership: dict[str, Any],
+    phase3_owner: str | None = None,
+    phase4_owner: str | None = None,
+    phase5_owner: str | None = None,
+    phase6_owner: str | None = None,
+) -> None:
+    path = run_dir / "controller" / "task-ledger.csv"
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    target = str(phase)
+    matches = [row for row in rows if row.get("phase") == target]
+    if len(matches) != 1 or not fieldnames:
+        raise ValueError(f"Task ledger has no unique phase {phase} row")
+    matches[0]["status"] = verdict
+    matches[0]["updated_at"] = utc_now()
+    matches[0]["notes"] = "; ".join(errors[:3])
+    for row in rows:
+        if row.get("phase") == "1":
+            row["owner"] = str(ownership.get("migration_controller_id", row.get("owner", "")))
+        elif row.get("phase") == "2":
+            row["owner"] = str(ownership.get("inventory_lead_id", row.get("owner", "")))
+        elif row.get("phase") == "3" and phase3_owner:
+            row["owner"] = phase3_owner
+        elif row.get("phase") == "4" and phase4_owner:
+            row["owner"] = phase4_owner
+        elif row.get("phase") == "5" and phase5_owner:
+            row["owner"] = phase5_owner
+        elif row.get("phase") == "6" and phase6_owner:
+            row["owner"] = phase6_owner
+    if path.is_symlink():
+        raise ValueError(f"Refusing symbolic-link task ledger: {path}")
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="raise")
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--phase", required=True, type=int, choices=(1, 2, 3, 4, 5, 6))
+    parser.add_argument("--write", action="store_true", help="Update controller/gate-report.json")
+    args = parser.parse_args()
+
+    run_input = Path(args.run_dir).expanduser().absolute()
+    if run_input.is_symlink():
+        parser.error("Migration run must not be a symbolic link")
+    run_dir = run_input.resolve()
+    try:
+        scope = load_json(run_dir / "controller" / "scope.json")
+        errors, warnings, baseline_env_id, facts = validate_phase1(run_dir, scope)
+    except ValueError as exc:
+        errors, warnings, baseline_env_id, facts = [str(exc)], [], None, {}
+
+    if args.phase in {2, 3, 4, 5, 6} and not errors:
+        phase_errors, phase_warnings = validate_phase2(run_dir, scope, baseline_env_id, facts)
+        errors.extend(phase_errors)
+        warnings.extend(phase_warnings)
+
+    harmony_environment_id = None
+    verification_id = None
+    phase3_owner = None
+    phase3_work_order_id = None
+    if args.phase in {3, 4, 5, 6} and not errors:
+        (
+            phase_errors,
+            phase_warnings,
+            harmony_environment_id,
+            verification_id,
+            phase3_owner,
+            phase3_work_order_id,
+        ) = validate_phase3(run_dir, scope, facts)
+        errors.extend(phase_errors)
+        warnings.extend(phase_warnings)
+
+    harmony_build_ids: list[str] = []
+    harmony_evidence_ids: list[str] = []
+    phase4_owner = None
+    phase4_work_order_id = None
+    if args.phase in {4, 5, 6} and not errors:
+        (
+            phase_errors,
+            phase_warnings,
+            harmony_build_ids,
+            harmony_evidence_ids,
+            phase4_owner,
+            phase4_work_order_id,
+        ) = validate_phase4(run_dir, scope, facts)
+        errors.extend(phase_errors)
+        warnings.extend(phase_warnings)
+
+    release_candidate_id = None
+    phase5_owner = None
+    phase5_work_order_id = None
+    if args.phase in {5, 6} and not errors:
+        (
+            phase_errors,
+            phase_warnings,
+            release_candidate_id,
+            phase5_owner,
+            phase5_work_order_id,
+        ) = validate_phase5(run_dir, scope, facts)
+        errors.extend(phase_errors)
+        warnings.extend(phase_warnings)
+
+    delivery_manifest_id = None
+    phase6_owner = None
+    phase6_work_order_id = None
+    if args.phase == 6 and not errors:
+        (
+            phase_errors,
+            phase_warnings,
+            release_candidate_id,
+            delivery_manifest_id,
+            phase6_owner,
+            phase6_work_order_id,
+        ) = validate_phase6(run_dir, scope, facts)
+        errors.extend(phase_errors)
+        warnings.extend(phase_warnings)
+
+    report = {
+        "run_id": scope.get("run_id") if "scope" in locals() else None,
+        "phase": args.phase,
+        "verdict": "PASS" if not errors else "FAIL",
+        "baseline_env_id": baseline_env_id,
+        "harmony_environment_id": harmony_environment_id,
+        "verification_id": verification_id,
+        "phase3_work_order_id": phase3_work_order_id,
+        "phase4_work_order_id": phase4_work_order_id,
+        "phase5_work_order_id": phase5_work_order_id,
+        "phase6_work_order_id": phase6_work_order_id,
+        "release_candidate_id": release_candidate_id,
+        "delivery_manifest_id": delivery_manifest_id,
+        "harmony_build_ids": harmony_build_ids,
+        "harmony_evidence_ids": harmony_evidence_ids,
+        "scope_sha256": facts.get("scope_sha256"),
+        "run_manifest_sha256": facts.get("run_manifest_sha256"),
+        "source_revision": facts.get("source_revision"),
+        "apk_sha256": facts.get("apk_sha256"),
+        "included_features": facts.get("included_features", []),
+        "checked_at": utc_now(),
+        "errors": errors,
+        "warnings": warnings,
+    }
+    if args.write:
+        try:
+            atomic_json(run_dir / "controller" / "gate-report.json", report)
+            update_task_ledger(
+                run_dir,
+                args.phase,
+                report["verdict"],
+                errors,
+                scope.get("ownership", {}),
+                phase3_owner,
+                phase4_owner,
+                phase5_owner,
+                phase6_owner,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
