@@ -1615,8 +1615,16 @@ def main() -> int:
                 {"schema_version": 1, "units": migration_units},
             )
 
+            inspector_bridge = temp_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
+            inspector_bridge.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(
+                ASSETS / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets",
+                inspector_bridge,
+            )
+
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
+            make_tree_read_only(temp_dir / "tools")
             input_lock = {
                 "schema_version": "1.0",
                 "stage": 4,
@@ -1639,6 +1647,12 @@ def main() -> int:
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
                 "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                 "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
+                "arkui_inspector_bridge": {
+                    "relative_path": "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
+                    "sha256": sha256_file(inspector_bridge),
+                    "contract": "arkui-inspector-bridge-v1",
+                    "production_packaging": "FORBIDDEN",
+                },
             }
             atomic_json(temp_dir / "stage-04-input-lock.json", input_lock)
             initial_snapshot = build_project_snapshot(temp_dir / "harmony-project")

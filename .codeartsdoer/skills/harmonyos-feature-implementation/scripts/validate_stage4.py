@@ -62,6 +62,7 @@ INPUT_LOCK_KEYS = {
     "migration_unit_contracts_sha256",
     "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
     "phase3_source_snapshot_sha256",
+    "arkui_inspector_bridge",
 }
 INPUT_RECORD_KEYS = {"label", "source_path", "snapshot_path", "sha256", "size"}
 ANDROID_RECORD_KEYS = {
@@ -452,6 +453,20 @@ def validate_upstream_and_work_order(
     manifest = object_json(workspace / "phase-manifest.json", "Phase 4 manifest")
     input_lock = object_json(workspace / "stage-04-input-lock.json", "Phase 4 input lock")
     require(set(input_lock) == INPUT_LOCK_KEYS, "Phase 4 input-lock root keys differ")
+    bridge = input_lock.get("arkui_inspector_bridge")
+    bridge_path = workspace / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
+    require(
+        isinstance(bridge, dict)
+        and set(bridge) == {"relative_path", "sha256", "contract", "production_packaging"}
+        and bridge.get("relative_path")
+        == "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets"
+        and bridge.get("contract") == "arkui-inspector-bridge-v1"
+        and bridge.get("production_packaging") == "FORBIDDEN"
+        and bridge_path.is_file()
+        and bridge.get("sha256") == sha256_file(bridge_path)
+        and not bridge_path.stat().st_mode & 0o222,
+        "Phase 4 ArkUI Inspector bridge is missing, mutable, or hash-mismatched",
+    )
     require(input_lock.get("schema_version") == "1.0" and input_lock.get("stage") == 4,
             "Phase 4 input-lock schema/stage differs")
     require(manifest.get("phase") == 4 and manifest.get("status") == "IN_PROGRESS",

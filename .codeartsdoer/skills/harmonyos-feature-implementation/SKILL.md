@@ -81,7 +81,7 @@ Every required `H4ENV-ID` has exactly one final PASS `HBUILD-ID`. All final stat
 
 ## Verify every state on the emulator
 
-Read [references/emulator-evidence.md](references/emulator-evidence.md). For every seeded parity row, run the frozen emulator workflow:
+Read [references/emulator-evidence.md](references/emulator-evidence.md) and [references/arkui-inspector-evidence.md](references/arkui-inspector-evidence.md). For every seeded parity row, run the frozen emulator workflow:
 
 ```bash
 python3 scripts/capture_state.py \
@@ -89,7 +89,7 @@ python3 scripts/capture_state.py \
   --plan <completed-state-verification-plan.json>
 ```
 
-A valid `HEVD-ID` contains command logs, steps, deterministic assertion results, a carrier/component-bound UI tree, raw event/transition operation traces with before/after snapshots, PNG screenshot, build artifact identity, source snapshot identity, metadata, hashes, and `COMMITTED`. An external `PASS` label is ignored unless the computed comparison passes. Before commands run, the execution is appended to both the local and controller hash-chain ledgers. Each migration unit gets one initial execution and at most two automatic repairs; deleting a local failure package cannot reset that budget.
+A valid `HEVD-ID` contains command logs, steps, deterministic assertion results, an ArkUI `UIContext` Inspector raw tree, repository-derived component bindings, Inspector-backed event/transition snapshots, PNG screenshot, build artifact identity, source snapshot identity, metadata, hashes, and `COMMITTED`. The Inspector Bridge is test-only and must not enter the release module. An external `PASS` label or a hand-written `nodes` array is ignored unless the repository recomputes the tree and comparison. Before commands run, the execution is appended to both the local and controller hash-chain ledgers. Each migration unit gets one initial execution and at most two automatic repairs; deleting a local failure package cannot reset that budget.
 
 ## Close Phase 4
 

@@ -103,8 +103,8 @@
     "UI_TREE_CAPTURE": {
       "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
       "executable_sha256": "__FILL_64_HEX_SHA256__",
-      "required_argv_tokens": ["ui-tree", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{UI_TREE}"],
-      "success_output_contains": ["UI_TREE_OK"],
+      "required_argv_tokens": ["arkui-inspector-tree", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{UI_TREE}"],
+      "success_output_contains": ["ARKUI_INSPECTOR_TREE_OK"],
       "error_output_contains": ["Error:", "Failed:", "Failure:"]
     }
   },

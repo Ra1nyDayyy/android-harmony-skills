@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -256,15 +257,29 @@ def main() -> int:
             state = load_state()
             if state.get("smoke_target") != args.target:
                 raise ValueError("UI tree target has no preceding navigation")
+            raw_tree = {
+                "$ID": "root", "$type": "Column",
+                "$rect": {"x": 0, "y": 0, "width": 320, "height": 640},
+                "$children": [
+                    {"$ID": "login", "$type": "Text", "id": "login", "content": "Login",
+                     "$rect": {"x": 16, "y": 20, "width": 120, "height": 40}}
+                ],
+            }
+            raw_digest = hashlib.sha256(json.dumps(
+                raw_tree, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")).hexdigest()
             result = {
                 "bundle_name": args.bundle,
                 "carrier": "PAGE",
                 "target_id": args.target,
                 "window": {"id": "main"},
-                "root": {"id": "root"},
-                "nodes": [{"id": "login", "text": "Login"}],
+                "inspector": {
+                    "schema_version": 1, "source": "ARKUI_UI_CONTEXT",
+                    "api": "getFilteredInspectorTree", "capture_mode": "OHOS_TEST_BRIDGE",
+                    "bridge_contract": "arkui-inspector-bridge-v1", "raw_tree": raw_tree,
+                    "raw_tree_sha256": raw_digest,
+                },
                 "operation_trace": [],
-                "bounds": {"x": 0, "y": 0, "width": 320, "height": 640},
                 "device": {"device_id": "HDEVICE-001", "serial": args.serial},
             }
             output = Path(args.output)

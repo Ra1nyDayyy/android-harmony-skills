@@ -66,7 +66,7 @@
       "command_id": "CMD-UI-TREE",
       "category": "UI_TREE_CAPTURE",
       "cwd": ".",
-      "argv": ["__FROZEN_UI_TREE_EXECUTABLE__", "ui-tree", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__", "--target", "__EXACT_PHASE3_TARGET_ID__", "--output", "{UI_TREE}"]
+      "argv": ["__FROZEN_UI_TREE_EXECUTABLE__", "arkui-inspector-tree", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__", "--target", "__EXACT_PHASE3_TARGET_ID__", "--output", "{UI_TREE}"]
     }
   ],
   "assertions": [

@@ -11,6 +11,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from arkui_inspector import (
+    bind_required_components, validate_and_normalize, validate_operation_snapshot,
+)
+
 from _common import (
     assert_no_secrets,
     atomic_json,
@@ -224,19 +228,11 @@ def validate_ui_tree(
     serial: str,
     contract: dict[str, Any],
 ) -> dict[str, Any]:
-    value = load_json(path)
-    if not isinstance(value, dict):
-        raise ValueError("UI tree must be a JSON object")
+    value = validate_and_normalize(load_json(path))
     if value.get("bundle_name") != bundle_name:
         raise ValueError("UI tree Bundle differs from the frozen application")
     if not isinstance(value.get("window"), dict) or not value["window"]:
         raise ValueError("UI tree window object is empty")
-    if not isinstance(value.get("root"), dict) or not value["root"]:
-        raise ValueError("UI tree root object is empty")
-    if not isinstance(value.get("nodes"), list) or not value["nodes"] or not all(
-        isinstance(item, dict) for item in value["nodes"]
-    ):
-        raise ValueError("UI tree nodes must be a nonempty object array")
     if value.get("carrier") != contract.get("expected_carrier"):
         raise ValueError(
             f"Runtime carrier differs: expected {contract.get('expected_carrier')}, "
@@ -246,19 +242,9 @@ def validate_ui_tree(
         raise ValueError("Runtime route/surface target differs from the frozen migration unit")
     locators = contract.get("component_locators", {})
     nodes = value["nodes"]
-    missing_components: list[str] = []
-    for component_id in contract.get("required_component_ids", []):
-        locator = locators.get(component_id, {}) if isinstance(locators, dict) else {}
-        resource_id = str(locator.get("resource_id", "")) if isinstance(locator, dict) else ""
-        matched = any(
-            str(node.get("source_component_id", "")) == component_id
-            or (resource_id and str(node.get("resource_id") or node.get("id") or "") == resource_id)
-            for node in nodes
-        )
-        if not matched:
-            missing_components.append(component_id)
-    if missing_components:
-        raise ValueError(f"Runtime UI omits frozen Android components: {missing_components}")
+    value["component_bindings"] = bind_required_components(
+        nodes, contract.get("required_component_ids", []), locators
+    )
     traces = value.get("operation_trace", [])
     if not isinstance(traces, list) or any(not isinstance(item, dict) for item in traces):
         raise ValueError("UI tree operation_trace must be an object array")
@@ -273,6 +259,13 @@ def validate_ui_tree(
         after = trace.get("after_snapshot")
         if not isinstance(before, dict) or not before or not isinstance(after, dict) or not after:
             raise ValueError(f"Operation trace lacks raw before/after snapshots: {subject_id}")
+        try:
+            validate_operation_snapshot(before)
+            validate_operation_snapshot(after)
+        except ValueError as exc:
+            raise ValueError(
+                f"Operation trace is not backed by ArkUI Inspector snapshots: {subject_id}: {exc}"
+            ) from exc
         if not str(trace.get("action", "")).strip():
             raise ValueError(f"Operation trace lacks the executed action: {subject_id}")
         changed = json.dumps(before, sort_keys=True, ensure_ascii=False) != json.dumps(
@@ -302,6 +295,7 @@ def validate_ui_tree(
         "serial"
     ) != serial:
         raise ValueError("UI tree device identity differs from the frozen emulator")
+    atomic_json(path, value)
     return value
 
 

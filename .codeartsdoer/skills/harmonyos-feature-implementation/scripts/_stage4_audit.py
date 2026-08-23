@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from arkui_inspector import validate_normalized, validate_operation_snapshot
+
 from _common import (
     PHASE4_CATEGORY_ORDER,
     build_project_snapshot,
@@ -279,7 +281,7 @@ def validate_source_ref(project: Path, reference: str) -> Path:
 
 
 def validate_ui_tree(path: Path, environment: dict[str, Any]) -> dict[str, Any]:
-    value = load_json(path)
+    value = validate_normalized(load_json(path))
     bundle = str(environment.get("base_application", {}).get("bundle_name", ""))
     serial = str(environment.get("emulator", {}).get("serial", ""))
     device_id = str(environment.get("device_id", ""))
@@ -287,12 +289,6 @@ def validate_ui_tree(path: Path, environment: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("UI tree Bundle identity differs")
     if not isinstance(value.get("window"), dict) or not value["window"]:
         raise ValueError("UI tree window is empty")
-    if not isinstance(value.get("root"), dict) or not value["root"]:
-        raise ValueError("UI tree root is empty")
-    if not isinstance(value.get("nodes"), list) or not value["nodes"] or any(
-        not isinstance(item, dict) for item in value["nodes"]
-    ):
-        raise ValueError("UI tree nodes are missing")
     bounds = value.get("bounds")
     if not isinstance(bounds, dict) or any(
         not isinstance(bounds.get(field), (int, float))
@@ -302,6 +298,12 @@ def validate_ui_tree(path: Path, environment: dict[str, Any]) -> dict[str, Any]:
     device = value.get("device")
     if not isinstance(device, dict) or device.get("device_id") != device_id or device.get("serial") != serial:
         raise ValueError("UI tree emulator identity differs")
+    traces = value.get("operation_trace", [])
+    if not isinstance(traces, list) or any(not isinstance(item, dict) for item in traces):
+        raise ValueError("UI tree operation traces are invalid")
+    for trace in traces:
+        validate_operation_snapshot(trace.get("before_snapshot"))
+        validate_operation_snapshot(trace.get("after_snapshot"))
     return value
 
 

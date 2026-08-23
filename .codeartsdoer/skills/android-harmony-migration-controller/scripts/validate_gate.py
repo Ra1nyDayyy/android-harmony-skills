@@ -22,6 +22,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
+FEATURE_SCRIPTS = (
+    Path(__file__).resolve().parents[2] / "harmonyos-feature-implementation" / "scripts"
+)
+if str(FEATURE_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(FEATURE_SCRIPTS))
+from arkui_inspector import validate_normalized as validate_arkui_inspector_tree  # noqa: E402
+
+
 ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{2,79}$")
 ACTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
 PLACEHOLDER_RE = re.compile(r"^__.+__$")
@@ -2250,6 +2258,7 @@ def validate_phase4(
         "acceptance-ledger.csv", "rework-tickets.csv", "environments/h4env-registry.csv",
         "harmony-project", "builds", "evidence", "reviews", "stage-04-gate-report.json",
         "stage-04-closure-manifest.sha256", "CLOSED",
+        "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
     )
     for relative in required:
         candidate = phase_dir / relative
@@ -2282,6 +2291,7 @@ def validate_phase4(
         "migration_unit_contracts_sha256",
         "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
         "phase3_source_snapshot_sha256",
+        "arkui_inspector_bridge",
     }
     expected_phase_manifest_keys = {
         "schema_version", "run_id", "project_id", "phase", "status", "initialized_at",
@@ -2308,6 +2318,20 @@ def validate_phase4(
         or input_lock.get("run_id") != scope.get("run_id")
     ):
         errors.append("Phase 4 manifest/input-lock identity differs from controller scope")
+    inspector_bridge = phase_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
+    bridge_lock = input_lock.get("arkui_inspector_bridge")
+    if (
+        not isinstance(bridge_lock, dict)
+        or set(bridge_lock) != {"relative_path", "sha256", "contract", "production_packaging"}
+        or bridge_lock.get("relative_path")
+        != "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets"
+        or bridge_lock.get("contract") != "arkui-inspector-bridge-v1"
+        or bridge_lock.get("production_packaging") != "FORBIDDEN"
+        or not inspector_bridge.is_file()
+        or bridge_lock.get("sha256") != sha256_file(inspector_bridge)
+        or inspector_bridge.stat().st_mode & 0o222
+    ):
+        errors.append("Phase 4 ArkUI Inspector bridge is missing, mutable, or hash-mismatched")
     for frozen_name in (
         "stage-04-input-lock.json", "phase-manifest.json", "initial-project-snapshot.json",
         "asset-conversion-contracts.json",
@@ -3773,6 +3797,10 @@ def validate_phase4(
             ):
                 errors.append(f"{evidence_id}: screenshot bytes, metadata, or dimensions differ")
             ui_tree = load_json(evidence_dir / "ui-tree.json")
+            try:
+                ui_tree = validate_arkui_inspector_tree(ui_tree)
+            except ValueError as exc:
+                errors.append(f"{evidence_id}: {exc}")
             ui_device = ui_tree.get("device") if isinstance(ui_tree.get("device"), dict) else {}
             ui_bounds = ui_tree.get("bounds") if isinstance(ui_tree.get("bounds"), dict) else {}
             if (
