@@ -11,6 +11,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import zlib
@@ -270,6 +271,7 @@ def verify_closure_manifest(
             or pure.is_absolute()
             or ".." in pure.parts
             or "." in pure.parts
+            or "\\" in relative
             or relative in expected
         ):
             raise ValueError(f"Unsafe or duplicate closure manifest entry: {relative!r}")
@@ -381,7 +383,7 @@ def build_snapshot_manifest(workspace: Path, henv_id: str) -> dict[str, Any]:
         if path.is_file():
             entries.append(
                 {
-                    "path": str(path.relative_to(workspace)),
+                    "path": path.relative_to(workspace).as_posix(),
                     "sha256": sha256_file(path),
                     "size": path.stat().st_size,
                 }
@@ -402,7 +404,7 @@ def build_snapshot_manifest(workspace: Path, henv_id: str) -> dict[str, Any]:
         raise ValueError(f"Missing frozen HENV: {environment}")
     entries.append(
         {
-            "path": str(environment.relative_to(workspace)),
+            "path": environment.relative_to(workspace).as_posix(),
             "sha256": sha256_file(environment),
             "size": environment.stat().st_size,
         }
@@ -450,9 +452,13 @@ def validate_command_argv(argv: Any, allowed_executables: list[str]) -> list[str
 def run_command(argv: Sequence[str], cwd: Path, timeout: int) -> dict[str, Any]:
     started_at = utc_now()
     started = time.monotonic()
+    recorded_argv = list(argv)
+    execution_argv = recorded_argv
+    if os.name == "nt" and recorded_argv and recorded_argv[0].lower().endswith(".py"):
+        execution_argv = [sys.executable, *recorded_argv]
     try:
         completed = subprocess.run(
-            list(argv),
+            execution_argv,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -471,7 +477,7 @@ def run_command(argv: Sequence[str], cwd: Path, timeout: int) -> dict[str, Any]:
         exit_code = None
         timed_out = True
     return {
-        "argv": list(argv),
+        "argv": recorded_argv,
         "cwd": str(cwd),
         "started_at": started_at,
         "finished_at": utc_now(),
@@ -485,7 +491,8 @@ def run_command(argv: Sequence[str], cwd: Path, timeout: int) -> dict[str, Any]:
 
 def manifest_text(directory: Path, relative_names: Iterable[str]) -> str:
     lines = []
-    for name in sorted(relative_names):
+    normalized = [PurePosixPath(str(name).replace("\\", "/")).as_posix() for name in relative_names]
+    for name in sorted(normalized):
         path = directory / name
         if not path.is_file():
             raise ValueError(f"Cannot seal missing artifact: {path}")

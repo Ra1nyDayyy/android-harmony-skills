@@ -77,7 +77,7 @@ def create_project_and_registries(workspace: Path) -> None:
     project = workspace / "harmony-project"
     entry = project / "entry"
     source = entry / "src"
-    source.mkdir(parents=True)
+    source.mkdir(parents=True, exist_ok=True)
     (entry / "module.json5").write_text("{ module: { name: 'entry' } }\n", encoding="utf-8")
     (project / "oh-package-lock.json5").write_text("{ lockfileVersion: 3 }\n", encoding="utf-8")
     (source / "LoginShell.ets").write_text(
@@ -400,6 +400,26 @@ def verification_plan(
 
 
 class Stage3WorkflowTest(unittest.TestCase):
+    def test_initialization_creates_template_project_and_locks_advanced_handoff(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage3-template-test-") as temp_name:
+            run_dir, _ = build_closed_phase2(Path(temp_name))
+            workspace = initialize_phase3(run_dir, issue_phase3(run_dir))
+            for relative in (
+                "AppScope/app.json5", "build-profile.json5", "entry/src/main/module.json5",
+                "entry/src/main/ets/entryability/EntryAbility.ets",
+                "entry/src/main/ets/pages/Index.ets",
+            ):
+                self.assertTrue((workspace / "harmony-project" / relative).is_file(), relative)
+            generation = json.loads((workspace / "template-generation.json").read_text(encoding="utf-8"))
+            self.assertEqual(generation["template_id"], "ARKUI-STAGE-TEMPLATE-V1")
+            self.assertEqual(generation["bundle_name"], "com.example.fixture")
+            self.assertGreaterEqual(generation["generated_file_count"], 30)
+            input_lock = json.loads((workspace / "stage-03-input-lock.json").read_text(encoding="utf-8"))
+            self.assertIn("phase2_advanced", input_lock)
+            self.assertIn("arkui_template", input_lock)
+            obligations = json.loads((workspace / "advanced-obligations.json").read_text(encoding="utf-8"))
+            self.assertEqual(obligations["obligations"], [])
+
     def test_secure_atomic_write_and_full_png_validation(self) -> None:
         spec = importlib.util.spec_from_file_location("stage3_common", SKILL / "scripts" / "_common.py")
         assert spec and spec.loader
@@ -409,7 +429,12 @@ class Stage3WorkflowTest(unittest.TestCase):
             root = Path(temp_name)
             victim = root / "victim.txt"
             victim.write_text("untouched\n", encoding="utf-8")
-            (root / "report.json.tmp").symlink_to(victim)
+            try:
+                (root / "report.json.tmp").symlink_to(victim)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows symbolic-link privilege is unavailable")
+                raise
             common.atomic_text(root / "report.json", "safe\n")
             self.assertEqual(victim.read_text(encoding="utf-8"), "untouched\n")
             target = root / "linked.json"

@@ -54,6 +54,7 @@ The Phase 2 runtime policy is fixed:
 - Use Android CLI for `describe`, `run`, `layout`, `layout --diff`, and screenshots.
 - Do not use Layout Inspector.
 - One inventory row equals one feature, one page, one state, one environment, and one evidence ID.
+- Treat the committed static Page/Component/Event/Transition/State set as the coverage denominator. Models may bind subjects to evidence or force a non-pass outcome, but only deterministic page and evidence gates may grant `PASS`.
 
 After each successful capture, the migration controller independently anchors the sealed package outside the Phase 2 workspace:
 
@@ -82,7 +83,7 @@ python3 scripts/validate_gate.py --run-dir <migration-run> --phase 2 --write
 
 Open the next migration phase only when the gate report says `PASS`. The gate requires the complete included feature set; it does not silently downgrade to a partial release.
 
-The Phase 2 gate independently recomputes the closure snapshot. A stale or hand-written `closure-report.json` cannot open the gate.
+The Phase 2 gate requires `page-gate-report.json` to contain only machine-computed `PAGE_PASS` rows with equal required/received atomic counts. It also requires `advanced-gate-report.json` to cover every discovered dynamic risk, non-UI side effect, and special scenario. Side effects and scenarios must carry reproducible, hash-bound probe evidence. The controller then independently recomputes the closure snapshot. A stale, hand-written, or model-authored `PASS` cannot open the gate.
 
 ## Dispatch and close Phase 3
 
@@ -108,7 +109,7 @@ After the architecture acceptance agent passes and closes Stage 3, independently
 python3 scripts/validate_gate.py --run-dir <migration-run> --phase 3 --write
 ```
 
-Gate 3 rechecks the registered work order and role separation, all Phase 2 input hashes, sealed HENV/HVER evidence, the current scaffold/screenshot/artifact hashes, and the complete Phase 3 closure manifest. Any open Phase 3 controller rework keeps the gate closed.
+Gate 3 rechecks the registered work order and role separation, all Phase 2 input hashes, the advanced-analysis/probe handoff, ArkUI template provenance, sealed HENV/HVER evidence, the current scaffold/screenshot/artifact hashes, and the complete Phase 3 closure manifest. Any missing dynamic/side-effect/scenario obligation or open Phase 3 controller rework keeps the gate closed.
 
 A Gate 3 `PASS` closes the scaffold phase only. It does not itself authorize implementation.
 
@@ -138,4 +139,4 @@ Gate 4 first revalidates Phases 1–3. It then recomputes the Phase 4 input arch
 
 ## Current executable boundary
 
-This controller currently implements work orders and gates only through Phase 4. Do not claim, simulate, or manually write a Gate 5/6 PASS. When planning whole-app regression and delivery acceptance, read the bundle-level `PHASES-4-6-PLAN.md`; implement the specified controller work orders, rework mirrors, and independent gates before those phases are run.
+This bundle provides a complete specialist workflow only through Phase 4. Controller records for later phases do not supply a system-regression or delivery specialist Skill. Do not describe a Gate 5/6 result as executable end-to-end capability until those specialist Skills and real-device tests exist.

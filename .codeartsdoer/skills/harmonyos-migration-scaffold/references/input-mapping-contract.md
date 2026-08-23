@@ -18,6 +18,7 @@ Phase 3 creates `stage-03-input-lock.json` containing canonical paths, immutable
 - each real archived asset file, by canonical Phase 2 path and SHA-256;
 - Phase 2 evidence-anchor snapshot and the matching controller anchor registry;
 - data-dependency, system-capability, and third-party-dependency catalogs;
+- the committed advanced analysis, advanced observations, deterministic advanced gate report, and probe-evidence index;
 - the registered Phase 3 work order.
 
 All of these small input records are copied byte-for-byte into `inputs/` for later review. Except for the live controller gate, canonical Phase 2 files remain the authoritative read-only source paths; their copies are snapshots, not editable replacements. The initializer never edits, normalizes, or rewrites Phase 2 inventory or evidence.
@@ -31,6 +32,22 @@ SROW-<SHA256(feature_id|page_id|state_id|env_id|evidence_id)[0:20]>
 ```
 
 The Phase 3 gate recomputes the key and all input hashes. Any drift is `BLOCKED`.
+
+## ArkUI template provenance
+
+Phase 3 uses the bundled `assets/arkui-stage-template` as the only scaffold source. Initialization copies it into a staging workspace, excludes caches and machine-local files, replaces the frozen application identity, rejects unresolved tokens, and then atomically installs it as `harmony-project/`.
+
+`inputs/arkui-stage-template.manifest.sha256` records every source-template file. `template-generation.json` records the template ID, manifest digest, generated-file count, required Stage files, bundle name, application name, vendor, log tag, and initial project-manifest digest. The Phase 3 validator and controller Gate 3 recheck this provenance and the required project files.
+
+## Advanced Phase 2 handoff
+
+`advanced-obligations.json` must be one-to-one with the frozen dynamic-risk, side-effect, and scenario IDs:
+
+- dynamic risks become `PHASE4_DYNAMIC_SURFACE` obligations;
+- side effects become `PHASE3_CAPABILITY_CONTRACT` obligations and seed one interface requirement for every included Feature-ID;
+- special scenarios become `PHASE4_SCENARIO_TEST` obligations.
+
+The scaffold does not implement these behaviors. It preserves them so later phases cannot lose WebView/dynamic content, database/network/background effects, permissions, special accounts, abnormal data, or extreme states.
 
 ## Asset landing mapping
 

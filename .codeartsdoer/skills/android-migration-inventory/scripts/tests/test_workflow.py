@@ -53,7 +53,12 @@ class WorkflowTest(unittest.TestCase):
             root.mkdir()
             victim = Path(temp_name) / "victim.txt"
             victim.write_text("untouched\n", encoding="utf-8")
-            (root / "inventory.csv.tmp").symlink_to(victim)
+            try:
+                (root / "inventory.csv.tmp").symlink_to(victim)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows symbolic-link privilege is unavailable")
+                raise
             common.write_csv(root / "inventory.csv", ["id"], [{"id": "SAFE"}])
             self.assertEqual(victim.read_text(encoding="utf-8"), "untouched\n")
             self.assertFalse((root / "inventory.csv").is_symlink())
@@ -407,8 +412,8 @@ class WorkflowTest(unittest.TestCase):
             error_steps = root / "steps-error.md"
             error_steps.write_text("1. Enter an invalid code.\n2. Submit and observe the inline error.\n", encoding="utf-8")
 
-            frozen_environments = (workspace / "environments.json").read_text(encoding="utf-8")
-            mutated_environments = json.loads(frozen_environments)
+            frozen_environments = (workspace / "environments.json").read_bytes()
+            mutated_environments = json.loads(frozen_environments.decode("utf-8"))
             mutated_environments["environments"][0]["app_version"] = "9.9.9"
             (workspace / "environments.json").write_text(json.dumps(mutated_environments), encoding="utf-8")
             run(
@@ -419,7 +424,7 @@ class WorkflowTest(unittest.TestCase):
                 "--issued-by", "evidence-administrator-1", "--captured-by", "runtime-state-agent-1",
                 "--android-bin", str(FAKE_ANDROID), "--adb-bin", str(FAKE_ANDROID), env=process_env, expect=2,
             )
-            (workspace / "environments.json").write_text(frozen_environments, encoding="utf-8")
+            (workspace / "environments.json").write_bytes(frozen_environments)
 
             frozen_apk = apk.read_bytes()
             apk.write_bytes(frozen_apk + b"changed")
@@ -646,6 +651,88 @@ class WorkflowTest(unittest.TestCase):
                 }],
             )
 
+            # The committed static package defines the atomic denominator.  The runtime agent
+            # binds subjects to evidence but never supplies a verdict.
+            static = workspace / "static-analysis"
+            static_artifacts = {
+                "project-index.json": {
+                    "schema_version": 1, "source_revision": revision,
+                    "generated_by": "code-map-agent-1",
+                },
+                "pages.json": {"schema_version": 1, "pages": [{
+                    "page_id": "PAGE-LOGIN", "symbol": "LoginActivity",
+                    "candidate_feature_ids": ["FEATURE-AUTH"],
+                }]},
+                "components.json": {"schema_version": 1, "components": [{
+                    "component_id": "COMP-LOGIN-ROOT", "page_id": "PAGE-LOGIN",
+                    "resource_id": "login", "text": "Login", "type": "TextView", "attributes": {},
+                }]},
+                "events.json": {"schema_version": 1, "events": []},
+                "transitions.json": {"schema_version": 1, "transitions": []},
+                "state-candidates.json": {"schema_version": 1, "states": []},
+                "runtime-tasks.json": {"schema_version": 1, "tasks": [{
+                    "task_id": "RTASK-PAGE-LOGIN", "task_type": "VERIFY_PAGE_DEFAULT_STATE",
+                    "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN",
+                }]},
+                "advanced-analysis.json": {
+                    "schema_version": 1, "dynamic_risks": [], "side_effects": [], "scenarios": [],
+                },
+            }
+            for name, value in static_artifacts.items():
+                (static / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            (static / "code-map.candidates.csv").write_text("code_ref\n", encoding="utf-8")
+            static_names = sorted([*static_artifacts, "code-map.candidates.csv"])
+            (static / "manifest.sha256").write_text(
+                "".join(
+                    f"{hashlib.sha256((static / name).read_bytes()).hexdigest()}  {name}\n"
+                    for name in static_names
+                ),
+                encoding="utf-8",
+            )
+            (static / "COMMITTED").write_text(
+                hashlib.sha256((static / "manifest.sha256").read_bytes()).hexdigest() + "\n",
+                encoding="utf-8",
+            )
+            (workspace / "runtime-observations.json").write_text(json.dumps({
+                "schema_version": 1,
+                "observations": [
+                    {
+                        "observation_id": "OBS-PAGE-LOGIN", "subject_type": "PAGE",
+                        "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
+                        "before_evidence_id": "", "after_evidence_id": default_evidence,
+                        "locator_field": "", "locator_value": "", "locator_occurrence": 0,
+                    },
+                    {
+                        "observation_id": "OBS-COMP-LOGIN", "subject_type": "COMPONENT",
+                        "subject_id": "COMP-LOGIN-ROOT", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
+                        "before_evidence_id": "", "after_evidence_id": default_evidence,
+                        "locator_field": "", "locator_value": "", "locator_occurrence": 0,
+                    },
+                ],
+            }, indent=2) + "\n", encoding="utf-8")
+
+            complete_observations = (workspace / "runtime-observations.json").read_bytes()
+            missing_component = json.loads(complete_observations.decode("utf-8"))
+            missing_component["observations"] = [
+                row for row in missing_component["observations"] if row["subject_type"] != "COMPONENT"
+            ]
+            (workspace / "runtime-observations.json").write_text(
+                json.dumps(missing_component, indent=2) + "\n", encoding="utf-8"
+            )
+            attempted_pass = run(
+                sys.executable, str(INVENTORY_SKILL / "scripts" / "validate_evidence.py"),
+                "--workspace", str(workspace), "--reviewer", "coverage-checker-1",
+                "--decision", "PASS", "--attest-visual-review", "--attest-source-runtime-crosscheck",
+                expect=1,
+            )
+            attempted_report = json.loads(attempted_pass.stdout)
+            self.assertNotEqual(attempted_report["final_verdict"], "PASS")
+            self.assertEqual(attempted_report["page_gate_verdict"], "BLOCKED")
+            self.assertTrue(any(
+                "Requested PASS was ignored" in warning for warning in attempted_report["warnings"]
+            ))
+            (workspace / "runtime-observations.json").write_bytes(complete_observations)
+
             archived_asset = workspace / "asset-package" / "files" / "ASSET-AUTH-LOGO" / "login_logo.svg"
             archived_asset_bytes = archived_asset.read_bytes()
             archived_asset.write_bytes(archived_asset_bytes + b"tamper")
@@ -664,7 +751,8 @@ class WorkflowTest(unittest.TestCase):
                 expect=1,
             )
 
-            index_original = (workspace / "evidence-index.csv").read_text(encoding="utf-8")
+            index_original_bytes = (workspace / "evidence-index.csv").read_bytes()
+            index_original = index_original_bytes.decode("utf-8")
             index_rows = read_rows = list(csv.DictReader(index_original.splitlines()))
             for row in index_rows:
                 if row["evidence_id"] == default_evidence:
@@ -674,7 +762,7 @@ class WorkflowTest(unittest.TestCase):
                 sys.executable, str(INVENTORY_SKILL / "scripts" / "build_inventory.py"),
                 "--workspace", str(workspace), "--claims", str(claims_path), expect=2,
             )
-            (workspace / "evidence-index.csv").write_text(index_original, encoding="utf-8")
+            (workspace / "evidence-index.csv").write_bytes(index_original_bytes)
 
             active_index = next(row for row in csv.DictReader(index_original.splitlines()) if row["evidence_id"] == default_evidence)
             evidence_dir = workspace / active_index["relative_path"]
@@ -682,8 +770,10 @@ class WorkflowTest(unittest.TestCase):
             metadata_path = evidence_dir / "metadata.json"
             manifest_path = evidence_dir / "manifest.sha256"
             original_screenshot = screenshot.read_bytes()
-            original_metadata = metadata_path.read_text(encoding="utf-8")
-            original_manifest = manifest_path.read_text(encoding="utf-8")
+            original_metadata_bytes = metadata_path.read_bytes()
+            original_manifest_bytes = manifest_path.read_bytes()
+            original_metadata = original_metadata_bytes.decode("utf-8")
+            original_manifest = original_manifest_bytes.decode("utf-8")
             second_index = next(
                 row for row in csv.DictReader(index_original.splitlines())
                 if row["evidence_id"] == second_evidence
@@ -726,9 +816,9 @@ class WorkflowTest(unittest.TestCase):
             metadata_path.chmod(0o644)
             manifest_path.chmod(0o644)
             screenshot.write_bytes(original_screenshot)
-            metadata_path.write_text(original_metadata, encoding="utf-8")
-            manifest_path.write_text(original_manifest, encoding="utf-8")
-            (workspace / "evidence-index.csv").write_text(index_original, encoding="utf-8")
+            metadata_path.write_bytes(original_metadata_bytes)
+            manifest_path.write_bytes(original_manifest_bytes)
+            (workspace / "evidence-index.csv").write_bytes(index_original_bytes)
             screenshot.chmod(0o444)
             metadata_path.chmod(0o444)
             manifest_path.chmod(0o444)

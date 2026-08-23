@@ -12,6 +12,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import zlib
@@ -75,7 +76,7 @@ def atomic_text(path: Path, value: str) -> None:
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp = Path(temp_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
             handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
@@ -115,9 +116,13 @@ def resolve_executable(value: str) -> str:
 def run_command(argv: Sequence[str], timeout: int = 60, env: dict[str, str] | None = None) -> dict[str, Any]:
     started = utc_now()
     start_clock = time.monotonic()
+    recorded_argv = list(argv)
+    execution_argv = recorded_argv
+    if os.name == "nt" and recorded_argv and recorded_argv[0].lower().endswith(".py"):
+        execution_argv = [sys.executable, *recorded_argv]
     try:
         completed = subprocess.run(
-            list(argv),
+            execution_argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -136,7 +141,7 @@ def run_command(argv: Sequence[str], timeout: int = 60, env: dict[str, str] | No
         exit_code = None
         timed_out = True
     return {
-        "argv": list(argv),
+        "argv": recorded_argv,
         "started_at": started,
         "finished_at": utc_now(),
         "duration_seconds": round(time.monotonic() - start_clock, 3),
@@ -499,13 +504,27 @@ def exclusive_lock(lock_path: Path, timeout: float = 10.0) -> Iterator[None]:
                 match = re.search(r"pid=(\d+)", content)
                 owner_alive = True
                 if match:
-                    try:
-                        os.kill(int(match.group(1)), 0)
-                    except ProcessLookupError:
-                        owner_alive = False
-                    except PermissionError:
-                        owner_alive = True
-                if lock_age > 300 and not owner_alive:
+                    owner_pid = int(match.group(1))
+                    if os.name == "nt":
+                        import ctypes
+
+                        process_query_limited_information = 0x1000
+                        handle = ctypes.windll.kernel32.OpenProcess(
+                            process_query_limited_information, False, owner_pid
+                        )
+                        if handle:
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                            owner_alive = True
+                        else:
+                            owner_alive = ctypes.windll.kernel32.GetLastError() == 5
+                    else:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            owner_alive = False
+                        except PermissionError:
+                            owner_alive = True
+                if not owner_alive or (match is None and lock_age > 300):
                     lock_path.unlink()
                     continue
             except (FileNotFoundError, OSError, ValueError):

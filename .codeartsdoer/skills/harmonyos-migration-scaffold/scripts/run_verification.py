@@ -881,10 +881,10 @@ def main() -> int:
         atomic_json(temp_dir / "metadata.json", metadata)
 
         relative_files = [
-            str(path.relative_to(temp_dir))
+            path.relative_to(temp_dir).as_posix()
             for path in temp_dir.rglob("*")
             if path.is_file()
-            and str(path.relative_to(temp_dir)) not in {"manifest.sha256", "COMMITTED"}
+            and path.relative_to(temp_dir).as_posix() not in {"manifest.sha256", "COMMITTED"}
         ]
         atomic_text(temp_dir / "manifest.sha256", manifest_text(temp_dir, relative_files))
         atomic_text(temp_dir / "COMMITTED", f"{verification_id} {status} {utc_now()}\n")

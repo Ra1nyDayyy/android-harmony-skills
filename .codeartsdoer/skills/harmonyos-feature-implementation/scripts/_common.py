@@ -13,6 +13,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import zipfile
@@ -251,6 +252,7 @@ def build_project_snapshot(project: Path) -> dict[str, Any]:
             raise ValueError(f"Symbolic links are prohibited in project snapshot: {path}")
         if path.is_file():
             entries.append({"path": relative.as_posix(), "sha256": sha256_file(path), "size": path.stat().st_size})
+    entries.sort(key=lambda item: item["path"])
     canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return {"entry_count": len(entries), "entries": entries, "snapshot_sha256": sha256_text(canonical)}
 
@@ -512,6 +514,8 @@ def frozen_output_verdict(
 def manifest_text(directory: Path, relative_names: Sequence[str]) -> str:
     lines: list[str] = []
     for name in sorted(set(relative_names)):
+        if "\\" in name:
+            raise ValueError(f"Manifest path must use POSIX separators: {name}")
         path = safe_relative_path(directory, name, "manifest artifact")
         if not path.is_file():
             raise ValueError(f"Manifest artifact is not a file: {path}")
@@ -530,6 +534,9 @@ def verify_manifest(directory: Path, expected_names: set[str] | None = None) -> 
             errors.append(f"Malformed manifest line {manifest}:{number}")
             continue
         expected, name = line.split("  ", 1)
+        if "\\" in name:
+            errors.append(f"Manifest path must use POSIX separators: {name}")
+            continue
         if name in names:
             errors.append(f"Duplicate manifest entry: {name}")
             continue
@@ -606,9 +613,13 @@ def selector_is_present(argv: Sequence[str], selector_tokens: Sequence[str]) -> 
 def run_command(argv: Sequence[str], cwd: Path, timeout: int = 300) -> dict[str, Any]:
     started = utc_now()
     start_clock = time.monotonic()
+    recorded_argv = list(argv)
+    execution_argv = recorded_argv
+    if os.name == "nt" and recorded_argv and recorded_argv[0].lower().endswith(".py"):
+        execution_argv = [sys.executable, *recorded_argv]
     try:
         completed = subprocess.run(
-            list(argv), cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            execution_argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, shell=False, timeout=timeout, check=False,
         )
         stdout = completed.stdout[:MAX_COMMAND_OUTPUT].decode("utf-8", errors="replace")
@@ -622,7 +633,7 @@ def run_command(argv: Sequence[str], cwd: Path, timeout: int = 300) -> dict[str,
         timed_out = True
     semantic_error = bool(ERROR_OUTPUT_RE.search(stdout) or ERROR_OUTPUT_RE.search(stderr))
     return {
-        "argv": list(argv), "started_at": started, "finished_at": utc_now(),
+        "argv": recorded_argv, "started_at": started, "finished_at": utc_now(),
         "duration_seconds": round(time.monotonic() - start_clock, 3),
         "exit_code": exit_code, "timed_out": timed_out, "semantic_error": semantic_error,
         "stdout": sanitize_log(stdout), "stderr": sanitize_log(stderr),

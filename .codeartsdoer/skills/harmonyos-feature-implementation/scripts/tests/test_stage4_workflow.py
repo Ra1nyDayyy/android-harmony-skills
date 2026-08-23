@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -35,8 +36,11 @@ FAKE = (STAGE3_TESTS / "fake_harmony.py").resolve()
 
 
 def run_cmd(*args: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["ANDROID_HARMONY_TEST_FIXTURES"] = "1"
     completed = subprocess.run(
-        list(args), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+        list(args), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=False, env=environment,
     )
     if completed.returncode != expect:
         raise AssertionError(
@@ -223,8 +227,11 @@ def state_plan(
         ],
         "assertions": [
             {"assertion_id": "ASSERT-VISUAL", "kind": "VISUAL_STATE", "expected": "visible"},
-            {"assertion_id": "ASSERT-BUSINESS", "kind": "BUSINESS_RESULT", "expected": "login-ready"},
+            {"assertion_id": "ASSERT-BUSINESS", "kind": "BUSINESS_RESULT", "expected": "login-ready",
+             "subject_ids": ["BR-AUTH-NONE", "DATA-AUTH-NONE", "SYS-AUTH-NONE", "SDK-AUTH-NONE"]},
             {"assertion_id": "ASSERT-INTERACTION", "kind": "INTERACTION", "expected": "tap-ready"},
+            {"assertion_id": "ASSERT-ANDROID-OBSERVABLE", "kind": "ANDROID_EXPECTED_OBSERVABLE",
+             "expected": "Login form is visible", "subject_ids": ["INV-AUTH-LOGIN-DEFAULT"]},
         ],
     }
     target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")

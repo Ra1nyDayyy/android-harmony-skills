@@ -41,4 +41,8 @@ Android Inventory-ID
 + HEVD-ID
 ```
 
-State merge, split, removal, or an extra user-visible step requires an approved nativeization decision. The parity checker rejects undocumented remapping.
+State merge, split, removal, carrier replacement, missing UI, and extra or compressed user-visible steps are forbidden implementation-agent actions. A native implementation may change internals only. Functional, navigation, data, asset, and side-effect mismatches cannot be approved away; only a platform-imposed visual offset may enter the dual-approved `PLATFORM_VISUAL` decision path.
+
+Before editing, read the parity row's immutable `migration-unit-contracts.json` record. Treat its component, event, transition, expected-observable, business-rule, data, capability, dependency, and advanced-obligation IDs as the minimum implementation checklist. Do not mark a feature complete while any migration unit lacks a runtime proof for one of these IDs.
+
+The first failed execution starts an automatic repair loop. Rebuild and recapture after each repair. The gate permits no more than two automatic repair attempts for one migration unit; on exhaustion, stop autonomous edits and produce a grouped error report instead of accumulating unrelated changes.

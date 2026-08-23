@@ -188,9 +188,9 @@ def main() -> int:
                 "error_output_contains": contract["error_output_contains"],
                 "success_output_matches": success_hits,
                 "error_output_matches": error_hits,
-                "stdout_path": str(stdout_path.relative_to(staging)),
+                "stdout_path": stdout_path.relative_to(staging).as_posix(),
                 "stdout_sha256": sha256_file(stdout_path),
-                "stderr_path": str(stderr_path.relative_to(staging)),
+                "stderr_path": stderr_path.relative_to(staging).as_posix(),
                 "stderr_sha256": sha256_file(stderr_path),
                 "command_verdict": "PASS" if passed else "FAIL",
             }
@@ -234,7 +234,7 @@ def main() -> int:
             artifact_records.append(
                 {
                     "source_relative_path": Path(artifact_relative).as_posix(),
-                    "sealed_relative_path": str(target.relative_to(staging)),
+                    "sealed_relative_path": target.relative_to(staging).as_posix(),
                     "sha256": sha256_file(target),
                     "size": target.stat().st_size,
                     "produced_by_command_id": next(
@@ -280,9 +280,9 @@ def main() -> int:
         }
         atomic_json(staging / "metadata.json", metadata)
         relative_names = [
-            str(path.relative_to(staging)) for path in staging.rglob("*")
+            path.relative_to(staging).as_posix() for path in staging.rglob("*")
             if path.is_file()
-            and str(path.relative_to(staging)) not in {"manifest.sha256", "COMMITTED"}
+            and path.relative_to(staging).as_posix() not in {"manifest.sha256", "COMMITTED"}
         ]
         atomic_text(staging / "manifest.sha256", manifest_text(staging, relative_names))
         manifest_sha = sha256_file(staging / "manifest.sha256")

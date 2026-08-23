@@ -291,6 +291,8 @@ def main() -> int:
         "business_implementation_allowed": False,
         "required_return": [
             "stage-03-input-lock.json",
+            "template-generation.json",
+            "advanced-obligations.json",
             "phase-manifest.json",
             "asset-registry.csv",
             "environments/",

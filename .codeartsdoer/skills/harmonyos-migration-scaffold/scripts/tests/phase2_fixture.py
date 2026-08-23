@@ -320,6 +320,56 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         ],
     )
 
+    static = workspace / "static-analysis"
+    static_artifacts = {
+        "project-index.json": {
+            "schema_version": 1, "source_revision": revision, "generated_by": "code-map-agent-1",
+        },
+        "pages.json": {"schema_version": 1, "pages": [{
+            "page_id": "PAGE-LOGIN", "symbol": "LoginActivity",
+            "candidate_feature_ids": ["FEATURE-AUTH"],
+        }]},
+        "components.json": {"schema_version": 1, "components": [{
+            "component_id": "COMP-LOGIN-ROOT", "page_id": "PAGE-LOGIN",
+            "resource_id": "login", "text": "Login", "type": "TextView", "attributes": {},
+        }]},
+        "events.json": {"schema_version": 1, "events": []},
+        "transitions.json": {"schema_version": 1, "transitions": []},
+        "state-candidates.json": {"schema_version": 1, "states": []},
+        "runtime-tasks.json": {"schema_version": 1, "tasks": [{
+            "task_id": "RTASK-PAGE-LOGIN", "task_type": "VERIFY_PAGE_DEFAULT_STATE",
+            "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN",
+        }]},
+        "advanced-analysis.json": {
+            "schema_version": 1, "dynamic_risks": [], "side_effects": [], "scenarios": [],
+        },
+    }
+    for name, value in static_artifacts.items():
+        (static / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    (static / "code-map.candidates.csv").write_text("code_ref\n", encoding="utf-8")
+    static_names = sorted([*static_artifacts, "code-map.candidates.csv"])
+    (static / "manifest.sha256").write_text(
+        "".join(f"{sha256(static / name)}  {name}\n" for name in static_names), encoding="utf-8"
+    )
+    (static / "COMMITTED").write_text(sha256(static / "manifest.sha256") + "\n", encoding="utf-8")
+    (workspace / "runtime-observations.json").write_text(json.dumps({
+        "schema_version": 1,
+        "observations": [
+            {
+                "observation_id": "OBS-PAGE-LOGIN", "subject_type": "PAGE",
+                "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
+                "before_evidence_id": "", "after_evidence_id": evidence_id,
+                "locator_field": "", "locator_value": "", "locator_occurrence": 0,
+            },
+            {
+                "observation_id": "OBS-COMP-LOGIN", "subject_type": "COMPONENT",
+                "subject_id": "COMP-LOGIN-ROOT", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
+                "before_evidence_id": "", "after_evidence_id": evidence_id,
+                "locator_field": "", "locator_value": "", "locator_occurrence": 0,
+            },
+        ],
+    }, indent=2) + "\n", encoding="utf-8")
+
     run(
         sys.executable, str(INVENTORY_SKILL / "scripts" / "validate_evidence.py"),
         "--workspace", str(workspace), "--reviewer", "coverage-checker-1", "--decision", "PASS",

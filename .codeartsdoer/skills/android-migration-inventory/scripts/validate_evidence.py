@@ -33,6 +33,8 @@ from _common import (
     verify_phase_identity,
     write_csv,
 )
+from evaluate_page_gates import evaluate_page_gates
+from evaluate_advanced_gates import evaluate_advanced_gates
 
 
 FIELDS = [
@@ -555,9 +557,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--reviewer", required=True)
-    parser.add_argument("--decision", required=True, choices=("PASS", "INCOMPLETE", "BLOCKED"))
-    parser.add_argument("--attest-visual-review", action="store_true")
-    parser.add_argument("--attest-source-runtime-crosscheck", action="store_true")
+    parser.add_argument(
+        "--decision", default="AUTO", choices=("AUTO", "PASS", "INCOMPLETE", "BLOCKED"),
+        help="PASS is a legacy alias for AUTO; only deterministic gates can grant PASS",
+    )
+    parser.add_argument(
+        "--attest-visual-review", action="store_true",
+        help="Legacy advisory note; it never grants PASS",
+    )
+    parser.add_argument(
+        "--attest-source-runtime-crosscheck", action="store_true",
+        help="Legacy advisory note; it never grants PASS",
+    )
     parser.add_argument("--notes", default="")
     args = parser.parse_args()
 
@@ -606,10 +617,8 @@ def main() -> int:
         ownership.get("evidence_administrator_id"),
     }:
         add_error(errors, "Final reviewer must be independent of controller, lead, and evidence administrator")
-    if args.decision == "PASS" and not args.attest_visual_review:
-        add_error(errors, "PASS requires --attest-visual-review")
-    if args.decision == "PASS" and not args.attest_source_runtime_crosscheck:
-        add_error(errors, "PASS requires --attest-source-runtime-crosscheck")
+    if args.decision == "PASS":
+        warnings.append("Requested PASS was ignored; the final verdict is machine-computed")
 
     try:
         if sha256_file(workspace / "environments.json") != phase_manifest.get("environment_registry_sha256"):
@@ -717,6 +726,24 @@ def main() -> int:
         validate_catalogs(workspace, phase_manifest, inventory_rows, coverage_rows, environment_ids, errors)
     except ValueError as exc:
         add_error(errors, str(exc))
+    try:
+        page_gate_report = evaluate_page_gates(workspace, write_report=True)
+        if page_gate_report.get("machine_verdict") != "PASS":
+            add_error(errors, "Deterministic page gate is BLOCKED")
+            for message in page_gate_report.get("errors", []):
+                add_error(errors, f"Page gate: {message}")
+    except (OSError, ValueError) as exc:
+        page_gate_report = {"machine_verdict": "BLOCKED", "errors": [str(exc)], "pages": []}
+        add_error(errors, f"Deterministic page gate failed: {exc}")
+    try:
+        advanced_gate_report = evaluate_advanced_gates(workspace, write_report=True)
+        if advanced_gate_report.get("machine_verdict") != "PASS":
+            add_error(errors, "Deterministic advanced gate is BLOCKED")
+            for message in advanced_gate_report.get("errors", []):
+                add_error(errors, f"Advanced gate: {message}")
+    except (OSError, ValueError) as exc:
+        advanced_gate_report = {"machine_verdict": "BLOCKED", "errors": [str(exc)]}
+        add_error(errors, f"Deterministic advanced gate failed: {exc}")
 
     index_by_id: dict[str, dict[str, str]] = {}
     for row in evidence_index_rows:
@@ -1110,9 +1137,9 @@ def main() -> int:
     if covered_features != expected_features:
         add_error(errors, "Active inventory does not cover all included Feature-IDs")
 
-    effective_decision = args.decision
-    if args.decision == "PASS" and errors:
-        effective_decision = "INCOMPLETE"
+    effective_decision = "PASS" if not errors else "INCOMPLETE"
+    if args.decision in {"INCOMPLETE", "BLOCKED"}:
+        effective_decision = args.decision
     evidence_chain_closed = effective_decision == "PASS" and not errors
     reviewed_at = str(finalization.get("reviewed_at")) if is_resuming_finalization else utc_now()
     reviewed_inventory_ids: list[str] = []
@@ -1199,6 +1226,13 @@ def main() -> int:
         ),
         "attest_visual_review": args.attest_visual_review,
         "attest_source_runtime_crosscheck": args.attest_source_runtime_crosscheck,
+        "requested_decision": args.decision,
+        "decision_source": "DETERMINISTIC_PAGE_ADVANCED_AND_EVIDENCE_GATES",
+        "page_gate_verdict": page_gate_report.get("machine_verdict"),
+        "page_gate_pages": page_gate_report.get("pages", []),
+        "advanced_gate_verdict": advanced_gate_report.get("machine_verdict"),
+        "advanced_gate_required_observations": advanced_gate_report.get("required_observations", 0),
+        "advanced_gate_received_observations": advanced_gate_report.get("received_observations", 0),
         "inventory_rows": len(inventory_rows),
         "archived_assets": len(asset_rows),
         "asset_inventory_sha256": (

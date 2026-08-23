@@ -31,9 +31,9 @@ python3 scripts/init_scaffold.py \
   --architecture-lead <agent-id>
 ```
 
-Initialization first reruns controller Gate 2 without writing controller state. It verifies the registered work order, all six frozen Phase 3 actors, the complete Phase 2 closure, reviewed inventory, accepted evidence, controller evidence anchors, the committed real-asset package, and the three dependency/capability catalogs. It copies and hashes the small input records, locks every archived asset file by canonical path and hash, seeds one architecture/migration-status row per active inventory record and one `asset-registry.csv` row per real asset, and extracts real capability requirements while ignoring explicit `NONE_FOUND` sentinels. Any input drift blocks the phase.
+Initialization first reruns controller Gate 2 without writing controller state. It verifies the registered work order, all six frozen Phase 3 actors, the complete Phase 2 closure, reviewed inventory, accepted evidence, controller evidence anchors, the committed real-asset package, the three dependency/capability catalogs, and the deterministic advanced-analysis/probe gate. It copies and hashes the small input records, locks every archived asset file by canonical path and hash, seeds one architecture/migration-status row per active inventory record and one `asset-registry.csv` row per real asset, and extracts real capability requirements while ignoring explicit `NONE_FOUND` sentinels. Any input drift blocks the phase.
 
-Create the empty command-line project and dependency lockfile under `harmony-project/`. Then read [references/environment-toolchain.md](references/environment-toolchain.md), complete `assets/harmony-environment.template.json`, and freeze it:
+Initialization also creates `harmony-project/` from the bundled `assets/arkui-stage-template`. It replaces the bundle name and application identity from frozen scope, rejects unresolved template tokens and unsafe links, and records `template-generation.json` plus the source-template manifest. Do not replace this project with a different sample project. Install dependencies to create the dependency lockfile, then read [references/environment-toolchain.md](references/environment-toolchain.md), complete `assets/harmony-environment.template.json`, and freeze it:
 
 ```bash
 python3 scripts/freeze_environment.py \
@@ -56,6 +56,8 @@ Read [references/roles-and-authority.md](references/roles-and-authority.md) and 
 - Architecture acceptance agent: independently verifies the exact snapshot and alone issues the gate verdict.
 
 Populate the registries with paths to real files inside `harmony-project/`. Documentation-only mappings are invalid. Asset rows are landing plans, not permission to copy or recreate business assets during Phase 3. Keep `migration-status.csv` separate from Phase 2.
+
+`advanced-obligations.json` is generated, not hand-authored. Every Phase 2 side effect creates an `ADVANCED_SIDE_EFFECT` capability requirement. Dynamic surfaces and special scenarios are preserved as mandatory Phase 4 implementation/test obligations; Phase 3 must not erase them merely because the scaffold contains no business behavior.
 
 ## Capture formal verification
 

@@ -12,6 +12,7 @@ Implement real business behavior in a writable copy of the accepted Phase 3 proj
 - Controller Gates 1–3 and the Phase 3 acceptance report must be `PASS` before initialization.
 - Phase 1–3 artifacts are immutable inputs. Copy the Phase 3 project; never develop inside it.
 - Every active Android inventory row maps to one HarmonyOS parity row on every required `H4ENV-ID`.
+- Phase 4 is a constrained translation, not a redesign. Carrier, components, functions, transitions, data effects, and system effects are non-waivable; an agent may not simplify, merge, omit, or substitute them.
 - Formal screenshots come from the frozen HarmonyOS emulator after install, launch, navigation, and assertions. Preview or design-tool images do not count.
 - Reuse existing Android SVG, PNG, WebP, JPG, icon, and illustration files. Do not redraw, regenerate, crop from screenshots, or silently substitute a glyph or system symbol.
 - Format conversion and native-system substitution require traceable records; observable behavior changes require controller approval.
@@ -21,7 +22,7 @@ Implement real business behavior in a writable copy of the accepted Phase 3 proj
 
 ## Initialize Phase 4
 
-Read [references/input-contract.md](references/input-contract.md), [references/roles-and-authority.md](references/roles-and-authority.md), and [references/asset-and-visual-parity.md](references/asset-and-visual-parity.md). Phase 2 must provide a frozen asset inventory/package and Phase 3 must provide its accepted project snapshot and asset landing registry. The controller issues the Phase 4 work order and freezes all four governance roles.
+Read [references/input-contract.md](references/input-contract.md), [references/roles-and-authority.md](references/roles-and-authority.md), [references/asset-and-visual-parity.md](references/asset-and-visual-parity.md), and [references/observable-consistency-contract.md](references/observable-consistency-contract.md). Phase 2 must provide a frozen asset inventory/package and Phase 3 must provide its accepted project snapshot and asset landing registry. The controller issues the Phase 4 work order and freezes all four governance roles.
 
 ```bash
 python3 scripts/init_implementation.py \
@@ -51,7 +52,7 @@ python3 scripts/issue_feature_work_order.py \
 
 Issue exactly one active work order for every included `Feature-ID`; repeat `--exclusive-code-path` when one feature owns multiple existing directories. The feature owner integrates UI, business/data logic, native-capability adapters, and assets. Specialists may work in parallel only after exclusive code ownership is recorded. Every accepted implementation row must bind this work order, and every parity/visual/capability row must cite real `path:line` source references below its exclusive paths.
 
-Populate the implementation, parity, visual-element, asset, capability, nativeization, and rework registries. A missing or conflicting Android fact blocks the current Phase 4 and returns through the controller to Phase 2; a wrong module, route, surface, contract, or resource landing similarly returns to Phase 3. Do not disguise an upstream contradiction as local implementation rework.
+Implement each immutable `migration-unit-contracts.json` record without changing its observable dimensions. Populate the implementation, parity, visual-element, asset, capability, nativeization, and rework registries. A missing or conflicting Android fact blocks the current Phase 4 and returns through the controller to Phase 2; a wrong module, route, surface, contract, or resource landing similarly returns to Phase 3. Do not disguise an upstream contradiction as local implementation rework.
 
 For a Phase 3 `FORMAT_CONVERSION` asset, execute only the frozen conversion contract:
 
@@ -88,7 +89,7 @@ python3 scripts/capture_state.py \
   --plan <completed-state-verification-plan.json>
 ```
 
-A valid `HEVD-ID` contains command logs, steps, assertions, UI tree, PNG screenshot, build artifact identity, source snapshot identity, metadata, hashes, and `COMMITTED`. A failed attempt creates no valid evidence ID.
+A valid `HEVD-ID` contains command logs, steps, deterministic assertion results, a carrier/component-bound UI tree, raw event/transition operation traces with before/after snapshots, PNG screenshot, build artifact identity, source snapshot identity, metadata, hashes, and `COMMITTED`. An external `PASS` label is ignored unless the computed comparison passes. Before commands run, the execution is appended to both the local and controller hash-chain ledgers. Each migration unit gets one initial execution and at most two automatic repairs; deleting a local failure package cannot reset that budget.
 
 ## Close Phase 4
 

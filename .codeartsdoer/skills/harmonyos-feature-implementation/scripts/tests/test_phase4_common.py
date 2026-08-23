@@ -25,7 +25,10 @@ from _common import (  # noqa: E402
     sha256_file,
     validate_hap,
 )
-from capture_state import validate_assertion_result  # noqa: E402
+from capture_state import (  # noqa: E402
+    ATTEMPT_LEDGER_FIELDS, reserve_execution, validate_assertion_result, validate_ui_tree,
+)
+from _common import write_csv  # noqa: E402
 
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -150,6 +153,83 @@ class Phase4CommonTest(unittest.TestCase):
             path.write_text(json.dumps({**bindings, "assertions": results}) + "\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 validate_assertion_result(path, plan, bindings)
+
+    def test_external_pass_cannot_override_mismatched_actual(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "assertions.json"
+            bindings = {
+                "parity_id": "PAR-001", "hbuild_id": "HBUILD-001",
+                "h4env_id": "H4ENV-001", "device_id": "HDEVICE-001",
+                "device_serial": "device-1", "bundle_name": "com.example.fixture",
+            }
+            plan = [
+                {"assertion_id": "ASSERT-VIS", "kind": "VISUAL_STATE", "expected": "visible"},
+                {"assertion_id": "ASSERT-BIZ", "kind": "BUSINESS_RESULT", "expected": "saved"},
+                {"assertion_id": "ASSERT-INT", "kind": "INTERACTION", "expected": "clicked"},
+            ]
+            results = [{**item, "actual": item["expected"], "status": "PASS"} for item in plan]
+            results[1]["actual"] = "not-saved"
+            path.write_text(json.dumps({**bindings, "assertions": results}) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Generated assertion differs"):
+                validate_assertion_result(path, plan, bindings)
+
+    def test_runtime_carrier_substitution_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "ui-tree.json"
+            value = {
+                "bundle_name": "com.example.fixture", "carrier": "DIALOG",
+                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
+                "root": {"id": "root"},
+                "nodes": [{"id": "login"}], "operation_trace": [],
+                "bounds": {"x": 0, "y": 0, "width": 320, "height": 640},
+                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
+            }
+            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+            contract = {
+                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
+                "required_component_ids": [], "component_locators": {},
+                "required_event_ids": [], "required_transition_ids": [],
+            }
+            with self.assertRaisesRegex(ValueError, "Runtime carrier differs"):
+                validate_ui_tree(
+                    path, "com.example.fixture", "HDEVICE-001", "device-1", contract
+                )
+
+    def test_event_ids_without_raw_operation_trace_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "ui-tree.json"
+            value = {
+                "bundle_name": "com.example.fixture", "carrier": "PAGE",
+                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
+                "root": {"id": "root"}, "nodes": [{"id": "login"}],
+                "observed_event_ids": ["EVENT-SUBMIT"], "operation_trace": [],
+                "bounds": {"x": 0, "y": 0, "width": 320, "height": 640},
+                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
+            }
+            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+            contract = {
+                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
+                "required_component_ids": [], "component_locators": {},
+                "required_event_ids": ["EVENT-SUBMIT"], "required_transition_ids": [],
+            }
+            with self.assertRaisesRegex(ValueError, "operation trace differs"):
+                validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
+
+    def test_controller_attempt_chain_prevents_budget_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            run_dir = Path(temp_name)
+            workspace = run_dir / "phase-04-harmony-implementation"
+            controller = run_dir / "controller"
+            workspace.mkdir()
+            controller.mkdir()
+            write_csv(workspace / "attempt-ledger.csv", ATTEMPT_LEDGER_FIELDS, [])
+            write_csv(controller / "phase4-attempt-ledger.csv", ATTEMPT_LEDGER_FIELDS, [])
+            for number in range(1, 4):
+                reserve_execution(
+                    workspace, "PAR-001", f"HEVD-{number:03d}", "executor-001", 2
+                )
+            with self.assertRaisesRegex(ValueError, "budget exhausted"):
+                reserve_execution(workspace, "PAR-001", "HEVD-004", "executor-001", 2)
 
 
 if __name__ == "__main__":

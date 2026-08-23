@@ -269,7 +269,7 @@ def closure_manifest(workspace: Path) -> str:
         if path.is_symlink():
             raise ValueError(f"Symbolic link is prohibited at Phase 3 closure: {path}")
         if path.is_file():
-            relative = str(path.relative_to(workspace))
+            relative = path.relative_to(workspace).as_posix()
             if relative in CLOSURE_EXCLUDED:
                 continue
             relative_names.append(relative)
@@ -311,6 +311,9 @@ def verify_sealed_manifest(directory: Path, errors: list[str]) -> None:
             errors.append(f"Malformed verification manifest line {number}: {line}")
             continue
         expected, relative = line.split("  ", 1)
+        if "\\" in relative:
+            errors.append(f"Non-portable verification manifest entry: {relative}")
+            continue
         if relative in expected_paths:
             errors.append(f"Duplicate verification manifest entry: {relative}")
             continue
@@ -325,10 +328,10 @@ def verify_sealed_manifest(directory: Path, errors: list[str]) -> None:
         elif sha256_file(path) != expected:
             errors.append(f"Verification artifact hash mismatch: {path}")
     actual_paths = {
-        str(path.relative_to(directory))
+        path.relative_to(directory).as_posix()
         for path in directory.rglob("*")
         if path.is_file()
-        and str(path.relative_to(directory)) not in {"manifest.sha256", "COMMITTED"}
+        and path.relative_to(directory).as_posix() not in {"manifest.sha256", "COMMITTED"}
     }
     if expected_paths != actual_paths:
         errors.append(
@@ -467,10 +470,15 @@ def main() -> int:
         phase2_asset_inventory_path = Path(input_lock["phase2_asset_inventory"]["path"])
         phase2_assets = read_csv(phase2_asset_inventory_path)
         phase2_gate_snapshot = load_json(workspace / "inputs" / "phase-02-gate-report.json")
+        advanced_analysis = load_json(workspace / "inputs" / "phase-02-advanced-analysis.json")
+        advanced_gate = load_json(workspace / "inputs" / "phase-02-advanced-gate-report.json")
+        advanced_obligations = load_json(workspace / "advanced-obligations.json")
+        template_generation = load_json(workspace / "template-generation.json")
     except (ValueError, KeyError, TypeError) as exc:
         errors.append(f"Cannot load frozen Phase 3 input: {exc}")
         phase_manifest, input_lock, scope, closure, inventory, phase2_gate_snapshot = {}, {}, {}, {}, [], {}
         phase2_assets = []
+        advanced_analysis, advanced_gate, advanced_obligations, template_generation = {}, {}, {}, {}
 
     if phase_manifest.get("phase") != 3:
         errors.append("Not an initialized Phase 3 workspace")
@@ -501,6 +509,82 @@ def main() -> int:
     gate_snapshot_path = workspace / "inputs" / "phase-02-gate-report.json"
     if gate_snapshot_path.is_file() and sha256_file(gate_snapshot_path) != input_lock.get("phase2_gate", {}).get("sha256"):
         errors.append("Copied Phase 2 gate snapshot differs from the input lock")
+
+    locked_advanced = input_lock.get("phase2_advanced", {})
+    if (
+        advanced_gate.get("machine_verdict") != "PASS"
+        or advanced_gate.get("decision_source") != "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE"
+        or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
+    ):
+        errors.append("Frozen Phase 2 advanced gate is not a complete machine PASS")
+    discovered_advanced = {
+        "DYNAMIC_RISK": {str(row.get("risk_id")) for row in advanced_analysis.get("dynamic_risks", [])},
+        "SIDE_EFFECT": {str(row.get("candidate_id")) for row in advanced_analysis.get("side_effects", [])},
+        "SCENARIO": {str(row.get("scenario_id")) for row in advanced_analysis.get("scenarios", [])},
+    }
+    if (
+        sorted(discovered_advanced["DYNAMIC_RISK"]) != locked_advanced.get("dynamic_risk_ids")
+        or sorted(discovered_advanced["SIDE_EFFECT"]) != locked_advanced.get("side_effect_ids")
+        or sorted(discovered_advanced["SCENARIO"]) != locked_advanced.get("scenario_ids")
+    ):
+        errors.append("Phase 2 advanced subject IDs differ from the Phase 3 input lock")
+    obligation_rows = advanced_obligations.get("obligations", [])
+    obligation_by_id = {
+        str(row.get("subject_id")): row for row in obligation_rows if isinstance(row, dict)
+    }
+    expected_advanced_ids = set().union(*discovered_advanced.values())
+    if (
+        advanced_obligations.get("schema_version") != 1
+        or len(obligation_by_id) != len(obligation_rows)
+        or set(obligation_by_id) != expected_advanced_ids
+        or sorted(expected_advanced_ids) != input_lock.get("advanced_obligation_ids")
+    ):
+        errors.append("Advanced obligations are not one-to-one with frozen Phase 2 advanced analysis")
+    for subject_id, row in obligation_by_id.items():
+        kind = row.get("subject_type")
+        if subject_id not in discovered_advanced.get(str(kind), set()):
+            errors.append(f"Advanced obligation has the wrong subject type: {subject_id}")
+        expected_handoff = {
+            "DYNAMIC_RISK": "PHASE4_DYNAMIC_SURFACE",
+            "SIDE_EFFECT": "PHASE3_CAPABILITY_CONTRACT",
+            "SCENARIO": "PHASE4_SCENARIO_TEST",
+        }.get(str(kind))
+        if row.get("handoff_kind") != expected_handoff or row.get("status") != "LOCKED_FOR_IMPLEMENTATION":
+            errors.append(f"Advanced obligation has an invalid handoff/status: {subject_id}")
+
+    template_lock = input_lock.get("arkui_template", {})
+    template_manifest_path = workspace / "inputs" / "arkui-stage-template.manifest.sha256"
+    template_generation_path = workspace / "template-generation.json"
+    project = workspace / "harmony-project"
+    if (
+        not template_manifest_path.is_file()
+        or sha256_file(template_manifest_path) != template_lock.get("manifest_sha256")
+        or template_lock.get("template_id") != "ARKUI-STAGE-TEMPLATE-V1"
+        or template_generation.get("template_id") != "ARKUI-STAGE-TEMPLATE-V1"
+        or template_generation.get("template_manifest_sha256") != template_lock.get("manifest_sha256")
+        or template_generation.get("generated_file_count") != template_lock.get("file_count")
+        or not template_generation_path.is_file()
+        or phase_manifest.get("template_generation_sha256") != (
+            sha256_file(template_generation_path) if template_generation_path.is_file() else None
+        )
+    ):
+        errors.append("ArkUI template provenance or generation record differs from the input lock")
+    for relative in template_generation.get("required_files", []):
+        try:
+            required = safe_relative_path(project, relative, "required ArkUI template file")
+            if not required.is_file():
+                errors.append(f"Generated ArkUI project lacks required template file: {relative}")
+        except ValueError as exc:
+            errors.append(str(exc))
+    app_scope = project / "AppScope" / "app.json5"
+    if app_scope.is_file():
+        app_scope_text = text_file(app_scope, "ArkUI AppScope", errors)
+        if template_generation.get("bundle_name") not in app_scope_text:
+            errors.append("Generated ArkUI AppScope does not contain the frozen bundle name")
+    for path in project.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".json", ".json5", ".ets", ".ts", ".txt"}:
+            if re.search(r"__[A-Z0-9_]+__", text_file(path, "ArkUI template token scan", errors)):
+                errors.append(f"Generated ArkUI project contains an unresolved template token: {path}")
 
     all_inventory = inventory
     if len(all_inventory) != input_lock.get("phase2_inventory", {}).get("row_count"):
@@ -1482,9 +1566,9 @@ def main() -> int:
         if row.get("created_by") != ownership.get("capability_contract_agent_id"):
             errors.append(f"{requirement_id}: contract creator differs from capability owner")
         source_keys = split_multi(row.get("source_inventory_row_keys", ""))
-        if row.get("source_kind") == "SCOPE_FEATURE":
+        if row.get("source_kind") in {"SCOPE_FEATURE", "ADVANCED_SIDE_EFFECT"}:
             if source_keys:
-                errors.append(f"{requirement_id}: scope-only capability must not invent inventory rows")
+                errors.append(f"{requirement_id}: non-inventory capability must not invent inventory rows")
         elif not source_keys or any(key not in inventory_by_key for key in source_keys):
             errors.append(f"{requirement_id}: capability source inventory keys are missing or invalid")
         try:
@@ -1504,6 +1588,21 @@ def main() -> int:
             f"Capability requirements are not closed; missing={sorted(expected_requirements - set(capability_by_requirement))}, "
             f"extra={sorted(set(capability_by_requirement) - expected_requirements)}"
         )
+    for subject_id, obligation in obligation_by_id.items():
+        linked = obligation.get("capability_requirement_ids", [])
+        if obligation.get("subject_type") == "SIDE_EFFECT":
+            if not isinstance(linked, list) or not linked:
+                errors.append(f"Advanced side effect has no Phase 3 capability contract: {subject_id}")
+                continue
+            for requirement_id in linked:
+                contract = capability_by_requirement.get(str(requirement_id), {})
+                if (
+                    contract.get("source_kind") != "ADVANCED_SIDE_EFFECT"
+                    or contract.get("source_requirement_ref") != subject_id
+                ):
+                    errors.append(f"Advanced side effect contract binding differs: {subject_id}/{requirement_id}")
+        elif linked:
+            errors.append(f"Non-side-effect obligation must not invent a capability contract: {subject_id}")
 
     expected_status_keys = set(inventory_by_key) | expected_requirements
     status_by_key: dict[str, dict[str, str]] = {}

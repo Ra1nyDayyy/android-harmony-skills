@@ -219,7 +219,8 @@ def main() -> int:
         temp_dir = Path(temp_name)
         for name in (
             "evidence", "claims", "attempts", "tooling", "catalogs",
-            "environment-attestations", "asset-package", ".locks", ".staging",
+            "environment-attestations", "asset-package", "static-analysis", "probe-evidence",
+            ".locks", ".staging",
         ):
             (temp_dir / name).mkdir()
         (temp_dir / "asset-package" / "files").mkdir()
@@ -266,8 +267,18 @@ def main() -> int:
             temp_dir / "environments.json",
             {"baseline_env_id": baseline_env_id, "frozen_at": frozen_at, "environments": enriched},
         )
+        atomic_json(temp_dir / "runtime-observations.json", {"schema_version": 1, "observations": []})
+        atomic_json(temp_dir / "advanced-observations.json", {"schema_version": 1, "observations": []})
+        write_csv(
+            temp_dir / "probe-evidence-index.csv",
+            [
+                "probe_evidence_id", "candidate_id", "page_id", "env_id",
+                "relative_path", "metadata_sha256", "status",
+            ],
+            [],
+        )
         environment_registry_sha256 = sha256_file(temp_dir / "environments.json")
-        atomic_text(temp_dir / "controller-scope.snapshot.json", scope_path.read_text(encoding="utf-8"))
+        shutil.copyfile(scope_path, temp_dir / "controller-scope.snapshot.json")
         atomic_json(temp_dir / "tooling" / "android-cli-preflight.json", {"commands": commands})
         atomic_json(temp_dir / "tooling" / "source-preflight.json", {"commands": source_commands})
         (temp_dir / "tooling" / "android-describe.txt").write_text(

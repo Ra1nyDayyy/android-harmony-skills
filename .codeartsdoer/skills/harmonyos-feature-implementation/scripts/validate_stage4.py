@@ -59,6 +59,7 @@ INPUT_LOCK_KEYS = {
     "controller_gate3_snapshot_sha256", "phase3_work_order_id",
     "phase3_work_order_sha256", "inputs", "android_evidence",
     "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
+    "migration_unit_contracts_sha256",
     "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
     "phase3_source_snapshot_sha256",
 }
@@ -82,6 +83,16 @@ STAGE4_INPUT_RELATIVES = {
     "phase2_asset_inventory_sha256": "phase-02-android-inventory/asset-inventory.csv",
     "phase2_asset_manifest_sha256": "phase-02-android-inventory/asset-package/manifest.sha256",
     "phase2_asset_committed_sha256": "phase-02-android-inventory/asset-package/COMMITTED",
+    "phase2_static_pages_sha256": "phase-02-android-inventory/static-analysis/pages.json",
+    "phase2_static_components_sha256": "phase-02-android-inventory/static-analysis/components.json",
+    "phase2_static_events_sha256": "phase-02-android-inventory/static-analysis/events.json",
+    "phase2_static_transitions_sha256": "phase-02-android-inventory/static-analysis/transitions.json",
+    "phase2_runtime_observations_sha256": "phase-02-android-inventory/runtime-observations.json",
+    "phase2_page_gate_sha256": "phase-02-android-inventory/page-gate-report.json",
+    "phase2_advanced_analysis_sha256": "phase-02-android-inventory/static-analysis/advanced-analysis.json",
+    "phase2_advanced_observations_sha256": "phase-02-android-inventory/advanced-observations.json",
+    "phase2_advanced_gate_sha256": "phase-02-android-inventory/advanced-gate-report.json",
+    "phase2_probe_index_sha256": "phase-02-android-inventory/probe-evidence-index.csv",
     "phase3_input_lock_sha256": "phase-03-harmony-scaffold/stage-03-input-lock.json",
     "phase3_gate_report_sha256": "phase-03-harmony-scaffold/stage-03-gate-report.json",
     "phase3_closure_manifest_sha256": "phase-03-harmony-scaffold/stage-03-closure-manifest.sha256",
@@ -94,6 +105,7 @@ STAGE4_INPUT_RELATIVES = {
     "phase3_public_ui_registry_sha256": "phase-03-harmony-scaffold/public-ui-registry.csv",
     "phase3_capability_contracts_sha256": "phase-03-harmony-scaffold/capability-contracts.csv",
     "phase3_asset_registry_sha256": "phase-03-harmony-scaffold/asset-registry.csv",
+    "phase3_advanced_obligations_sha256": "phase-03-harmony-scaffold/advanced-obligations.json",
     "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
 }
 FEATURE_ORDER_KEYS = {
@@ -147,6 +159,47 @@ def rows_by(path: Path, key: str, label: str) -> dict[str, dict[str, str]]:
     return result
 
 
+ATTEMPT_LEDGER_FIELDS = [
+    "execution_id", "parity_id", "evidence_id", "started_at", "executed_by",
+    "previous_chain_sha256", "chain_sha256",
+]
+
+
+def validate_attempt_ledgers(workspace: Path) -> None:
+    local_rows = read_csv(workspace / "attempt-ledger.csv")
+    controller_rows = read_csv(workspace.parent / "controller" / "phase4-attempt-ledger.csv")
+    require(local_rows == controller_rows, "Phase 4 attempt ledger differs from controller anchor")
+    previous = "0" * 64
+    seen_ids: set[str] = set()
+    seen_evidence: set[str] = set()
+    counts: dict[str, int] = {}
+    for row in controller_rows:
+        material = {field: row.get(field, "") for field in ATTEMPT_LEDGER_FIELDS[:-1]}
+        expected = hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        require(
+            set(row) == set(ATTEMPT_LEDGER_FIELDS)
+            and bool(row.get("execution_id")) and row["execution_id"] not in seen_ids
+            and bool(row.get("evidence_id")) and row["evidence_id"] not in seen_evidence
+            and row.get("previous_chain_sha256") == previous
+            and row.get("chain_sha256") == expected,
+            "Phase 4 attempt ledger hash chain or identity differs",
+        )
+        seen_ids.add(row["execution_id"])
+        seen_evidence.add(row["evidence_id"])
+        parity_id = row.get("parity_id", "")
+        counts[parity_id] = counts.get(parity_id, 0) + 1
+        previous = expected
+    require(all(count <= 3 for count in counts.values()),
+            "Phase 4 automatic execution budget exceeds initial attempt plus two repairs")
+    evidence_ids = {row.get("evidence_id", "") for row in read_csv(workspace / "evidence-index.csv")}
+    require(evidence_ids <= seen_evidence, "Phase 4 evidence index contains an unanchored execution")
+    for evidence_id in seen_evidence - evidence_ids:
+        require((workspace / "attempts" / f"ATT-{evidence_id}.json").is_file(),
+                f"Anchored execution lacks evidence or failure package: {evidence_id}")
+
+
 def require_csv_header(path: Path, expected: list[str], label: str) -> None:
     with path.open("r", encoding="utf-8", newline="") as handle:
         actual = next(csv.reader(handle), [])
@@ -184,6 +237,183 @@ def source_row_key(row: dict[str, str]) -> str:
     )
     require(all(material.split("|")), f"Inventory row lacks source identity: {row.get('inventory_id', '')}")
     return "SROW-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20].upper()
+
+
+def carrier_for(page: dict[str, Any], mapping_type: str) -> str:
+    kinds = {str(value).upper() for value in page.get("kinds", []) if str(value)}
+    if any("BOTTOMSHEET" in kind or "BOTTOM_SHEET" in kind for kind in kinds):
+        return "SHEET"
+    if any("DIALOG" in kind for kind in kinds):
+        return "DIALOG"
+    if any("POPUP" in kind for kind in kinds):
+        return "POPUP"
+    if any("WIDGET" in kind for kind in kinds):
+        return "EMBEDDED_SURFACE"
+    if any("ACTIVITY" in kind for kind in kinds):
+        return "PAGE"
+    return "PAGE" if mapping_type == "ROUTE_PAGE" else "EMBEDDED_SURFACE"
+
+
+def scaffold_carrier(mapping_type: str, surface_kind: str) -> str:
+    if mapping_type == "ROUTE_PAGE":
+        return "PAGE"
+    normalized = surface_kind.upper().replace("-", "_")
+    if "BOTTOM" in normalized and "SHEET" in normalized:
+        return "SHEET"
+    if "DIALOG" in normalized:
+        return "DIALOG"
+    if "POPUP" in normalized or "MENU" in normalized:
+        return "POPUP"
+    return "EMBEDDED_SURFACE"
+
+
+def object_array(path: Path, field: str, label: str) -> list[dict[str, Any]]:
+    value = object_json(path, label)
+    rows = value.get(field)
+    require(isinstance(rows, list) and all(isinstance(row, dict) for row in rows),
+            f"{label}.{field} must be an object array")
+    return rows
+
+
+def validate_migration_unit_contracts(
+    workspace: Path,
+    inventory: dict[str, dict[str, str]],
+    architecture: dict[str, dict[str, str]],
+    parity: dict[str, dict[str, str]],
+    context: dict[str, Any],
+    input_lock: dict[str, Any],
+    manifest: dict[str, Any],
+) -> None:
+    """Recompute every immutable Android-to-Harmony observable contract."""
+    phase2: Path = context["phase2"]
+    phase3: Path = context["phase3"]
+    pages = {str(row.get("page_id", "")): row for row in object_array(
+        phase2 / "static-analysis" / "pages.json", "pages", "Phase 2 pages"
+    )}
+    components = object_array(
+        phase2 / "static-analysis" / "components.json", "components", "Phase 2 components"
+    )
+    events = object_array(
+        phase2 / "static-analysis" / "events.json", "events", "Phase 2 events"
+    )
+    transitions = object_array(
+        phase2 / "static-analysis" / "transitions.json", "transitions", "Phase 2 transitions"
+    )
+    observations = object_array(
+        phase2 / "runtime-observations.json", "observations", "Phase 2 runtime observations"
+    )
+    inventory_by_evidence = {str(row.get("evidence_id", "")): row for row in inventory.values()}
+    observed_by_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
+    bucket_by_type = {"COMPONENT": "components", "EVENT": "events", "TRANSITION": "transitions"}
+    for observation in observations:
+        bucket = bucket_by_type.get(str(observation.get("subject_type", "")))
+        if not bucket:
+            continue
+        source = inventory_by_evidence.get(str(observation.get("after_evidence_id", "")))
+        require(source is not None, "A Phase 2 runtime observation is not bound to active evidence")
+        require(
+            observation.get("page_id") == source.get("page_id")
+            and observation.get("env_id") == source.get("env_id"),
+            "A Phase 2 runtime observation differs from its state evidence",
+        )
+        key = (str(source["page_id"]), str(source["state_id"]), str(source["env_id"]))
+        observed_by_state.setdefault(
+            key, {"components": set(), "events": set(), "transitions": set()}
+        )[bucket].add(str(observation.get("subject_id", "")))
+    obligation_doc = object_json(phase3 / "advanced-obligations.json", "Phase 3 obligations")
+    obligations = obligation_doc.get("obligations")
+    require(isinstance(obligations, list) and all(isinstance(row, dict) for row in obligations),
+            "Phase 3 obligations must be an object array")
+    contract_path = workspace / "migration-unit-contracts.json"
+    contract_sha = sha256_file(contract_path)
+    require(
+        input_lock.get("migration_unit_contracts_sha256") == contract_sha
+        and manifest.get("migration_unit_contracts_sha256") == contract_sha,
+        "Migration-unit contracts are not bound by the Phase 4 input lock and manifest",
+    )
+    contract_doc = object_json(contract_path, "migration-unit contracts")
+    units = contract_doc.get("units")
+    require(contract_doc.get("schema_version") == 1 and isinstance(units, list)
+            and all(isinstance(row, dict) for row in units),
+            "Migration-unit contract schema differs")
+    unit_by_parity = {str(row.get("parity_id", "")): row for row in units}
+    require(len(unit_by_parity) == len(units) and set(unit_by_parity) == set(parity),
+            "Migration-unit contracts do not exactly cover the parity map")
+    surfaces: dict[str, dict[str, str]] = context["surfaces"]
+    for parity_id, parity_row in parity.items():
+        source = inventory.get(str(parity_row.get("inventory_id", "")))
+        require(source is not None, f"Migration unit references unknown inventory: {parity_id}")
+        mapping = architecture[source_row_key(source)]
+        page_id = str(source.get("page_id", ""))
+        page = pages.get(page_id)
+        require(page is not None, f"Migration unit page is absent from static analysis: {page_id}")
+        mapping_type = str(mapping.get("mapping_type", ""))
+        target_id = str(
+            mapping.get("route_id", "") if mapping_type == "ROUTE_PAGE"
+            else mapping.get("surface_shell_id", "")
+        )
+        carrier = carrier_for(page, mapping_type)
+        surface_kind = str(surfaces.get(str(mapping.get("surface_shell_id", "")), {}).get(
+            "surface_kind", ""
+        ))
+        applicable = sorted(
+            [
+                row for row in obligations
+                if source.get("feature_id") in row.get("candidate_feature_ids", [])
+                and (not str(row.get("page_id", "")) or row.get("page_id") == page_id)
+            ],
+            key=lambda row: str(row.get("subject_id", "")),
+        )
+        state_subjects = observed_by_state.get(
+            (page_id, str(source["state_id"]), str(source["env_id"])),
+            {"components": set(), "events": set(), "transitions": set()},
+        )
+        expected = {
+            "migration_unit_id": "MUNIT-" + hashlib.sha256(parity_id.encode("utf-8")).hexdigest()[:20].upper(),
+            "parity_id": parity_id,
+            "inventory_id": source["inventory_id"],
+            "feature_id": source["feature_id"],
+            "page_id": page_id,
+            "state_id": source["state_id"],
+            "h4env_id": parity_row["h4env_id"],
+            "android_entry_condition": source["entry_condition"],
+            "android_action_summary": source["action_summary"],
+            "android_expected_observable": source["expected_observable"],
+            "required_business_rule_ids": sorted(set(split_multi(source["business_rule_refs"]))),
+            "required_data_dependency_ids": sorted(set(split_multi(source["data_dependency_refs"]))),
+            "required_system_capability_ids": sorted(set(split_multi(source["system_capability_refs"]))),
+            "required_third_party_dependency_ids": sorted(set(split_multi(source["third_party_dependency_refs"]))),
+            "expected_carrier": carrier,
+            "target_kind": mapping_type,
+            "target_id": target_id,
+            "scaffold_carrier": scaffold_carrier(mapping_type, surface_kind),
+            "page_component_ids": sorted({str(row["component_id"]) for row in components if row.get("page_id") == page_id}),
+            "page_event_ids": sorted({str(row["event_id"]) for row in events if row.get("page_id") == page_id}),
+            "page_transition_ids": sorted({str(row["transition_id"]) for row in transitions if row.get("source_page_id") == page_id}),
+            "required_component_ids": sorted(state_subjects["components"]),
+            "component_locators": {
+                str(row["component_id"]): {
+                    "resource_id": str(row.get("resource_id", "")),
+                    "text": str(row.get("text", "")),
+                    "type": str(row.get("type", "")),
+                }
+                for row in components if row.get("page_id") == page_id
+            },
+            "required_event_ids": sorted(state_subjects["events"]),
+            "required_transition_ids": sorted(state_subjects["transitions"]),
+            "state_binding_basis": "PHASE2_AFTER_EVIDENCE",
+            "required_obligation_ids": [str(row["subject_id"]) for row in applicable],
+            "required_obligation_types": {
+                str(row["subject_id"]): str(row.get("subject_type", "")) for row in applicable
+            },
+            "simplification_policy": "FORBIDDEN",
+            "native_optimization_policy": "INTERNAL_ONLY_UNLESS_APPROVED",
+            "max_automatic_repair_attempts": 2,
+        }
+        require(unit_by_parity[parity_id] == expected,
+                f"Migration-unit observable contract differs from frozen Android facts: {parity_id}")
+        require(carrier == expected["scaffold_carrier"],
+                f"Phase 3 carrier changes Android semantics: {parity_id}")
 
 
 def ensure_no_mp4_or_placeholders(workspace: Path) -> None:
@@ -680,6 +910,9 @@ def validate_mapping_and_feature_orders(
         )
 
     parity = rows_by(workspace / "parity-map.csv", "parity_id", "Phase 4 parity map")
+    validate_migration_unit_contracts(
+        workspace, inventory, architecture, parity, context, input_lock, manifest
+    )
     capabilities = rows_by(
         phase3 / "capability-contracts.csv",
         "capability_requirement_id",
@@ -1004,6 +1237,7 @@ def main() -> int:
         ) = validate_upstream_and_work_order(workspace)
         require(reviewer == ownership["parity_acceptance_agent_id"],
                 "Only the frozen parity acceptance agent may close Phase 4")
+        validate_attempt_ledgers(workspace)
         android_dirs, locked_assets, environments, source_snapshot_sha256 = validate_locked_materials(
             workspace, scope, input_lock, ownership, inventory, assets, phase3_assets, context
         )

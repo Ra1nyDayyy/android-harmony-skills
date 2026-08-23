@@ -405,7 +405,7 @@ class ReviewFixture:
             [
                 {
                     "decision_id": DECISION_ID,
-                    "decision_class": "OBSERVABLE_BEHAVIOR",
+                    "decision_class": "PLATFORM_VISUAL",
                     "feature_id": FEATURE_ID,
                     "page_id": PAGE_ID,
                     "state_id": STATE_ID,

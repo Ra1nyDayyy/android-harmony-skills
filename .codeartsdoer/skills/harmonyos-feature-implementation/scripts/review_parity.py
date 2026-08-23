@@ -119,8 +119,12 @@ def decision_ids_are_approved(
             or local_row.get("status") != "APPROVED"
             or local_row.get("approved_by") != reviewer
             or parity_id not in split_multi(local_row.get("affected_parity_ids", ""))
+            or local_row.get("decision_class") != "PLATFORM_VISUAL"
         ):
-            raise ValueError(f"Difference lacks an approved nativeization decision: {decision_id}")
+            raise ValueError(
+                f"Difference lacks an approved nativeization decision limited to "
+                f"PLATFORM_VISUAL: {decision_id}"
+            )
         controller_decision_id = local_row.get("controller_decision_id", "")
         controller_row = controller.get(controller_decision_id)
         if (
@@ -293,6 +297,11 @@ def main() -> int:
                 raise ValueError(
                     f"Comparison {field} must be MATCH, APPROVED_DIFFERENCE, or MISMATCH"
                 )
+        if comparison.get("functional_result") != "MATCH" or comparison.get("asset_result") != "MATCH":
+            raise ValueError(
+                "Functional and asset semantics are non-waivable; only a platform visual offset "
+                "may be an approved difference"
+            )
         visual_ids = set(split_multi(parity.get("visual_element_ids", "")))
         reviewed_ids = comparison.get("reviewed_visual_element_ids")
         if not isinstance(reviewed_ids, list) or set(reviewed_ids) != visual_ids:

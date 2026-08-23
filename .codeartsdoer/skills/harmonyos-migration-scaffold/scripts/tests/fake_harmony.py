@@ -230,10 +230,19 @@ def main() -> int:
                     {
                         "assertion_id": "ASSERT-BUSINESS", "kind": "BUSINESS_RESULT",
                         "expected": "login-ready", "actual": "login-ready", "status": "PASS",
+                        "subject_ids": [
+                            "BR-AUTH-NONE", "DATA-AUTH-NONE", "SYS-AUTH-NONE", "SDK-AUTH-NONE"
+                        ],
                     },
                     {
                         "assertion_id": "ASSERT-INTERACTION", "kind": "INTERACTION",
                         "expected": "tap-ready", "actual": "tap-ready", "status": "PASS",
+                    },
+                    {
+                        "assertion_id": "ASSERT-ANDROID-OBSERVABLE",
+                        "kind": "ANDROID_EXPECTED_OBSERVABLE",
+                        "expected": "Login form is visible", "actual": "Login form is visible",
+                        "subject_ids": ["INV-AUTH-LOGIN-DEFAULT"], "status": "PASS",
                     },
                 ],
             }
@@ -249,9 +258,12 @@ def main() -> int:
                 raise ValueError("UI tree target has no preceding navigation")
             result = {
                 "bundle_name": args.bundle,
+                "carrier": "PAGE",
+                "target_id": args.target,
                 "window": {"id": "main"},
                 "root": {"id": "root"},
                 "nodes": [{"id": "login", "text": "Login"}],
+                "operation_trace": [],
                 "bounds": {"x": 0, "y": 0, "width": 320, "height": 640},
                 "device": {"device_id": "HDEVICE-001", "serial": args.serial},
             }

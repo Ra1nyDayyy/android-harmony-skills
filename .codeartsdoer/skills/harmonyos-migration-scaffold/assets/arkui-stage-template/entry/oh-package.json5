@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Entry module for __APP_NAME__.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

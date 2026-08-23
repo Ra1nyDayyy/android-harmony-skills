@@ -70,9 +70,10 @@
     }
   ],
   "assertions": [
-    {"assertion_id": "ASSERT-VISUAL", "kind": "VISUAL_STATE", "expected": "__FILL_EXPECTED_VISUAL_FACT__"},
-    {"assertion_id": "ASSERT-BUSINESS", "kind": "BUSINESS_RESULT", "expected": "__FILL_EXPECTED_BUSINESS_RESULT__"},
-    {"assertion_id": "ASSERT-INTERACTION", "kind": "INTERACTION", "expected": "__FILL_EXPECTED_INTERACTION_RESULT__"},
-    {"assertion_id": "ASSERT-CAPABILITY-EXAMPLE", "kind": "CAPABILITY_RESULT", "expected": "__FILL_EXPECTED_CAPABILITY_RESULT_OR_REMOVE_THIS_ROW__", "subject_ids": ["__FILL_CAPABILITY_REQUIREMENT_ID__"]}
+    {"assertion_id": "ASSERT-VISUAL", "kind": "VISUAL_STATE", "operator": "EQUALS", "expected": "__FILL_EXPECTED_VISUAL_FACT__"},
+    {"assertion_id": "ASSERT-BUSINESS", "kind": "BUSINESS_RESULT", "operator": "EQUALS", "expected": "__FILL_EXPECTED_BUSINESS_RESULT__", "subject_ids": ["__ALL_BUSINESS_DATA_SYSTEM_THIRD_PARTY_AND_ADVANCED_OBLIGATION_IDS__"]},
+    {"assertion_id": "ASSERT-INTERACTION", "kind": "INTERACTION", "operator": "EQUALS", "expected": "__FILL_EXPECTED_INTERACTION_RESULT__"},
+    {"assertion_id": "ASSERT-ANDROID-OBSERVABLE", "kind": "ANDROID_EXPECTED_OBSERVABLE", "operator": "EQUALS", "expected": "__EXACT_ANDROID_EXPECTED_OBSERVABLE_FROM_MIGRATION_UNIT__", "subject_ids": ["__EXACT_INVENTORY_ID__"]},
+    {"assertion_id": "ASSERT-CAPABILITY-EXAMPLE", "kind": "CAPABILITY_RESULT", "operator": "EQUALS", "expected": "__FILL_EXPECTED_CAPABILITY_RESULT_OR_REMOVE_THIS_ROW__", "subject_ids": ["__FILL_CAPABILITY_REQUIREMENT_ID__"]}
   ]
 }

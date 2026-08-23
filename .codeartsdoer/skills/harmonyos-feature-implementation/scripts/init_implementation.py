@@ -79,6 +79,16 @@ STAGE4_INPUT_RELATIVES = {
     "phase2_asset_inventory_sha256": "phase-02-android-inventory/asset-inventory.csv",
     "phase2_asset_manifest_sha256": "phase-02-android-inventory/asset-package/manifest.sha256",
     "phase2_asset_committed_sha256": "phase-02-android-inventory/asset-package/COMMITTED",
+    "phase2_static_pages_sha256": "phase-02-android-inventory/static-analysis/pages.json",
+    "phase2_static_components_sha256": "phase-02-android-inventory/static-analysis/components.json",
+    "phase2_static_events_sha256": "phase-02-android-inventory/static-analysis/events.json",
+    "phase2_static_transitions_sha256": "phase-02-android-inventory/static-analysis/transitions.json",
+    "phase2_runtime_observations_sha256": "phase-02-android-inventory/runtime-observations.json",
+    "phase2_page_gate_sha256": "phase-02-android-inventory/page-gate-report.json",
+    "phase2_advanced_analysis_sha256": "phase-02-android-inventory/static-analysis/advanced-analysis.json",
+    "phase2_advanced_observations_sha256": "phase-02-android-inventory/advanced-observations.json",
+    "phase2_advanced_gate_sha256": "phase-02-android-inventory/advanced-gate-report.json",
+    "phase2_probe_index_sha256": "phase-02-android-inventory/probe-evidence-index.csv",
     "phase3_input_lock_sha256": "phase-03-harmony-scaffold/stage-03-input-lock.json",
     "phase3_gate_report_sha256": "phase-03-harmony-scaffold/stage-03-gate-report.json",
     "phase3_closure_manifest_sha256": "phase-03-harmony-scaffold/stage-03-closure-manifest.sha256",
@@ -91,6 +101,7 @@ STAGE4_INPUT_RELATIVES = {
     "phase3_public_ui_registry_sha256": "phase-03-harmony-scaffold/public-ui-registry.csv",
     "phase3_capability_contracts_sha256": "phase-03-harmony-scaffold/capability-contracts.csv",
     "phase3_asset_registry_sha256": "phase-03-harmony-scaffold/asset-registry.csv",
+    "phase3_advanced_obligations_sha256": "phase-03-harmony-scaffold/advanced-obligations.json",
     "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
 }
 BASE_CATEGORY_MAP = {
@@ -131,6 +142,42 @@ def sha256_text(value: str) -> str:
 
 def deterministic_id(prefix: str, *parts: str) -> str:
     return prefix + "-" + sha256_text("|".join(parts))[:20].upper()
+
+
+def object_rows(path: Path, field: str, label: str) -> list[dict[str, Any]]:
+    value = require_object(load_json(path), label)
+    rows = value.get(field)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError(f"{label}.{field} must be an object array")
+    return rows
+
+
+def expected_carrier(page: dict[str, Any], mapping_type: str) -> str:
+    kinds = {str(value).upper() for value in page.get("kinds", []) if str(value)}
+    if any("BOTTOMSHEET" in kind or "BOTTOM_SHEET" in kind for kind in kinds):
+        return "SHEET"
+    if any("DIALOG" in kind for kind in kinds):
+        return "DIALOG"
+    if any("POPUP" in kind for kind in kinds):
+        return "POPUP"
+    if any("WIDGET" in kind for kind in kinds):
+        return "EMBEDDED_SURFACE"
+    if any("ACTIVITY" in kind for kind in kinds):
+        return "PAGE"
+    return "PAGE" if mapping_type == "ROUTE_PAGE" else "EMBEDDED_SURFACE"
+
+
+def actual_scaffold_carrier(mapping_type: str, surface_kind: str) -> str:
+    if mapping_type == "ROUTE_PAGE":
+        return "PAGE"
+    normalized = surface_kind.upper().replace("-", "_")
+    if "BOTTOM" in normalized and "SHEET" in normalized:
+        return "SHEET"
+    if "DIALOG" in normalized:
+        return "DIALOG"
+    if "POPUP" in normalized or "MENU" in normalized:
+        return "POPUP"
+    return "EMBEDDED_SURFACE"
 
 
 def source_row_key(row: dict[str, str]) -> str:
@@ -668,6 +715,13 @@ def validate_environment_config(
     ):
         raise ValueError(f"{h4env_id}: device_selector_tokens do not bind the frozen serial")
     contracts = frozen_category_contracts(config)
+    if os.environ.get("ANDROID_HARMONY_TEST_FIXTURES") != "1":
+        for category, contract in contracts.items():
+            parts = {part.lower() for part in Path(contract["resolved_executable"]).parts}
+            if "tests" in parts or "fake_harmony.py" in str(contract["resolved_executable"]).lower():
+                raise ValueError(
+                    f"{h4env_id}: synthetic test executable is prohibited for formal evidence: {category}"
+                )
     for category in SERIAL_CATEGORIES:
         if serial not in contracts[category]["required_argv_tokens"]:
             raise ValueError(f"{h4env_id}: {category} does not bind the exact frozen serial")
@@ -895,6 +949,7 @@ def main() -> int:
             ("controller-gate3-snapshot", gate_snapshot_path, str(work_order["controller_gate3_sha256"])),
             ("phase3-work-order", phase3_work_order_path, str(work_order["upstream_phase3_work_order_sha256"])),
         ]
+        locked_sources: dict[str, Path] = {}
         for digest_key, expected_relative in STAGE4_INPUT_RELATIVES.items():
             relative_key = digest_key.removesuffix("_sha256") + "_relative_path"
             if work_order.get(relative_key) != expected_relative:
@@ -903,7 +958,41 @@ def main() -> int:
             digest = str(work_order.get(digest_key, ""))
             if not SHA256_RE.fullmatch(digest) or sha256_file(source) != digest:
                 raise ValueError(f"Phase 4 work-order input changed: {digest_key}")
-            small_sources.append((digest_key.removesuffix("_sha256"), source, digest))
+            label = digest_key.removesuffix("_sha256")
+            locked_sources[label] = source
+            small_sources.append((label, source, digest))
+
+        static_pages = object_rows(locked_sources["phase2_static_pages"], "pages", "Phase 2 pages")
+        static_components = object_rows(
+            locked_sources["phase2_static_components"], "components", "Phase 2 components"
+        )
+        static_events = object_rows(locked_sources["phase2_static_events"], "events", "Phase 2 events")
+        static_transitions = object_rows(
+            locked_sources["phase2_static_transitions"], "transitions", "Phase 2 transitions"
+        )
+        runtime_observations = object_rows(
+            locked_sources["phase2_runtime_observations"], "observations",
+            "Phase 2 runtime observations",
+        )
+        page_gate = require_object(
+            load_json(locked_sources["phase2_page_gate"]), "Phase 2 page gate"
+        )
+        if page_gate.get("machine_verdict") != "PASS" or page_gate.get("errors"):
+            raise ValueError("Phase 2 deterministic page gate is not a complete PASS")
+        advanced_gate = require_object(
+            load_json(locked_sources["phase2_advanced_gate"]), "Phase 2 advanced gate"
+        )
+        advanced_obligations_value = require_object(
+            load_json(locked_sources["phase3_advanced_obligations"]), "Phase 3 advanced obligations"
+        )
+        advanced_obligations = advanced_obligations_value.get("obligations")
+        if (
+            advanced_gate.get("machine_verdict") != "PASS"
+            or advanced_gate.get("errors")
+            or not isinstance(advanced_obligations, list)
+            or any(not isinstance(row, dict) for row in advanced_obligations)
+        ):
+            raise ValueError("Phase 2 advanced analysis or Phase 3 obligation handoff is not a complete PASS")
 
         henv_records = work_order.get("phase3_henvs")
         if not isinstance(henv_records, list) or not henv_records:
@@ -987,6 +1076,15 @@ def main() -> int:
                 raise ValueError(f"Harmony module is not READY: {module_id}")
         routes = indexed(read_csv(phase3 / "route-registry.csv"), "route_id", "Harmony route")
         surfaces = indexed(read_csv(phase3 / "surface-registry.csv"), "surface_shell_id", "Harmony surface")
+        static_pages_by_id: dict[str, dict[str, Any]] = {}
+        for page in static_pages:
+            page_id = str(page.get("page_id", ""))
+            if not page_id or page_id in static_pages_by_id:
+                raise ValueError(f"Phase 2 static page has an empty or duplicate Page-ID: {page_id!r}")
+            static_pages_by_id[page_id] = page
+        for source in inventory:
+            if source["page_id"] not in static_pages_by_id:
+                raise ValueError(f"Active inventory page is absent from static analysis: {source['page_id']}")
         for source in inventory:
             mapping = architecture[source_row_key(source)]
             for field in ("inventory_id", "feature_id", "page_id", "state_id", "env_id", "evidence_id"):
@@ -1011,6 +1109,15 @@ def main() -> int:
                 or target.get("page_id") != source.get("page_id") or not target_id
             ):
                 raise ValueError(f"Architecture target binding differs: {source['inventory_id']}")
+            android_carrier = expected_carrier(static_pages_by_id[source["page_id"]], mapping["mapping_type"])
+            scaffold_carrier = actual_scaffold_carrier(
+                mapping["mapping_type"], str((target or {}).get("surface_kind", ""))
+            )
+            if android_carrier != scaffold_carrier:
+                raise ValueError(
+                    f"Page carrier changed before implementation: {source['page_id']} "
+                    f"requires {android_carrier}, scaffold provides {scaffold_carrier}"
+                )
         for asset_id, placement in phase3_assets.items():
             if placement["target_module_id"] not in modules:
                 raise ValueError(f"Asset references unknown Harmony module: {asset_id}")
@@ -1043,6 +1150,64 @@ def main() -> int:
         conversion_registry = validate_conversion_contracts(
             args.asset_conversion_config, phase2_assets, phase3_assets, lead, initialized_at
         )
+        components_by_page: dict[str, list[str]] = {}
+        events_by_page: dict[str, list[str]] = {}
+        transitions_by_page: dict[str, list[str]] = {}
+        seen_static_ids: set[str] = set()
+        for rows, id_field, page_field, output in (
+            (static_components, "component_id", "page_id", components_by_page),
+            (static_events, "event_id", "page_id", events_by_page),
+            (static_transitions, "transition_id", "source_page_id", transitions_by_page),
+        ):
+            for row in rows:
+                subject_id = str(row.get(id_field, ""))
+                page_id = str(row.get(page_field, ""))
+                if not subject_id or subject_id in seen_static_ids:
+                    raise ValueError(f"Phase 2 static analysis has an empty or duplicate subject ID: {subject_id!r}")
+                seen_static_ids.add(subject_id)
+                if page_id in static_pages_by_id:
+                    output.setdefault(page_id, []).append(subject_id)
+        inventory_by_evidence = {row["evidence_id"]: row for row in inventory}
+        observed_by_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
+        subject_type_to_bucket = {
+            "COMPONENT": "components", "EVENT": "events", "TRANSITION": "transitions",
+        }
+        for observation in runtime_observations:
+            bucket = subject_type_to_bucket.get(str(observation.get("subject_type", "")))
+            if not bucket:
+                continue
+            source = inventory_by_evidence.get(str(observation.get("after_evidence_id", "")))
+            if source is None:
+                raise ValueError(
+                    f"Runtime observation is not bound to an active state: "
+                    f"{observation.get('observation_id', '')}"
+                )
+            if (
+                observation.get("page_id") != source["page_id"]
+                or observation.get("env_id") != source["env_id"]
+            ):
+                raise ValueError("Runtime observation page/environment differs from its state evidence")
+            key = (source["page_id"], source["state_id"], source["env_id"])
+            observed_by_state.setdefault(
+                key, {"components": set(), "events": set(), "transitions": set()}
+            )[bucket].add(str(observation.get("subject_id", "")))
+        obligations_by_feature: dict[str, list[dict[str, Any]]] = {}
+        seen_obligation_ids: set[str] = set()
+        for obligation in advanced_obligations:
+            subject_id = str(obligation.get("subject_id", ""))
+            if (
+                not subject_id
+                or subject_id in seen_obligation_ids
+                or obligation.get("status") != "LOCKED_FOR_IMPLEMENTATION"
+            ):
+                raise ValueError(f"Phase 3 has an invalid advanced obligation: {subject_id!r}")
+            seen_obligation_ids.add(subject_id)
+            feature_ids = obligation.get("candidate_feature_ids")
+            if not isinstance(feature_ids, list) or not feature_ids:
+                raise ValueError(f"Advanced obligation has no Feature-ID: {subject_id}")
+            for feature_id in feature_ids:
+                if str(feature_id) in included_features:
+                    obligations_by_feature.setdefault(str(feature_id), []).append(obligation)
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         parser.error(str(exc))
 
@@ -1055,6 +1220,7 @@ def main() -> int:
                 "builds", "evidence", "attempts", ".locks", ".staging", "harmony-project",
             ):
                 (temp_dir / name).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ASSETS / "attempt-ledger.template.csv", temp_dir / "attempt-ledger.csv")
 
             input_records: list[dict[str, Any]] = []
             for number, (label, source, digest) in enumerate(small_sources, start=1):
@@ -1228,6 +1394,7 @@ def main() -> int:
                 environments_by_source.setdefault(config["source_android_env_id"], []).append(config)
             parity_rows: list[dict[str, Any]] = []
             visual_rows: list[dict[str, Any]] = []
+            migration_units: list[dict[str, Any]] = []
             for source in sorted(inventory, key=lambda item: item["inventory_id"]):
                 row_key = source_row_key(source)
                 mapping = architecture[row_key]
@@ -1260,6 +1427,70 @@ def main() -> int:
                             "implemented_by": "",
                             "status": "NOT_STARTED",
                             "notes": "",
+                        }
+                    )
+                    page = static_pages_by_id[source["page_id"]]
+                    surface_kind = str(surfaces.get(mapping.get("surface_shell_id", ""), {}).get("surface_kind", ""))
+                    carrier = expected_carrier(page, mapping_type)
+                    state_subjects = observed_by_state.get(
+                        (source["page_id"], source["state_id"], source["env_id"]),
+                        {"components": set(), "events": set(), "transitions": set()},
+                    )
+                    applicable_obligations = sorted(
+                        {
+                            str(item["subject_id"]): item
+                            for item in obligations_by_feature.get(source["feature_id"], [])
+                            if not str(item.get("page_id", ""))
+                            or str(item.get("page_id")) == source["page_id"]
+                        }.values(),
+                        key=lambda item: str(item["subject_id"]),
+                    )
+                    migration_units.append(
+                        {
+                            "migration_unit_id": deterministic_id("MUNIT", parity_id),
+                            "parity_id": parity_id,
+                            "inventory_id": source["inventory_id"],
+                            "feature_id": source["feature_id"],
+                            "page_id": source["page_id"],
+                            "state_id": source["state_id"],
+                            "h4env_id": config["h4env_id"],
+                            "android_entry_condition": source["entry_condition"],
+                            "android_action_summary": source["action_summary"],
+                            "android_expected_observable": source["expected_observable"],
+                            "required_business_rule_ids": sorted(set(split_multi(source["business_rule_refs"]))),
+                            "required_data_dependency_ids": sorted(set(split_multi(source["data_dependency_refs"]))),
+                            "required_system_capability_ids": sorted(set(split_multi(source["system_capability_refs"]))),
+                            "required_third_party_dependency_ids": sorted(
+                                set(split_multi(source["third_party_dependency_refs"]))
+                            ),
+                            "expected_carrier": carrier,
+                            "target_kind": mapping_type,
+                            "target_id": target_id,
+                            "scaffold_carrier": actual_scaffold_carrier(mapping_type, surface_kind),
+                            "page_component_ids": sorted(set(components_by_page.get(source["page_id"], []))),
+                            "page_event_ids": sorted(set(events_by_page.get(source["page_id"], []))),
+                            "page_transition_ids": sorted(set(transitions_by_page.get(source["page_id"], []))),
+                            "required_component_ids": sorted(state_subjects["components"]),
+                            "component_locators": {
+                                str(item["component_id"]): {
+                                    "resource_id": str(item.get("resource_id", "")),
+                                    "text": str(item.get("text", "")),
+                                    "type": str(item.get("type", "")),
+                                }
+                                for item in static_components
+                                if str(item.get("page_id", "")) == source["page_id"]
+                            },
+                            "required_event_ids": sorted(state_subjects["events"]),
+                            "required_transition_ids": sorted(state_subjects["transitions"]),
+                            "state_binding_basis": "PHASE2_AFTER_EVIDENCE",
+                            "required_obligation_ids": [str(item["subject_id"]) for item in applicable_obligations],
+                            "required_obligation_types": {
+                                str(item["subject_id"]): str(item.get("subject_type", ""))
+                                for item in applicable_obligations
+                            },
+                            "simplification_policy": "FORBIDDEN",
+                            "native_optimization_policy": "INTERNAL_ONLY_UNLESS_APPROVED",
+                            "max_automatic_repair_attempts": 2,
                         }
                     )
                     visual_rows.append(
@@ -1379,6 +1610,10 @@ def main() -> int:
                 copy_template_csv(temp_dir / target, template)
             shutil.copyfile(ASSETS / "asset-policy.template.json", temp_dir / "asset-policy.json")
             atomic_json(temp_dir / "asset-conversion-contracts.json", conversion_registry)
+            atomic_json(
+                temp_dir / "migration-unit-contracts.json",
+                {"schema_version": 1, "units": migration_units},
+            )
 
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
@@ -1403,6 +1638,7 @@ def main() -> int:
                 "required_h4env_ids": sorted(h4env_ids),
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
                 "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
+                "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
             }
             atomic_json(temp_dir / "stage-04-input-lock.json", input_lock)
             initial_snapshot = build_project_snapshot(temp_dir / "harmony-project")
@@ -1429,6 +1665,7 @@ def main() -> int:
                     "input_lock_sha256": sha256_file(temp_dir / "stage-04-input-lock.json"),
                     "initial_project_snapshot_sha256": initial_snapshot["snapshot_sha256"],
                     "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
+                    "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
                     "formal_evidence_device_type": "emulator",
                     "mp4_allowed": False,
                     "source_first_assets_required": True,
@@ -1439,6 +1676,7 @@ def main() -> int:
                 temp_dir / "phase-manifest.json",
                 temp_dir / "initial-project-snapshot.json",
                 temp_dir / "asset-conversion-contracts.json",
+                temp_dir / "migration-unit-contracts.json",
             ):
                 frozen_record.chmod(0o444)
             temp_dir.rename(phase_dir)

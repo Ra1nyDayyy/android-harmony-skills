@@ -13,6 +13,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import zipfile
 import zlib
@@ -90,6 +91,16 @@ STAGE4_INPUT_RELATIVES = {
     "phase2_asset_inventory_sha256": "phase-02-android-inventory/asset-inventory.csv",
     "phase2_asset_manifest_sha256": "phase-02-android-inventory/asset-package/manifest.sha256",
     "phase2_asset_committed_sha256": "phase-02-android-inventory/asset-package/COMMITTED",
+    "phase2_static_pages_sha256": "phase-02-android-inventory/static-analysis/pages.json",
+    "phase2_static_components_sha256": "phase-02-android-inventory/static-analysis/components.json",
+    "phase2_static_events_sha256": "phase-02-android-inventory/static-analysis/events.json",
+    "phase2_static_transitions_sha256": "phase-02-android-inventory/static-analysis/transitions.json",
+    "phase2_runtime_observations_sha256": "phase-02-android-inventory/runtime-observations.json",
+    "phase2_page_gate_sha256": "phase-02-android-inventory/page-gate-report.json",
+    "phase2_advanced_analysis_sha256": "phase-02-android-inventory/static-analysis/advanced-analysis.json",
+    "phase2_advanced_observations_sha256": "phase-02-android-inventory/advanced-observations.json",
+    "phase2_advanced_gate_sha256": "phase-02-android-inventory/advanced-gate-report.json",
+    "phase2_probe_index_sha256": "phase-02-android-inventory/probe-evidence-index.csv",
     "phase3_input_lock_sha256": "phase-03-harmony-scaffold/stage-03-input-lock.json",
     "phase3_gate_report_sha256": "phase-03-harmony-scaffold/stage-03-gate-report.json",
     "phase3_closure_manifest_sha256": "phase-03-harmony-scaffold/stage-03-closure-manifest.sha256",
@@ -102,6 +113,7 @@ STAGE4_INPUT_RELATIVES = {
     "phase3_public_ui_registry_sha256": "phase-03-harmony-scaffold/public-ui-registry.csv",
     "phase3_capability_contracts_sha256": "phase-03-harmony-scaffold/capability-contracts.csv",
     "phase3_asset_registry_sha256": "phase-03-harmony-scaffold/asset-registry.csv",
+    "phase3_advanced_obligations_sha256": "phase-03-harmony-scaffold/advanced-obligations.json",
     "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
 }
 STAGE5_ROLE_KEYS = (
@@ -252,8 +264,9 @@ def validate_apk_identity(
         ("version-code", str(android.get("app_build", ""))),
     )
     for command, expected in checks:
+        command_prefix = [sys.executable, analyzer] if os.name == "nt" and analyzer.lower().endswith(".py") else [analyzer]
         actual = run_checked(
-            [analyzer, "manifest", command, str(apk_path)],
+            [*command_prefix, "manifest", command, str(apk_path)],
             f"apkanalyzer manifest {command}",
             errors,
         )
@@ -412,6 +425,7 @@ def validate_phase1(
     for name in (
         "task-ledger.csv", "decision-log.csv", "rework-log.csv", "work-order-registry.csv",
         "evidence-anchor-registry.csv",
+        "phase4-attempt-ledger.csv",
     ):
         if not (run_dir / "controller" / name).is_file():
             errors.append(f"Missing controller record: controller/{name}")
@@ -681,6 +695,7 @@ def parse_sha256_manifest(path: Path, label: str, errors: list[str]) -> dict[str
             or pure.is_absolute()
             or ".." in pure.parts
             or not pure.parts
+            or "\\" in relative
             or relative in expected
         ):
             errors.append(f"Unsafe or duplicate {label} entry: {relative!r}")
@@ -835,6 +850,7 @@ def phase4_project_snapshot(project: Path, errors: list[str]) -> tuple[str | Non
             entries.append(
                 {"path": relative.as_posix(), "sha256": sha256_file(path), "size": path.stat().st_size}
             )
+    entries.sort(key=lambda item: item["path"])
     canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), entries
 
@@ -881,6 +897,57 @@ def phase4_geometry(value: str, label: str, errors: list[str]) -> dict[str, floa
         errors.append(f"{label} has invalid bounds")
         return None
     return {field: float(parsed[field]) for field in ("x", "y", "width", "height")}
+
+
+def normalized_geometry_matches(
+    android: dict[str, float], harmony: dict[str, float],
+    android_size: tuple[float, float], harmony_size: tuple[float, float], tolerance: float,
+) -> bool:
+    """Compare rectangles after scaling Android coordinates into the Harmony viewport."""
+    aw, ah = android_size
+    hw, hh = harmony_size
+    if min(aw, ah, hw, hh) <= 0:
+        return False
+    expected = {
+        "x": android["x"] / aw * hw, "width": android["width"] / aw * hw,
+        "y": android["y"] / ah * hh, "height": android["height"] / ah * hh,
+    }
+    return all(abs(expected[field] - harmony[field]) <= tolerance for field in expected)
+
+
+def comparable_visual_spec(value: dict[str, Any]) -> dict[str, Any]:
+    """Discard provenance-only fields; keep visual semantics for deterministic comparison."""
+    ignored = {"source", "source_ref", "platform", "implementation", "notes"}
+    return {key: item for key, item in value.items() if key not in ignored}
+
+
+PHASE4_ATTEMPT_FIELDS = [
+    "execution_id", "parity_id", "evidence_id", "started_at", "executed_by",
+    "previous_chain_sha256", "chain_sha256",
+]
+
+
+def validate_phase4_attempt_chain(rows: list[dict[str, str]], errors: list[str]) -> None:
+    previous = "0" * 64
+    identities: set[str] = set()
+    evidence_ids: set[str] = set()
+    for row in rows:
+        material = {field: row.get(field, "") for field in PHASE4_ATTEMPT_FIELDS[:-1]}
+        expected = hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if (
+            set(row) != set(PHASE4_ATTEMPT_FIELDS)
+            or not row.get("execution_id") or row.get("execution_id") in identities
+            or not row.get("evidence_id") or row.get("evidence_id") in evidence_ids
+            or row.get("previous_chain_sha256") != previous
+            or row.get("chain_sha256") != expected
+        ):
+            errors.append("Phase 4 attempt ledger hash chain or identity differs")
+            return
+        identities.add(row["execution_id"])
+        evidence_ids.add(row["evidence_id"])
+        previous = expected
 
 
 def directory_snapshot_facts(directory: Path) -> tuple[str, int, int]:
@@ -1067,6 +1134,8 @@ def validate_phase2(
         "inventory-manifest.sha256", "evidence-index.csv", "acceptance-registry.csv",
         "asset-inventory.csv", "asset-package/manifest.sha256", "asset-package/COMMITTED",
         "evidence-anchors.snapshot.csv", "evidence", "catalogs", "rechecks.csv",
+        "static-analysis/COMMITTED", "runtime-observations.json", "page-gate-report.json",
+        "advanced-observations.json", "probe-evidence-index.csv", "advanced-gate-report.json",
         "closure-report.json", "closure-manifest.sha256", "CLOSED",
     )
     for name in required:
@@ -1076,6 +1145,8 @@ def validate_phase2(
     try:
         closure = load_json(phase_dir / "closure-report.json")
         phase_manifest = load_json(phase_dir / "phase-manifest.json")
+        page_gate = load_json(phase_dir / "page-gate-report.json")
+        advanced_gate = load_json(phase_dir / "advanced-gate-report.json")
     except ValueError as exc:
         errors.append(str(exc))
         return errors, warnings
@@ -1086,6 +1157,36 @@ def validate_phase2(
         errors.append("Phase 2 closure report does not say PASS")
     if closure.get("evidence_chain_closed") is not True:
         errors.append("Phase 2 evidence chain is not closed")
+    if closure.get("decision_source") != "DETERMINISTIC_PAGE_ADVANCED_AND_EVIDENCE_GATES":
+        errors.append("Phase 2 PASS was not issued by deterministic gates")
+    if closure.get("page_gate_verdict") != "PASS" or page_gate.get("machine_verdict") != "PASS":
+        errors.append("Phase 2 deterministic page gate does not say PASS")
+    if page_gate.get("decision_source") != "DETERMINISTIC_STATIC_RUNTIME_GATE":
+        errors.append("Phase 2 page gate has an invalid decision source")
+    if (
+        closure.get("advanced_gate_verdict") != "PASS"
+        or advanced_gate.get("machine_verdict") != "PASS"
+        or advanced_gate.get("decision_source") != "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE"
+    ):
+        errors.append("Phase 2 advanced deterministic gate does not say PASS")
+    if (
+        closure.get("advanced_gate_required_observations")
+        != advanced_gate.get("required_observations")
+        or closure.get("advanced_gate_received_observations")
+        != advanced_gate.get("received_observations")
+        or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
+    ):
+        errors.append("Phase 2 advanced observations are incomplete")
+    page_rows = page_gate.get("pages", [])
+    if not isinstance(page_rows, list) or not page_rows or any(
+        not isinstance(row, dict) or row.get("machine_verdict") != "PAGE_PASS" for row in page_rows
+    ):
+        errors.append("Phase 2 contains a page that did not receive PAGE_PASS")
+    if (
+        page_gate.get("required_atomic_observations", 0) <= 0
+        or page_gate.get("required_atomic_observations") != page_gate.get("received_atomic_observations")
+    ):
+        errors.append("Phase 2 atomic page observations are incomplete")
     if closure.get("reviewer_role") != "coverage-checker-agent":
         errors.append("Phase 2 final reviewer must be coverage-checker-agent")
     expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
@@ -1230,6 +1331,10 @@ def validate_phase3(
     phase_dir = run_dir / "phase-03-harmony-scaffold"
     required = (
         "stage-03-input-lock.json", "phase-manifest.json", "inputs/phase-02-gate-report.json",
+        "inputs/phase-02-advanced-analysis.json", "inputs/phase-02-advanced-observations.json",
+        "inputs/phase-02-advanced-gate-report.json", "inputs/phase-02-probe-evidence-index.csv",
+        "inputs/arkui-stage-template.manifest.sha256", "template-generation.json",
+        "advanced-obligations.json",
         "environments", "module-registry.csv", "dependency-policy.json", "architecture-map.csv",
         "route-registry.csv", "surface-registry.csv", "public-ui-registry.csv",
         "capability-contracts.csv", "asset-registry.csv", "migration-status.csv", "architecture-decisions.csv",
@@ -1511,6 +1616,84 @@ def validate_phase3(
                 errors.append("Frozen controller Gate 2 snapshot is not a complete PASS")
         except ValueError as exc:
             errors.append(str(exc))
+
+    # Recompute the Phase 2 advanced handoff and deterministic ArkUI template provenance.
+    try:
+        advanced_lock = input_lock.get("phase2_advanced", {})
+        advanced_paths = {
+            "analysis": (
+                run_dir / "phase-02-android-inventory" / "static-analysis" / "advanced-analysis.json",
+                phase_dir / "inputs" / "phase-02-advanced-analysis.json",
+            ),
+            "observations": (
+                run_dir / "phase-02-android-inventory" / "advanced-observations.json",
+                phase_dir / "inputs" / "phase-02-advanced-observations.json",
+            ),
+            "gate": (
+                run_dir / "phase-02-android-inventory" / "advanced-gate-report.json",
+                phase_dir / "inputs" / "phase-02-advanced-gate-report.json",
+            ),
+            "probe_index": (
+                run_dir / "phase-02-android-inventory" / "probe-evidence-index.csv",
+                phase_dir / "inputs" / "phase-02-probe-evidence-index.csv",
+            ),
+        }
+        for key, (source, snapshot) in advanced_paths.items():
+            record = advanced_lock.get(key, {})
+            if (
+                not source.is_file() or not snapshot.is_file()
+                or record.get("path") != str(source.resolve())
+                or record.get("snapshot_path") != str(snapshot.resolve())
+                or sha256_file(source) != record.get("sha256")
+                or sha256_file(snapshot) != record.get("sha256")
+            ):
+                errors.append(f"Phase 3 advanced input binding differs: {key}")
+        advanced_analysis = load_json(advanced_paths["analysis"][1])
+        advanced_gate = load_json(advanced_paths["gate"][1])
+        discovered = {
+            "DYNAMIC_RISK": {str(row.get("risk_id")) for row in advanced_analysis.get("dynamic_risks", [])},
+            "SIDE_EFFECT": {str(row.get("candidate_id")) for row in advanced_analysis.get("side_effects", [])},
+            "SCENARIO": {str(row.get("scenario_id")) for row in advanced_analysis.get("scenarios", [])},
+        }
+        if (
+            advanced_gate.get("machine_verdict") != "PASS"
+            or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
+            or sorted(discovered["DYNAMIC_RISK"]) != advanced_lock.get("dynamic_risk_ids")
+            or sorted(discovered["SIDE_EFFECT"]) != advanced_lock.get("side_effect_ids")
+            or sorted(discovered["SCENARIO"]) != advanced_lock.get("scenario_ids")
+        ):
+            errors.append("Phase 3 does not preserve the complete Phase 2 advanced PASS denominator")
+        obligations = load_json(phase_dir / "advanced-obligations.json")
+        obligation_rows = obligations.get("obligations", [])
+        obligation_ids = [str(row.get("subject_id")) for row in obligation_rows if isinstance(row, dict)]
+        expected_ids = set().union(*discovered.values())
+        if (
+            len(obligation_ids) != len(set(obligation_ids))
+            or set(obligation_ids) != expected_ids
+            or sorted(expected_ids) != input_lock.get("advanced_obligation_ids")
+        ):
+            errors.append("Phase 3 advanced obligations are incomplete or duplicated")
+        template_lock = input_lock.get("arkui_template", {})
+        template_manifest = phase_dir / "inputs" / "arkui-stage-template.manifest.sha256"
+        generation_path = phase_dir / "template-generation.json"
+        generation = load_json(generation_path)
+        if (
+            template_lock.get("template_id") != "ARKUI-STAGE-TEMPLATE-V1"
+            or not template_manifest.is_file()
+            or sha256_file(template_manifest) != template_lock.get("manifest_sha256")
+            or generation.get("template_manifest_sha256") != template_lock.get("manifest_sha256")
+            or generation.get("generated_file_count") != template_lock.get("file_count")
+            or phase_manifest.get("template_generation_sha256") != sha256_file(generation_path)
+        ):
+            errors.append("Phase 3 ArkUI template provenance is invalid")
+        for relative in generation.get("required_files", []):
+            required_file = safe_relative_path(
+                phase_dir / "harmony-project", str(relative), "required ArkUI template file", errors
+            )
+            if required_file is None or not required_file.is_file():
+                errors.append(f"Phase 3 generated project lacks template file: {relative}")
+    except (OSError, TypeError, ValueError) as exc:
+        errors.append(f"Cannot validate Phase 3 advanced/template handoff: {exc}")
 
     expected_architecture_lead = phase3_ownership.get("architecture_lead_id")
     expected_toolchain = phase3_ownership.get("toolchain_agent_id")
@@ -2058,6 +2241,7 @@ def validate_phase4(
     phase_dir = run_dir / "phase-04-harmony-implementation"
     required = (
         "stage-04-input-lock.json", "phase-manifest.json", "initial-project-snapshot.json",
+        "migration-unit-contracts.json",
         "implementation-ledger.csv",
         "feature-work-order-registry.csv", "feature-work-orders",
         "parity-map.csv", "visual-elements.csv", "asset-migration.csv",
@@ -2095,6 +2279,7 @@ def validate_phase4(
         "work_order_sha256", "ownership", "controller_gate3_snapshot_sha256",
         "phase3_work_order_id", "phase3_work_order_sha256", "inputs", "android_evidence",
         "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
+        "migration_unit_contracts_sha256",
         "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
         "phase3_source_snapshot_sha256",
     }
@@ -2102,7 +2287,8 @@ def validate_phase4(
         "schema_version", "run_id", "project_id", "phase", "status", "initialized_at",
         "work_order_id", "work_order_sha256", "work_order_relative_path", "ownership",
         "roles", "input_lock_sha256", "initial_project_snapshot_sha256",
-        "asset_conversion_contracts_sha256", "formal_evidence_device_type", "mp4_allowed",
+        "asset_conversion_contracts_sha256", "migration_unit_contracts_sha256",
+        "formal_evidence_device_type", "mp4_allowed",
         "source_first_assets_required",
     }
     if (
@@ -2457,6 +2643,14 @@ def validate_phase4(
             else:
                 for category, contract in contracts.items():
                     executable = Path(str(contract.get("resolved_executable", ""))).expanduser()
+                    synthetic_parts = {part.lower() for part in executable.parts}
+                    if (
+                        os.environ.get("ANDROID_HARMONY_TEST_FIXTURES") != "1"
+                        and ("tests" in synthetic_parts or "fake_harmony.py" in str(executable).lower())
+                    ):
+                        errors.append(
+                            f"{h4env_id}: synthetic test executable cannot produce formal evidence: {category}"
+                        )
                     required_tokens = contract.get("required_argv_tokens")
                     success_tokens = contract.get("success_output_contains")
                     error_tokens = contract.get("error_output_contains")
@@ -2871,10 +3065,22 @@ def validate_phase4(
             or initial_snapshot.get("snapshot_sha256") != expected_initial_sha
             or phase_manifest.get("initial_project_snapshot_sha256") != expected_initial_sha
         ):
+            actual_entries = initial_snapshot.get("entries")
+            expected_by_path = {
+                str(item.get("path", "")): item for item in expected_initial_entries
+            }
+            actual_by_path = {
+                str(item.get("path", "")): item for item in actual_entries
+            } if isinstance(actual_entries, list) else {}
+            differing_paths = sorted(
+                path for path in set(expected_by_path) | set(actual_by_path)
+                if expected_by_path.get(path) != actual_by_path.get(path)
+            )
             errors.append(
                 "Phase 4 initial project snapshot differs from accepted Phase 3 source; "
                 f"expected={expected_initial_sha}/{len(expected_initial_entries)}, "
-                f"actual={initial_snapshot.get('snapshot_sha256')}/{initial_snapshot.get('entry_count')}"
+                f"actual={initial_snapshot.get('snapshot_sha256')}/{initial_snapshot.get('entry_count')}, "
+                f"differing_paths={differing_paths[:10]}"
             )
     except ValueError as exc:
         errors.append(str(exc))
@@ -2909,6 +3115,191 @@ def validate_phase4(
         read_csv_rows(phase3_dir / "architecture-map.csv"),
         "source_row_key", "Phase 3 architecture map", errors,
     )
+    # Recompute the immutable observable contract from Phase 2 and Phase 3.
+    # Gate 4 must not trust a model-edited contract or its self-updated hash files.
+    try:
+        contract_doc = load_json(phase_dir / "migration-unit-contracts.json")
+        units = contract_doc.get("units")
+        if contract_doc.get("schema_version") != 1 or not isinstance(units, list):
+            raise ValueError("Phase 4 migration-unit contract schema differs")
+        units_by_parity = {
+            str(row.get("parity_id", "")): row for row in units if isinstance(row, dict)
+        }
+        if len(units_by_parity) != len(units) or set(units_by_parity) != set(parity):
+            raise ValueError("Phase 4 migration-unit contracts do not exactly cover parity rows")
+        page_doc = load_json(
+            run_dir / "phase-02-android-inventory" / "static-analysis" / "pages.json"
+        )
+        component_doc = load_json(
+            run_dir / "phase-02-android-inventory" / "static-analysis" / "components.json"
+        )
+        event_doc = load_json(
+            run_dir / "phase-02-android-inventory" / "static-analysis" / "events.json"
+        )
+        transition_doc = load_json(
+            run_dir / "phase-02-android-inventory" / "static-analysis" / "transitions.json"
+        )
+        observation_doc = load_json(
+            run_dir / "phase-02-android-inventory" / "runtime-observations.json"
+        )
+        obligation_doc = load_json(phase3_dir / "advanced-obligations.json")
+        static_pages = page_doc.get("pages", [])
+        static_components = component_doc.get("components", [])
+        static_events = event_doc.get("events", [])
+        static_transitions = transition_doc.get("transitions", [])
+        runtime_observations = observation_doc.get("observations", [])
+        obligations = obligation_doc.get("obligations", [])
+        if not all(isinstance(rows, list) and all(isinstance(row, dict) for row in rows) for rows in (
+            static_pages, static_components, static_events, static_transitions,
+            runtime_observations, obligations
+        )):
+            raise ValueError("Frozen Phase 2/3 semantic inputs are malformed")
+        inventory_by_evidence = {
+            str(row.get("evidence_id", "")): row for row in source_rows.values()
+        }
+        observed_by_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
+        bucket_by_type = {
+            "COMPONENT": "components", "EVENT": "events", "TRANSITION": "transitions"
+        }
+        for observation in runtime_observations:
+            bucket = bucket_by_type.get(str(observation.get("subject_type", "")))
+            if not bucket:
+                continue
+            observed_source = inventory_by_evidence.get(
+                str(observation.get("after_evidence_id", ""))
+            )
+            if not observed_source:
+                raise ValueError("Runtime observation is not bound to active state evidence")
+            if (
+                observation.get("page_id") != observed_source.get("page_id")
+                or observation.get("env_id") != observed_source.get("env_id")
+            ):
+                raise ValueError("Runtime observation differs from its state evidence")
+            observed_key = (
+                str(observed_source.get("page_id", "")),
+                str(observed_source.get("state_id", "")),
+                str(observed_source.get("env_id", "")),
+            )
+            observed_by_state.setdefault(
+                observed_key, {"components": set(), "events": set(), "transitions": set()}
+            )[bucket].add(str(observation.get("subject_id", "")))
+        pages_by_id = {str(row.get("page_id", "")): row for row in static_pages}
+        surfaces = index_unique_rows(
+            read_csv_rows(phase3_dir / "surface-registry.csv"),
+            "surface_shell_id", "Phase 3 surface registry", errors,
+        )
+        contract_sha = sha256_file(phase_dir / "migration-unit-contracts.json")
+        if (
+            input_lock.get("migration_unit_contracts_sha256") != contract_sha
+            or phase_manifest.get("migration_unit_contracts_sha256") != contract_sha
+        ):
+            raise ValueError("Phase 4 migration-unit contract hash binding differs")
+        for parity_id, parity_row in parity.items():
+            source = source_rows.get(str(parity_row.get("inventory_id", "")))
+            if not source:
+                raise ValueError(f"Unknown inventory in migration unit: {parity_id}")
+            mapping = architecture.get(phase4_source_row_key(source), {})
+            mapping_type = str(mapping.get("mapping_type", ""))
+            target_id = str(
+                mapping.get("route_id", "") if mapping_type == "ROUTE_PAGE"
+                else mapping.get("surface_shell_id", "")
+            )
+            page_id = str(source.get("page_id", ""))
+            page = pages_by_id.get(page_id)
+            if not page:
+                raise ValueError(f"Static page missing for migration unit: {page_id}")
+            kinds = {str(value).upper() for value in page.get("kinds", [])}
+            if any("BOTTOMSHEET" in kind or "BOTTOM_SHEET" in kind for kind in kinds):
+                carrier = "SHEET"
+            elif any("DIALOG" in kind for kind in kinds):
+                carrier = "DIALOG"
+            elif any("POPUP" in kind for kind in kinds):
+                carrier = "POPUP"
+            elif any("WIDGET" in kind for kind in kinds):
+                carrier = "EMBEDDED_SURFACE"
+            elif any("ACTIVITY" in kind for kind in kinds) or mapping_type == "ROUTE_PAGE":
+                carrier = "PAGE"
+            else:
+                carrier = "EMBEDDED_SURFACE"
+            surface_kind = str(surfaces.get(str(mapping.get("surface_shell_id", "")), {}).get(
+                "surface_kind", ""
+            )).upper().replace("-", "_")
+            if mapping_type == "ROUTE_PAGE":
+                actual_carrier = "PAGE"
+            elif "BOTTOM" in surface_kind and "SHEET" in surface_kind:
+                actual_carrier = "SHEET"
+            elif "DIALOG" in surface_kind:
+                actual_carrier = "DIALOG"
+            elif "POPUP" in surface_kind or "MENU" in surface_kind:
+                actual_carrier = "POPUP"
+            else:
+                actual_carrier = "EMBEDDED_SURFACE"
+            unit = units_by_parity[parity_id]
+            applicable = sorted(
+                [row for row in obligations
+                 if source.get("feature_id") in row.get("candidate_feature_ids", [])
+                 and (not str(row.get("page_id", "")) or row.get("page_id") == page_id)],
+                key=lambda row: str(row.get("subject_id", "")),
+            )
+            state_subjects = observed_by_state.get(
+                (page_id, str(source.get("state_id", "")), str(source.get("env_id", ""))),
+                {"components": set(), "events": set(), "transitions": set()},
+            )
+            expected_fields = {
+                "migration_unit_id": "MUNIT-" + hashlib.sha256(
+                    parity_id.encode("utf-8")
+                ).hexdigest()[:20].upper(),
+                "parity_id": parity_id,
+                "inventory_id": source.get("inventory_id"),
+                "feature_id": source.get("feature_id"),
+                "page_id": page_id,
+                "state_id": source.get("state_id"),
+                "h4env_id": parity_row.get("h4env_id"),
+                "android_entry_condition": source.get("entry_condition"),
+                "android_action_summary": source.get("action_summary"),
+                "android_expected_observable": source.get("expected_observable"),
+                "expected_carrier": carrier,
+                "scaffold_carrier": actual_carrier,
+                "target_kind": mapping_type,
+                "target_id": target_id,
+                "page_component_ids": sorted({str(row.get("component_id", "")) for row in static_components if row.get("page_id") == page_id}),
+                "page_event_ids": sorted({str(row.get("event_id", "")) for row in static_events if row.get("page_id") == page_id}),
+                "page_transition_ids": sorted({str(row.get("transition_id", "")) for row in static_transitions if row.get("source_page_id") == page_id}),
+                "required_component_ids": sorted(state_subjects["components"]),
+                "required_event_ids": sorted(state_subjects["events"]),
+                "required_transition_ids": sorted(state_subjects["transitions"]),
+                "state_binding_basis": "PHASE2_AFTER_EVIDENCE",
+                "required_obligation_ids": [str(row.get("subject_id", "")) for row in applicable],
+                "required_obligation_types": {
+                    str(row.get("subject_id", "")): str(row.get("subject_type", ""))
+                    for row in applicable
+                },
+                "required_business_rule_ids": sorted(phase4_json_string_list(source.get("business_rule_refs", "[]"), f"{parity_id}.business_rule_refs", errors)),
+                "required_data_dependency_ids": sorted(phase4_json_string_list(source.get("data_dependency_refs", "[]"), f"{parity_id}.data_dependency_refs", errors)),
+                "required_system_capability_ids": sorted(phase4_json_string_list(source.get("system_capability_refs", "[]"), f"{parity_id}.system_capability_refs", errors)),
+                "required_third_party_dependency_ids": sorted(phase4_json_string_list(source.get("third_party_dependency_refs", "[]"), f"{parity_id}.third_party_dependency_refs", errors)),
+                "simplification_policy": "FORBIDDEN",
+                "native_optimization_policy": "INTERNAL_ONLY_UNLESS_APPROVED",
+                "max_automatic_repair_attempts": 2,
+            }
+            if any(unit.get(field) != value for field, value in expected_fields.items()):
+                raise ValueError(f"Migration-unit observable contract differs: {parity_id}")
+            if carrier != actual_carrier:
+                raise ValueError(f"Harmony carrier changes Android semantics: {parity_id}")
+            expected_locators = {
+                str(row.get("component_id", "")): {
+                    "resource_id": str(row.get("resource_id", "")),
+                    "text": str(row.get("text", "")),
+                    "type": str(row.get("type", "")),
+                }
+                for row in static_components if row.get("page_id") == page_id
+            }
+            if unit.get("component_locators") != expected_locators:
+                raise ValueError(f"Migration-unit component locators differ: {parity_id}")
+            if set(unit) != set(expected_fields) | {"component_locators"}:
+                raise ValueError(f"Migration-unit contract fields differ: {parity_id}")
+    except ValueError as exc:
+        errors.append(str(exc))
     modules = index_unique_rows(
         read_csv_rows(phase3_dir / "module-registry.csv"),
         "harmony_module_id", "Phase 3 module registry", errors,
@@ -3217,6 +3608,26 @@ def validate_phase4(
             harmony_spec = json.loads(visual.get("harmony_visual_spec", ""))
         except (TypeError, json.JSONDecodeError):
             android_spec = harmony_spec = None
+        if android_geometry and harmony_geometry and resolution_match and isinstance(
+            harmony_comparison, dict
+        ):
+            harmony_width = float(harmony_comparison.get("screenshot_width", 0))
+            harmony_height = float(harmony_comparison.get("screenshot_height", 0))
+            tolerance = float(harmony_comparison.get("geometry_tolerance_px", 0))
+            if not normalized_geometry_matches(
+                android_geometry, harmony_geometry,
+                (float(resolution_match.group(1)), float(resolution_match.group(2))),
+                (harmony_width, harmony_height), tolerance,
+            ):
+                errors.append(
+                    f"{visual_id}: normalized Android/Harmony geometry exceeds "
+                    f"the frozen {tolerance:g}px tolerance"
+                )
+        if (
+            isinstance(android_spec, dict) and isinstance(harmony_spec, dict)
+            and comparable_visual_spec(android_spec) != comparable_visual_spec(harmony_spec)
+        ):
+            errors.append(f"{visual_id}: Android/Harmony visual semantics differ")
         harmony_file = safe_relative_path(
             project, visual.get("harmony_file", ""), f"{visual_id} Harmony source", errors
         )
@@ -3242,9 +3653,29 @@ def validate_phase4(
         ):
             errors.append(f"{visual_id}: visual source/spec/asset/actor binding differs")
 
+    local_attempt_rows = read_csv_rows(phase_dir / "attempt-ledger.csv")
+    controller_attempt_rows = read_csv_rows(run_dir / "controller" / "phase4-attempt-ledger.csv")
+    if local_attempt_rows != controller_attempt_rows:
+        errors.append("Phase 4 local attempt ledger differs from the controller anchor")
+    validate_phase4_attempt_chain(controller_attempt_rows, errors)
+    attempts_by_parity: dict[str, int] = {}
+    for attempt_row in controller_attempt_rows:
+        attempt_parity = str(attempt_row.get("parity_id", ""))
+        attempts_by_parity[attempt_parity] = attempts_by_parity.get(attempt_parity, 0) + 1
+    if any(count > 3 for count in attempts_by_parity.values()):
+        errors.append("Phase 4 automatic execution budget exceeds initial attempt plus two repairs")
+
     evidence_rows = read_csv_rows(phase_dir / "evidence-index.csv")
     evidence_index = index_unique_rows(evidence_rows, "evidence_id", "Phase 4 evidence index", errors)
     active_evidence = {key: row for key, row in evidence_index.items() if row.get("status") == "SEALED"}
+    ledger_evidence_ids = {str(row.get("evidence_id", "")) for row in controller_attempt_rows}
+    for attempted_id in ledger_evidence_ids:
+        if attempted_id not in evidence_index and not (
+            phase_dir / "attempts" / f"ATT-{attempted_id}.json"
+        ).is_file():
+            errors.append(f"{attempted_id}: anchored execution has neither evidence nor failure package")
+    if not set(evidence_index) <= ledger_evidence_ids:
+        errors.append("Phase 4 evidence index contains an unanchored execution")
     used_evidence_ids: set[str] = set()
     for parity_id, row in parity.items():
         source = source_rows.get(row.get("inventory_id", ""))
@@ -3534,6 +3965,7 @@ def validate_phase4(
                 controller_decision = review_controller_decisions.get(controller_decision_id, {})
                 if (
                     local_decision.get("status") != "APPROVED"
+                    or local_decision.get("decision_class") != "PLATFORM_VISUAL"
                     or local_decision.get("approved_by")
                     != phase4_ownership.get("parity_acceptance_agent_id")
                     or parity_id not in affected
@@ -3564,6 +3996,8 @@ def validate_phase4(
                     review.get(field) not in {"MATCH", "APPROVED_DIFFERENCE"}
                     for field in ("visual_result", "functional_result", "asset_result")
                 )
+                or review.get("functional_result") != "MATCH"
+                or review.get("asset_result") != "MATCH"
                 or not all(
                     review_attestations.get(field) is True
                     for field in ("opened_both_screenshots", "functional_results", "asset_provenance")
@@ -3977,7 +4411,7 @@ def validate_phase4(
         controller_decision = controller_decisions.get(controller_decision_id, {})
         bound_rows = [parity.get(parity_id, {}) for parity_id in affected]
         if (
-            not decision.get("decision_class")
+            decision.get("decision_class") != "PLATFORM_VISUAL"
             or decision.get("status") != "APPROVED"
             or decision.get("approved_by") != phase4_ownership.get("parity_acceptance_agent_id")
             or not decision.get("approved_at")
@@ -4049,6 +4483,14 @@ def validate_phase4(
             str(row.get("target_resource_path") or row.get("target_path") or "")
             for row in migrated_assets.values()
         }
+        initial_project_snapshot = load_json(phase_dir / "initial-project-snapshot.json")
+        initial_visual_paths = {
+            str(entry.get("path", ""))
+            for entry in initial_project_snapshot.get("entries", [])
+            if isinstance(entry, dict)
+            and Path(str(entry.get("path", ""))).suffix.lower() in set(visual_extensions)
+        }
+        allowed_visual_paths = registered_visual_paths | initial_visual_paths
         actual_visual_paths: set[str] = set()
         source_extensions = {".ets", ".ts", ".js", ".json", ".json5", ".c", ".cc", ".cpp", ".h", ".hpp"}
         for path in project.rglob("*"):
@@ -4068,11 +4510,11 @@ def validate_phase4(
                 for glyph in forbidden_glyphs:
                     if isinstance(glyph, str) and glyph and glyph in text:
                         errors.append(f"Production source contains forbidden inline glyph {glyph!r}: {relative}")
-        if actual_visual_paths != registered_visual_paths:
+        if actual_visual_paths != allowed_visual_paths:
             errors.append(
-                "Project visual files differ from the frozen asset migration registry; "
-                f"missing={sorted(registered_visual_paths - actual_visual_paths)[:5]}, "
-                f"extra={sorted(actual_visual_paths - registered_visual_paths)[:5]}"
+                "Project visual files differ from the frozen template baseline and asset migration registry; "
+                f"missing={sorted(allowed_visual_paths - actual_visual_paths)[:5]}, "
+                f"extra={sorted(actual_visual_paths - allowed_visual_paths)[:5]}"
             )
     except (OSError, ValueError) as exc:
         errors.append(f"Cannot validate the Phase 4 asset policy/project scan: {exc}")

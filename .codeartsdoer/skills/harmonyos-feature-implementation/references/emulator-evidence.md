@@ -31,4 +31,8 @@ Each immutable `evidence/<H4ENV-ID>/<Feature-ID>/<Page-ID>/<State-ID>/<HEVD-ID>/
 
 Metadata binds Phase 1 scope, Android Inventory/Evidence IDs, Phase 3 target, H4ENV/HDEVICE, HBUILD artifact and source snapshot, asset and decision IDs, executor, dimensions, commands, and timestamps.
 
-Screenshot comparison covers existence, source asset, shape, color, geometry, spacing, typography, and state. Functional assertions cover business outcome, interaction, data result when applicable, error/offline behavior, and permissions when applicable. A screenshot alone never proves functional parity.
+Screenshot comparison covers existence, source asset, shape, color, geometry, spacing, typography, and state. Functional assertions cover business outcome, interaction, data result, error/offline behavior, permissions, and every frozen semantic obligation. Each assertion declares a deterministic operator such as `EQUALS`, `CONTAINS`, `REGEX`, `JSON_EQUALS`, or `NUMERIC_RANGE`; the capture script recomputes the verdict and rejects a false external `PASS`.
+
+The plan also contains exactly one `ANDROID_EXPECTED_OBSERVABLE` assertion whose expected value and Inventory-ID come directly from the migration-unit contract. The UI tree reports the runtime carrier, target, and source-component bindings. Every required event or transition has one `operation_trace` record containing its subject identity, concrete action, and raw before/after snapshots. A self-declared `observed_event_ids` or `observed_transition_ids` list cannot satisfy the gate. Missing controls, wrong page/dialog/sheet shape, lost navigation, or uncovered side effects fail before visual review. A screenshot alone never proves functional parity.
+
+Executables located in a Skill `tests` directory, including `fake_harmony.py`, are rejected for formal evidence. `ANDROID_HARMONY_TEST_FIXTURES=1` exists only for this repository's offline unit tests; never set it during a migration run.

@@ -27,10 +27,20 @@ def slug(value: str) -> str:
 
 
 def render_template(name: str, replacements: dict[str, str]) -> str:
-    text = (ASSETS / name).read_text(encoding="utf-8")
-    for key, value in replacements.items():
-        text = text.replace(key, value)
-    return text
+    """Replace placeholders as parsed JSON values so Windows paths remain escaped."""
+    value = json.loads((ASSETS / name).read_text(encoding="utf-8"))
+
+    def replace(item: object) -> object:
+        if isinstance(item, dict):
+            return {key: replace(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [replace(child) for child in item]
+        if isinstance(item, str):
+            for key, replacement in replacements.items():
+                item = item.replace(key, replacement)
+        return item
+
+    return json.dumps(replace(value), ensure_ascii=False, indent=2)
 
 
 def main() -> int:
@@ -83,6 +93,7 @@ def main() -> int:
             ("rework-log.template.csv", "rework-log.csv"),
             ("work-order-registry.template.csv", "work-order-registry.csv"),
             ("evidence-anchor-registry.template.csv", "evidence-anchor-registry.csv"),
+            ("phase4-attempt-ledger.template.csv", "phase4-attempt-ledger.csv"),
         ):
             shutil.copyfile(ASSETS / source, controller / target)
 

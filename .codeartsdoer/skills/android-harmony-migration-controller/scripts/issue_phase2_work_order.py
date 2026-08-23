@@ -165,7 +165,9 @@ def main() -> int:
         "required_return": [
             "environments.json", "coverage-ledger.csv", "catalogs/", "inventory.csv",
             "environment-attestations/", "evidence-index.csv", "acceptance-registry.csv", "evidence/",
-            "rechecks.csv", "closure-report.json",
+            "rechecks.csv", "closure-report.json", "asset-inventory.csv", "asset-package/",
+            "static-analysis/", "runtime-observations.json", "page-gate-report.json",
+            "advanced-observations.json", "probe-evidence-index.csv", "advanced-gate-report.json",
             "evidence-anchors.snapshot.csv", "closure-manifest.sha256", "CLOSED",
         ],
     }

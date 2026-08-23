@@ -62,9 +62,9 @@ OUTPUT_PLACEHOLDERS = {
 
 def package_file_set(directory: Path) -> set[str]:
     return {
-        str(path.relative_to(directory)) for path in directory.rglob("*")
+        path.relative_to(directory).as_posix() for path in directory.rglob("*")
         if path.is_file()
-        and str(path.relative_to(directory)) not in {"manifest.sha256", "COMMITTED"}
+        and path.relative_to(directory).as_posix() not in {"manifest.sha256", "COMMITTED"}
     }
 
 
@@ -72,11 +72,77 @@ def substitute_exact(argv: list[str], replacements: dict[str, str]) -> list[str]
     return [replacements.get(token, token) for token in argv]
 
 
+ATTEMPT_LEDGER_FIELDS = [
+    "execution_id", "parity_id", "evidence_id", "started_at", "executed_by",
+    "previous_chain_sha256", "chain_sha256",
+]
+
+
+def validate_attempt_chain(rows: list[dict[str, str]]) -> None:
+    previous = "0" * 64
+    seen: set[str] = set()
+    for row in rows:
+        if set(row) != set(ATTEMPT_LEDGER_FIELDS):
+            raise ValueError("Phase 4 attempt ledger columns differ")
+        execution_id = str(row.get("execution_id", ""))
+        if not execution_id or execution_id in seen or row.get("previous_chain_sha256") != previous:
+            raise ValueError("Phase 4 attempt ledger identity or chain predecessor differs")
+        material = {field: row.get(field, "") for field in ATTEMPT_LEDGER_FIELDS[:-1]}
+        expected = hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if row.get("chain_sha256") != expected:
+            raise ValueError("Phase 4 attempt ledger hash chain differs")
+        seen.add(execution_id)
+        previous = expected
+
+
+def reserve_execution(
+    workspace: Path, parity_id: str, evidence_id: str, executed_by: str, max_repairs: int,
+) -> None:
+    """Append a controller-anchored execution before commands run; rows cannot be hidden locally."""
+    local_path = workspace / "attempt-ledger.csv"
+    controller_path = workspace.parent / "controller" / "phase4-attempt-ledger.csv"
+    started_at = utc_now()
+    execution_id = "EXEC-" + hashlib.sha256(
+        f"{parity_id}|{evidence_id}".encode("utf-8")
+    ).hexdigest()[:20].upper()
+    with exclusive_lock(workspace.parent / "controller" / ".phase4-attempt-ledger.lock"):
+        controller_rows = read_csv(controller_path)
+        validate_attempt_chain(controller_rows)
+        local_rows = read_csv(local_path)
+        validate_attempt_chain(local_rows)
+        if controller_rows != local_rows:
+            raise ValueError("Local and controller Phase 4 attempt ledgers differ")
+        used = sum(1 for row in controller_rows if row.get("parity_id") == parity_id)
+        if used > max_repairs:
+            raise ValueError(
+                f"Automatic repair budget exhausted for {parity_id}; "
+                "emit a grouped error report for human-assisted repair"
+            )
+        if any(row.get("evidence_id") == evidence_id for row in controller_rows):
+            raise ValueError("Evidence-ID was already used by an earlier execution")
+        previous = controller_rows[-1]["chain_sha256"] if controller_rows else "0" * 64
+        row = {
+            "execution_id": execution_id, "parity_id": parity_id,
+            "evidence_id": evidence_id, "started_at": started_at,
+            "executed_by": executed_by, "previous_chain_sha256": previous,
+        }
+        row["chain_sha256"] = hashlib.sha256(
+            json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        new_rows = [*controller_rows, row]
+        write_csv(controller_path, ATTEMPT_LEDGER_FIELDS, new_rows)
+        write_csv(local_path, ATTEMPT_LEDGER_FIELDS, new_rows)
+
+
 def validate_assertion_result(
     path: Path,
     planned: list[dict[str, Any]],
     bindings: dict[str, str],
+    required_obligation_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    required_obligation_ids = required_obligation_ids or set()
     value = load_json(path)
     if not isinstance(value, dict):
         raise ValueError("BUSINESS_ASSERT output must be a JSON object")
@@ -104,11 +170,50 @@ def validate_assertion_result(
         actual = result.get("actual")
         if actual is None or (isinstance(actual, str) and not actual.strip()):
             raise ValueError(f"Generated assertion actual value is empty: {assertion_id}")
-        if result.get("status") != "PASS":
-            raise ValueError(f"Generated assertion is not PASS: {assertion_id}")
+        operator = str(plan.get("operator", "EQUALS"))
+        expected = plan["expected"]
+        if operator == "EQUALS":
+            passed = actual == expected
+        elif operator == "CONTAINS":
+            passed = str(expected) in str(actual)
+        elif operator == "REGEX":
+            passed = re.search(str(expected), str(actual)) is not None
+        elif operator == "JSON_EQUALS":
+            passed = actual == expected
+        elif operator == "NUMERIC_RANGE":
+            passed = (
+                isinstance(expected, dict)
+                and isinstance(actual, (int, float))
+                and isinstance(expected.get("min"), (int, float))
+                and isinstance(expected.get("max"), (int, float))
+                and float(expected["min"]) <= float(actual) <= float(expected["max"])
+            )
+        else:
+            raise ValueError(f"Unsupported deterministic assertion operator: {operator}")
+        if not passed:
+            raise ValueError(
+                f"Generated assertion differs: {assertion_id}; operator={operator}, "
+                f"expected={expected!r}, actual={actual!r}"
+            )
+        if result.get("status") not in (None, "PASS"):
+            raise ValueError(f"Generated assertion status contradicts deterministic result: {assertion_id}")
+        result["operator"] = operator
+        result["status"] = "PASS"
     kinds = {item["kind"] for item in planned}
     if REQUIRED_ASSERTIONS - kinds:
         raise ValueError(f"Generated evidence lacks required assertion kinds: {sorted(REQUIRED_ASSERTIONS - kinds)}")
+    covered_obligations = {
+        str(subject_id)
+        for result in results
+        for subject_id in result.get("subject_ids", [])
+        if isinstance(subject_id, str)
+    }
+    if not required_obligation_ids <= covered_obligations:
+        raise ValueError(
+            "Generated assertions do not cover every advanced obligation: "
+            f"{sorted(required_obligation_ids - covered_obligations)}"
+        )
+    atomic_json(path, value)
     return value
 
 
@@ -117,6 +222,7 @@ def validate_ui_tree(
     bundle_name: str,
     device_id: str,
     serial: str,
+    contract: dict[str, Any],
 ) -> dict[str, Any]:
     value = load_json(path)
     if not isinstance(value, dict):
@@ -131,6 +237,60 @@ def validate_ui_tree(
         isinstance(item, dict) for item in value["nodes"]
     ):
         raise ValueError("UI tree nodes must be a nonempty object array")
+    if value.get("carrier") != contract.get("expected_carrier"):
+        raise ValueError(
+            f"Runtime carrier differs: expected {contract.get('expected_carrier')}, "
+            f"got {value.get('carrier')}"
+        )
+    if value.get("target_id") != contract.get("target_id"):
+        raise ValueError("Runtime route/surface target differs from the frozen migration unit")
+    locators = contract.get("component_locators", {})
+    nodes = value["nodes"]
+    missing_components: list[str] = []
+    for component_id in contract.get("required_component_ids", []):
+        locator = locators.get(component_id, {}) if isinstance(locators, dict) else {}
+        resource_id = str(locator.get("resource_id", "")) if isinstance(locator, dict) else ""
+        matched = any(
+            str(node.get("source_component_id", "")) == component_id
+            or (resource_id and str(node.get("resource_id") or node.get("id") or "") == resource_id)
+            for node in nodes
+        )
+        if not matched:
+            missing_components.append(component_id)
+    if missing_components:
+        raise ValueError(f"Runtime UI omits frozen Android components: {missing_components}")
+    traces = value.get("operation_trace", [])
+    if not isinstance(traces, list) or any(not isinstance(item, dict) for item in traces):
+        raise ValueError("UI tree operation_trace must be an object array")
+    traced: dict[tuple[str, str], dict[str, Any]] = {}
+    for trace in traces:
+        subject_type = str(trace.get("subject_type", ""))
+        subject_id = str(trace.get("subject_id", ""))
+        key = (subject_type, subject_id)
+        if subject_type not in {"EVENT", "TRANSITION"} or not subject_id or key in traced:
+            raise ValueError("Operation trace has an invalid or duplicate subject identity")
+        before = trace.get("before_snapshot")
+        after = trace.get("after_snapshot")
+        if not isinstance(before, dict) or not before or not isinstance(after, dict) or not after:
+            raise ValueError(f"Operation trace lacks raw before/after snapshots: {subject_id}")
+        if not str(trace.get("action", "")).strip():
+            raise ValueError(f"Operation trace lacks the executed action: {subject_id}")
+        changed = json.dumps(before, sort_keys=True, ensure_ascii=False) != json.dumps(
+            after, sort_keys=True, ensure_ascii=False
+        )
+        if not changed and not str(trace.get("observable_result", "")).strip():
+            raise ValueError(f"Operation trace proves no state or observable change: {subject_id}")
+        traced[key] = trace
+    for subject_type, required_field in (
+        ("EVENT", "required_event_ids"), ("TRANSITION", "required_transition_ids")
+    ):
+        required = set(contract.get(required_field, []))
+        observed = {subject_id for trace_type, subject_id in traced if trace_type == subject_type}
+        if required != observed:
+            raise ValueError(
+                f"Runtime operation trace differs from {required_field}: "
+                f"missing={sorted(required - observed)}, extra={sorted(observed - required)}"
+            )
     bounds = value.get("bounds")
     if not isinstance(bounds, dict) or any(
         not isinstance(bounds.get(field), (int, float))
@@ -208,6 +368,40 @@ def main() -> int:
         if parity.get("status") not in {"IMPLEMENTED", "REWORK", "EVIDENCED"}:
             raise ValueError(f"Parity row is not ready for evidence: {parity.get('status')}")
 
+        contract_path = workspace / "migration-unit-contracts.json"
+        contract_file = load_json(contract_path)
+        input_lock = load_json(workspace / "stage-04-input-lock.json")
+        contract_sha = sha256_file(contract_path)
+        if (
+            contract_file.get("schema_version") != 1
+            or input_lock.get("migration_unit_contracts_sha256") != contract_sha
+            or phase_manifest.get("migration_unit_contracts_sha256") != contract_sha
+            or not isinstance(contract_file.get("units"), list)
+        ):
+            raise ValueError("Migration-unit contracts are missing, changed, or malformed")
+        matches = [
+            row for row in contract_file["units"]
+            if isinstance(row, dict) and row.get("parity_id") == parity_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"Parity must bind exactly one migration unit: {parity_id}")
+        migration_contract = matches[0]
+        if (
+            migration_contract.get("inventory_id") != parity.get("inventory_id")
+            or migration_contract.get("feature_id") != parity.get("feature_id")
+            or migration_contract.get("page_id") != parity.get("page_id")
+            or migration_contract.get("state_id") != parity.get("state_id")
+            or migration_contract.get("h4env_id") != h4env_id
+            or migration_contract.get("target_kind") != parity.get("target_kind")
+            or migration_contract.get("target_id") != parity.get("target_id")
+            or migration_contract.get("expected_carrier") != migration_contract.get("scaffold_carrier")
+            or migration_contract.get("simplification_policy") != "FORBIDDEN"
+            or migration_contract.get("native_optimization_policy")
+            != "INTERNAL_ONLY_UNLESS_APPROVED"
+            or migration_contract.get("max_automatic_repair_attempts") != 2
+        ):
+            raise ValueError("Migration-unit identity, carrier, or anti-simplification policy differs")
+
         index_rows = read_csv(workspace / "evidence-index.csv")
         if any(row.get("evidence_id") == evidence_id for row in index_rows):
             raise ValueError(f"HEVD-ID already exists: {evidence_id}")
@@ -215,6 +409,10 @@ def main() -> int:
             old_index = next((row for row in index_rows if row.get("evidence_id") == supersedes), None)
             if not old_index or old_index.get("parity_id") != parity_id or old_index.get("status") != "SEALED":
                 raise ValueError("Superseded evidence is missing, belongs to another parity row, or is not SEALED")
+        reserve_execution(
+            workspace, parity_id, evidence_id, executed_by,
+            int(migration_contract["max_automatic_repair_attempts"]),
+        )
 
         env_path = workspace / "environments" / h4env_id / "phase4-environment.json"
         environment = load_json(env_path)
@@ -286,11 +484,11 @@ def main() -> int:
         for assertion in raw_assertions:
             if not isinstance(assertion, dict):
                 raise ValueError("Every assertion expectation must be an object")
-            if not set(assertion).issubset({"assertion_id", "kind", "expected", "subject_ids"}) or not {
+            if not set(assertion).issubset({"assertion_id", "kind", "expected", "subject_ids", "operator"}) or not {
                 "assertion_id", "kind", "expected"
             }.issubset(assertion):
                 raise ValueError(
-                    "Plan assertions may contain only assertion_id, kind, expected, and optional subject_ids; "
+                    "Plan assertions may contain assertion_id, kind, expected, optional operator/subject_ids; "
                     "actual/status must be generated live"
                 )
             assertion_id = validate_id(str(assertion.get("assertion_id", "")), "Assertion-ID")
@@ -301,6 +499,9 @@ def main() -> int:
             expected = assertion.get("expected")
             if not kind or expected is None or (isinstance(expected, str) and not expected.strip()):
                 raise ValueError(f"Assertion expectation is empty: {assertion_id}")
+            operator = str(assertion.get("operator", "EQUALS"))
+            if operator not in {"EQUALS", "CONTAINS", "REGEX", "JSON_EQUALS", "NUMERIC_RANGE"}:
+                raise ValueError(f"Unsupported deterministic assertion operator: {operator}")
             subject_ids = assertion.get("subject_ids", [])
             if not isinstance(subject_ids, list) or any(
                 not isinstance(item, str) or not item for item in subject_ids
@@ -313,6 +514,7 @@ def main() -> int:
                 "assertion_id": assertion_id,
                 "kind": kind,
                 "expected": expected,
+                "operator": operator,
             }
             if "subject_ids" in assertion:
                 normalized_assertion["subject_ids"] = list(subject_ids)
@@ -320,6 +522,39 @@ def main() -> int:
         if REQUIRED_ASSERTIONS - assertion_kinds:
             raise ValueError(
                 f"State plan lacks required assertion kinds: {sorted(REQUIRED_ASSERTIONS - assertion_kinds)}"
+            )
+        observable_assertions = [
+            item for item in assertions
+            if item["kind"] == "ANDROID_EXPECTED_OBSERVABLE"
+        ]
+        if len(observable_assertions) != 1 or (
+            observable_assertions[0]["expected"]
+            != migration_contract.get("android_expected_observable")
+            or observable_assertions[0].get("subject_ids")
+            != [migration_contract.get("inventory_id")]
+        ):
+            raise ValueError(
+                "State plan must contain exactly one Android expected-observable assertion "
+                "bound to the frozen Inventory-ID"
+            )
+        planned_subject_ids = {
+            subject_id
+            for assertion in assertions
+            for subject_id in assertion.get("subject_ids", [])
+        }
+        required_obligation_ids = set(migration_contract.get("required_obligation_ids", []))
+        required_semantic_ids = required_obligation_ids | {
+            str(subject_id)
+            for field in (
+                "required_business_rule_ids", "required_data_dependency_ids",
+                "required_system_capability_ids", "required_third_party_dependency_ids",
+            )
+            for subject_id in migration_contract.get(field, [])
+        }
+        if not required_semantic_ids <= planned_subject_ids:
+            raise ValueError(
+                "State plan omits frozen function/data/system obligations: "
+                f"{sorted(required_semantic_ids - planned_subject_ids)}"
             )
 
         commands = plan.get("commands")
@@ -459,9 +694,9 @@ def main() -> int:
                         "error_output_contains": contract["error_output_contains"],
                         "success_output_matches": success_hits,
                         "error_output_matches": error_hits,
-                        "stdout_path": str(stdout_path.relative_to(staging)),
+                        "stdout_path": stdout_path.relative_to(staging).as_posix(),
                         "stdout_sha256": sha256_file(stdout_path),
-                        "stderr_path": str(stderr_path.relative_to(staging)),
+                        "stderr_path": stderr_path.relative_to(staging).as_posix(),
                         "stderr_sha256": sha256_file(stderr_path),
                         "command_verdict": "PASS" if passed else "FAIL",
                     }
@@ -476,7 +711,7 @@ def main() -> int:
                     try:
                         if command["category"] == "BUSINESS_ASSERT":
                             assertions_result = validate_assertion_result(
-                                assertions_path, assertions, bindings
+                                assertions_path, assertions, bindings, required_obligation_ids
                             )
                             record["result_path"] = "assertions.json"
                             record["result_sha256"] = sha256_file(assertions_path)
@@ -492,7 +727,9 @@ def main() -> int:
                             record["result_path"] = "screenshot.png"
                             record["result_sha256"] = sha256_file(screenshot)
                         elif command["category"] == "UI_TREE_CAPTURE":
-                            validate_ui_tree(ui_tree, bundle_name, device_id, serial)
+                            validate_ui_tree(
+                                ui_tree, bundle_name, device_id, serial, migration_contract
+                            )
                             record["result_path"] = "ui-tree.json"
                             record["result_sha256"] = sha256_file(ui_tree)
                     except (ValueError, OSError, KeyError) as exc:
@@ -530,6 +767,8 @@ def main() -> int:
             "evidence_id": evidence_id,
             "supersedes_evidence_id": supersedes,
             "parity_id": parity_id,
+            "migration_unit_id": migration_contract["migration_unit_id"],
+            "migration_unit_contracts_sha256": contract_sha,
             "inventory_id": parity["inventory_id"],
             "feature_id": parity["feature_id"],
             "page_id": parity["page_id"],

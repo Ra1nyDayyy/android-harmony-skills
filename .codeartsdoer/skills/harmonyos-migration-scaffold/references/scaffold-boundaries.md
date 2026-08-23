@@ -2,6 +2,8 @@
 
 ## Module truth
 
+The starting tree comes from the locked ArkUI Stage template. Keep its `AppScope`, root build profile, `entry` module, entry Ability, main page profile, and hvigor configuration as real project files. Architecture work may extend these files, but it must not replace the project with an unrelated sample or leave template tokens unresolved.
+
 Every module registry row cites a real module directory and build configuration inside `harmony-project/`. Record its layer, feature IDs, and declared module dependencies. `dependency-policy.json` defines allowed layer edges and forbidden placeholder/contract tokens.
 
 The Phase 3 gate verifies ID validity, file existence, allowed dependency directions, and absence of cycles. The acceptance agent separately attests that the registry matches actual build configuration and imports.
@@ -34,3 +36,5 @@ It must not contain business components, ViewModels, domain models, requests, pe
 Every seeded capability requirement must have one real contract file and symbol. Contracts may contain interface/type/enum/error declarations. They may not contain concrete adapter classes, I/O, SDK calls, network/storage operations, fake data, or implemented business methods.
 
 If compilation would otherwise require an implementation, defer wiring; do not create a no-op production adapter and call it an interface.
+
+Every `ADVANCED_SIDE_EFFECT` requirement originates from the frozen Phase 2 advanced inventory. Its contract must retain the originating Side-Effect-ID as `source_requirement_ref`. Dynamic surfaces and scenario tests remain in `advanced-obligations.json` for Phase 4 and do not justify fake Phase 3 routes or adapters.
