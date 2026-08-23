@@ -1,11 +1,17 @@
 ---
 name: android-harmony-migration-controller
-description: Coordinate an Android-to-HarmonyOS migration by freezing scope and baselines, issuing phase work orders, arbitrating conflicts, routing rework, and enforcing phase gates. Use when starting or governing a migration; do not use this skill to inspect Android runtime UI or implement HarmonyOS features.
+description: Coordinate or continuously execute an Android-to-HarmonyOS migration through Phases 1–4 by freezing scope and baselines, invoking specialist Skills, issuing work orders, routing rework, and enforcing gates. Use for one-shot full migration requests as well as migration governance; do not directly inspect Android runtime UI or implement HarmonyOS features inside the controller role.
 ---
 
 # Android to HarmonyOS Migration Controller
 
 Create one auditable migration run and keep it governed. This skill is the project controller; it does not perform specialist analysis or write application code.
+
+## Default: run Phase 1–4 continuously
+
+Read [references/continuous-run.md](references/continuous-run.md) when the user asks for a complete migration or the whole workflow. Treat continuous execution as the default: invoke the three specialist Skills and proceed from one passing gate to the next in the same task. Do not wait for the user to say “继续”, and do not ask for a HarmonyOS template path; Phase 3 uses its bundled `assets/arkui-stage-template`.
+
+Pause only for a real external blocker listed in the continuous-run contract. A recoverable build failure, incomplete mapping, parity defect, or failed gate must enter the governed repair loop automatically.
 
 ## Boundaries
 
@@ -83,6 +89,8 @@ python3 scripts/validate_gate.py --run-dir <migration-run> --phase 2 --write
 
 Open the next migration phase only when the gate report says `PASS`. The gate requires the complete included feature set; it does not silently downgrade to a partial release.
 
+In continuous mode, issue the Phase 3 work order immediately after this `PASS`; do not return control merely to announce the phase result.
+
 The Phase 2 gate requires `page-gate-report.json` to contain only machine-computed `PAGE_PASS` rows with equal required/received atomic counts. It also requires `advanced-gate-report.json` to cover every discovered dynamic risk, non-UI side effect, and special scenario. Side effects and scenarios must carry reproducible, hash-bound probe evidence. The controller then independently recomputes the closure snapshot. A stale, hand-written, or model-authored `PASS` cannot open the gate.
 
 ## Dispatch and close Phase 3
@@ -112,6 +120,8 @@ python3 scripts/validate_gate.py --run-dir <migration-run> --phase 3 --write
 Gate 3 rechecks the registered work order and role separation, all Phase 2 input hashes, the advanced-analysis/probe handoff, ArkUI template provenance, sealed HENV/HVER evidence, the current scaffold/screenshot/artifact hashes, and the complete Phase 3 closure manifest. Any missing dynamic/side-effect/scenario obligation or open Phase 3 controller rework keeps the gate closed.
 
 A Gate 3 `PASS` closes the scaffold phase only. It does not itself authorize implementation.
+
+In continuous mode, the original full-migration request plus the controller-issued Phase 4 work order supplies that authorization. Continue immediately; no second user prompt is required.
 
 ## Dispatch and close Phase 4
 

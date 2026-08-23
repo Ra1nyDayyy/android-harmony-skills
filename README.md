@@ -13,6 +13,19 @@
 
 总控 Skill 贯穿四个阶段，但不编写业务代码。Phase 2 只负责理解 Android；Phase 3 只建立非业务基座；Phase 4 才允许迁移真实功能。
 
+## 一次指令执行 Phase 1–4
+
+把四个 Skill 安装到项目后，在 CodeArts 中只需发送一次：
+
+```text
+使用 $android-harmony-migration-controller 对当前 Android 项目连续执行 Phase 1–4。
+自动发现可确定的项目、APK 和环境信息；Phase 3 使用 Skill 内置 ArkUI 模板。
+Gate 通过后直接进入下一阶段，不要等待我回复继续；可修复问题自动返工并复验。
+只有外部凭据、工具链或模拟器确实缺失时才暂停，并一次列全阻塞项。
+```
+
+Phase 3 已内置完整 `assets/arkui-stage-template`，不需要另外填写模板路径。
+
 ## 关键约束
 
 - Phase 2 的页面、组件、事件和跳转必须同时经过静态扫描与运行证据绑定。确定性门禁计算覆盖率，模型不能自行宣布 `PASS`。
