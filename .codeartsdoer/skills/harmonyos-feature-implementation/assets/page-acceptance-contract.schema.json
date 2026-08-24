@@ -12,7 +12,7 @@
   "properties": {
     "schema_version": {"const": "page-acceptance-contract-v1"},
     "page_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"},
-    "page_name": {"type": "string"},
+    "page_name": {"type": "string", "minLength": 1},
     "feature_ids": {"$ref": "#/$defs/idArray"},
     "states": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/state"}},
     "components": {"type": "array", "items": {"$ref": "#/$defs/component"}},
@@ -85,7 +85,7 @@
     "entryCondition": {
       "type": "object",
       "required": ["state_id", "entry_condition", "action_summary"],
-      "properties": {"state_id": {"$ref": "#/$defs/id"}, "entry_condition": {"type": "string"}, "action_summary": {"type": "string"}},
+      "properties": {"state_id": {"$ref": "#/$defs/id"}, "entry_condition": {"type": "string", "minLength": 1}, "action_summary": {"type": "string", "minLength": 1}},
       "additionalProperties": true
     },
     "androidEvidence": {
@@ -103,7 +103,7 @@
       "required": ["inventory_id", "feature_id", "env_id", "entry_condition", "action_summary", "expected_observable", "android_evidence", "business_rule_ids", "data_dependency_ids", "system_capability_ids"],
       "properties": {
         "inventory_id": {"$ref": "#/$defs/id"}, "feature_id": {"$ref": "#/$defs/id"}, "env_id": {"$ref": "#/$defs/id"},
-        "entry_condition": {"type": "string"}, "action_summary": {"type": "string"}, "expected_observable": {"type": "string"},
+        "entry_condition": {"type": "string", "minLength": 1}, "action_summary": {"type": "string", "minLength": 1}, "expected_observable": {"type": "string", "minLength": 1},
         "android_evidence": {"$ref": "#/$defs/androidEvidence"}, "business_rule_ids": {"$ref": "#/$defs/idArray"}, "data_dependency_ids": {"$ref": "#/$defs/idArray"}, "system_capability_ids": {"$ref": "#/$defs/idArray"}
       },
       "additionalProperties": false
@@ -111,7 +111,7 @@
     "state": {
       "type": "object",
       "required": ["state_id", "state_name", "records"],
-      "properties": {"state_id": {"$ref": "#/$defs/id"}, "state_name": {"type": "string"}, "records": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stateRecord"}}},
+      "properties": {"state_id": {"$ref": "#/$defs/id"}, "state_name": {"type": "string", "minLength": 1}, "records": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stateRecord"}}},
       "additionalProperties": false
     },
     "phase3Target": {

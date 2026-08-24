@@ -212,6 +212,44 @@ class PageAcceptanceContractTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, field):
                     publish_page_contracts([contract], self.root / f"malformed-{field}")
 
+    def test_rejects_non_string_or_empty_mandatory_ids_and_semantic_facts(self) -> None:
+        states = read_json(self.phase2 / "static-analysis" / "state-candidates.json")
+        states["states"][0]["state_id"] = 42
+        write_json(self.phase2 / "static-analysis" / "state-candidates.json", states)
+        with self.assertRaisesRegex(ValueError, "non-string state_id"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        build_fixture(self.phase2, self.phase3)
+        valid = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]
+        contract = json.loads(json.dumps(valid))
+        contract["states"][0]["state_id"] = 42
+        with self.assertRaisesRegex(ValueError, "states.*state_id"):
+            publish_page_contracts([contract], self.root / "numeric-state")
+        for field in ("entry_condition", "action_summary"):
+            with self.subTest(compiler_field=field):
+                build_fixture(self.phase2, self.phase3)
+                inventory = read_csv(self.phase2 / "inventory.csv")
+                inventory[0][field] = ""
+                write_csv(self.phase2 / "inventory.csv", inventory)
+                with self.assertRaisesRegex(ValueError, f"PAGE-CALCULATOR.*STATE-EMPTY.*{field}"):
+                    compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+            with self.subTest(publisher_field=field):
+                contract = json.loads(json.dumps(valid))
+                contract["entry_conditions"][0][field] = ""
+                with self.assertRaisesRegex(ValueError, f"entry_conditions.{field}"):
+                    publish_page_contracts([contract], self.root / f"empty-{field}")
+
+    def test_generated_contract_matches_runtime_and_declared_schema_constraints(self) -> None:
+        contract = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]
+        publish_page_contracts([contract], self.root / "schema-valid")
+        schema = read_json(SCRIPTS.parent / "assets" / "page-acceptance-contract.schema.json")
+        self.assertEqual(set(contract), set(schema["properties"]))
+        self.assertTrue(set(schema["required"]).issubset(contract))
+        self.assertEqual("#/$defs/entryCondition", schema["properties"]["entry_conditions"]["items"]["$ref"])
+        self.assertEqual(1, schema["$defs"]["entryCondition"]["properties"]["entry_condition"]["minLength"])
+        self.assertEqual(1, schema["$defs"]["entryCondition"]["properties"]["action_summary"]["minLength"])
+        self.assertEqual("#/$defs/id", schema["$defs"]["state"]["properties"]["state_id"]["$ref"])
+        self.assertEqual(1, schema["$defs"]["id"]["minLength"])
+
     def test_publish_rolls_back_the_whole_set_when_registry_replace_fails(self) -> None:
         destination = self.root / "published"
         original = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))

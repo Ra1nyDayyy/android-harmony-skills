@@ -78,6 +78,11 @@ def compile_page_contracts(
         _require(row, ("inventory_id", "feature_id", "page_id", "state_id", "env_id", "evidence_id"), "Phase 2 inventory")
         if row.get("row_status") not in {"", "REVIEWED"}:
             raise ValueError(f"Active inventory is not REVIEWED: {row['inventory_id']}")
+        for field in ("page_name", "state_name", "entry_condition", "action_summary", "expected_observable"):
+            if not isinstance(row.get(field), str) or not row[field]:
+                raise ValueError(
+                    f"{row['page_id']} {row['state_id']}: missing mandatory {field}"
+                )
     inventory_by_id = _index(inventory, "inventory_id", "Phase 2 inventory")
 
     pages = _object_rows(phase2_workspace / "static-analysis" / "pages.json", "pages", "Phase 2 pages")
@@ -211,6 +216,9 @@ def compile_page_contracts(
     for page_id in sorted({row["page_id"] for row in inventory}):
         page_rows = sorted((row for row in inventory if row["page_id"] == page_id), key=lambda row: (row["state_id"], row["env_id"], row["inventory_id"]))
         page = pages_by_id[page_id]
+        page_name = page.get("page_name") or page_rows[0]["page_name"] or page.get("symbol")
+        if not isinstance(page_name, str) or not page_name:
+            raise ValueError(f"{page_id}: missing mandatory page_name")
         state_records: list[dict[str, object]] = []
         for state_id in sorted({row["state_id"] for row in page_rows}):
             source_rows = [row for row in page_rows if row["state_id"] == state_id]
@@ -233,7 +241,7 @@ def compile_page_contracts(
         contract: dict[str, object] = {
             "schema_version": "page-acceptance-contract-v1",
             "page_id": page_id,
-            "page_name": str(page.get("page_name") or page_rows[0].get("page_name") or page.get("symbol", "")),
+            "page_name": page_name,
             "feature_ids": feature_ids,
             "states": state_records,
             "components": _records_for_page(components, page_id, "page_id", "component_id"),
@@ -337,7 +345,11 @@ def _validate_contract(contract: dict[str, object]) -> None:
             f"missing={missing}, undeclared={extras}"
         )
     validate_page_id(str(contract.get("page_id", "")))
-    if contract.get("schema_version") != "page-acceptance-contract-v1" or not isinstance(contract.get("page_name"), str):
+    if (
+        contract.get("schema_version") != "page-acceptance-contract-v1"
+        or not isinstance(contract.get("page_name"), str)
+        or not contract["page_name"]
+    ):
         raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: identity structure differs")
     for field in CONTRACT_LIST_FIELDS:
         value = contract.get(field)
@@ -354,9 +366,11 @@ def _validate_contract(contract: dict[str, object]) -> None:
         _validate_record_array(str(contract["page_id"]), field, contract[field], required_fields)
     _validate_geometry_array(str(contract["page_id"]), contract["source_geometry"])
     for state in contract["states"]:
-        if set(state) != {"state_id", "state_name", "records"} or not state.get("state_id"):
+        if set(state) != {"state_id", "state_name", "records"}:
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states structure differs")
-        if not isinstance(state["state_name"], str) or not isinstance(state["records"], list):
+        if not isinstance(state.get("state_id"), str) or not state["state_id"]:
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states.state_id differs")
+        if not isinstance(state["state_name"], str) or not state["state_name"] or not isinstance(state["records"], list):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states record structure differs")
         _validate_state_records(str(contract["page_id"]), state["records"])
     policy = contract.get("comparison_policy")
@@ -428,7 +442,7 @@ def _validate_state_records(page_id: str, records: object) -> None:
             if not isinstance(record[field], str) or not record[field]:
                 raise ValueError(f"Invalid page acceptance contract {page_id}: states.records.{field} differs")
         for field in ("entry_condition", "action_summary", "expected_observable"):
-            if not isinstance(record[field], str):
+            if not isinstance(record[field], str) or not record[field]:
                 raise ValueError(f"Invalid page acceptance contract {page_id}: states.records.{field} differs")
         for field in ("business_rule_ids", "data_dependency_ids", "system_capability_ids"):
             if not isinstance(record[field], list) or any(not isinstance(item, str) or not item for item in record[field]):
@@ -522,7 +536,9 @@ def _list_value(value: dict[str, object], key: str, label: str) -> list[dict[str
 def _index(rows: list[dict[str, Any]], field: str, label: str) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for row in rows:
-        value = str(row.get(field, ""))
+        value = row.get(field)
+        if not isinstance(value, str):
+            raise ValueError(f"{label} has non-string {field}")
         if not value:
             raise ValueError(f"{label} has empty {field}")
         if value in indexed:
