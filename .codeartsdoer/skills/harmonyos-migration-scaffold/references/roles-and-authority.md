@@ -2,6 +2,8 @@
 
 All six Phase 3 actor IDs are frozen in the controller-issued work order and copied into `phase-manifest.json` and `stage-03-input-lock.json`. They must be distinct from each other and from the frozen Phase 1/2 actors. A command-line `--created-by`, `--executed-by`, `--mapped-by`, or `--reviewer` value is not authority by itself; it must equal the assigned ID below.
 
+Every role is a distinct actual CodeArts worker task. After completion, the controller records the platform task ID and hashes of role-owned artifacts. A role string, command-line actor value, or model-authored narrative is not an execution receipt. One platform task ID cannot satisfy two roles.
+
 ## HarmonyOS architecture lead
 
 - Owns `HENV-ID` selection, module placement, dependency policy, naming, architecture decisions, and every Phase 2 asset's target module/path/symbol plan.

@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0",
+  "seed": "yao-output-eval-blind-v1",
+  "summary": {
+    "pair_count": 5,
+    "answer_key_separate": true,
+    "with_skill_hidden_count": 5
+  },
+  "pairs": [
+    {
+      "case_id": "controller-file-backed-block",
+      "prompt": "Run the attached migration fixture.",
+      "input_files": [
+        "fixture.md"
+      ],
+      "metadata": {
+        "case_type": "file_backed",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "blocks",
+          "description": "Blocks on canonical failure.",
+          "weight": 1.0
+        },
+        {
+          "id": "routes",
+          "description": "Routes governed rework.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "controller-file-backed-block:A",
+        "output": "Gate 2 is BLOCKED because the transition lacks anchored evidence. Record the failure in controller/rework-log.csv, return it to the Phase 2 lead, and do not issue Phase 3."
+      },
+      "variant_b": {
+        "blind_id": "controller-file-backed-block:B",
+        "output": "The migration looks mostly complete, so continue to implementation."
+      }
+    },
+    {
+      "case_id": "controller-continuous",
+      "prompt": "Migrate this app through all four phases in one request.",
+      "input_files": [],
+      "metadata": {},
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "continuous",
+          "description": "Runs the requested full workflow.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "controller-continuous:A",
+        "output": "I finished the initial setup. Ask me to continue with the next phase."
+      },
+      "variant_b": {
+        "blind_id": "controller-continuous:B",
+        "output": "Execute Phase 1-4 continuously. Advance only after each canonical gate PASS; automatically route recoverable failures through rework and finish only after audit_delivery.py prints verdict: PASS."
+      }
+    },
+    {
+      "case_id": "controller-worker-receipts",
+      "prompt": "The actor IDs are all different. Can Gate 4 pass?",
+      "input_files": [],
+      "metadata": {},
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "receipts",
+          "description": "Requires execution evidence, not labels.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "controller-worker-receipts:A",
+        "output": "Yes, distinct IDs prove role separation."
+      },
+      "variant_b": {
+        "blind_id": "controller-worker-receipts:B",
+        "output": "No. Distinct actor IDs are assignments only. Require separate CodeArts worker task receipts, unique platform task IDs, and current artifact hashes before the delivery audit can PASS."
+      }
+    },
+    {
+      "case_id": "controller-near-neighbor",
+      "prompt": "Only inspect one Android page; do not orchestrate a migration.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "near_neighbor",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "handoff",
+          "description": "Avoids over-triggering.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "controller-near-neighbor:A",
+        "output": "Initialize a full four-phase migration run."
+      },
+      "variant_b": {
+        "blind_id": "controller-near-neighbor:B",
+        "output": "Do not initialize the controller. This is a Phase 2-only near-neighbor; hand it to $android-migration-inventory and preserve the controller boundary."
+      }
+    },
+    {
+      "case_id": "controller-claim-boundary",
+      "prompt": "YAO governance checks pass. Announce that the migrated app is complete.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "boundary",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "claim-boundary",
+          "description": "Separates package and migration truth.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "controller-claim-boundary:A",
+        "output": "Refuse the completion claim. Skill governance evidence is not app evidence; require canonical Gate 1-4 reports plus audit_delivery.py verdict: PASS, otherwise report missing evidence."
+      },
+      "variant_b": {
+        "blind_id": "controller-claim-boundary:B",
+        "output": "All governance checks pass, so the app migration is complete."
+      }
+    }
+  ]
+}

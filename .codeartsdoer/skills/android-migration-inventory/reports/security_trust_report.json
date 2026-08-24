@@ -1,0 +1,420 @@
+{
+  "ok": true,
+  "skill_dir": "<skill-root>",
+  "summary": {
+    "scanned_files": 43,
+    "script_count": 15,
+    "internal_module_count": 1,
+    "secret_findings": 0,
+    "dependency_files": [
+      "requirements-ci.txt"
+    ],
+    "network_script_count": 0,
+    "network_policy_covered_count": 0,
+    "network_policy_missing_count": 0,
+    "file_write_script_count": 6,
+    "permission_required_count": 2,
+    "permission_approved_count": 2,
+    "permission_missing_count": 0,
+    "permission_invalid_count": 0,
+    "permission_expired_count": 0,
+    "help_smoke_checked_count": 0,
+    "help_smoke_failed_count": 0,
+    "interactive_script_count": 0,
+    "package_hash_scope": "source-contract-without-generated-reports",
+    "package_hash_file_count": 43,
+    "package_sha256": "1e270e08e7c2714ace3ffb8f947e2187c93450acec03bdf4b189b20b1e8bf7aa"
+  },
+  "failures": [],
+  "warnings": [],
+  "secrets": [],
+  "scripts": [
+    {
+      "path": "scripts\\_common.py",
+      "interface": "internal-module",
+      "interface_declared": true,
+      "interface_reason": "Shared deterministic library imported by Phase 2 inventory CLIs.",
+      "has_argparse": false,
+      "has_main_guard": false,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": true,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\analyze_static_pages.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": false,
+      "network_urls": [
+        "http://schemas.android.com/apk/res/android}",
+        "http://schemas.android.com/apk/res-auto}destination"
+      ],
+      "network_hosts": [
+        "schemas.android.com"
+      ]
+    },
+    {
+      "path": "scripts\\archive_assets.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\attest_environment.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\build_inventory.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\capture_state.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\evaluate_advanced_gates.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\evaluate_page_gates.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\init_inventory.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\manage_recheck.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\record_advanced_observation.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\record_runtime_observation.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\seal_side_effect_probe.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": true,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\validate_evidence.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    },
+    {
+      "path": "scripts\\validate_static_analysis.py",
+      "interface": "cli",
+      "interface_declared": false,
+      "interface_reason": "Default CLI classification; add SCRIPT_INTERFACE for internal modules.",
+      "has_argparse": true,
+      "has_main_guard": true,
+      "uses_input": false,
+      "uses_network": false,
+      "uses_file_write": false,
+      "uses_subprocess": false,
+      "network_urls": [],
+      "network_hosts": []
+    }
+  ],
+  "dependencies": {
+    "present": [
+      "requirements-ci.txt"
+    ],
+    "pinned": [],
+    "unpinned": []
+  },
+  "network_policy": {
+    "present": false,
+    "path": "security/network_policy.json",
+    "schema_version": "",
+    "network_script_count": 0,
+    "covered_scripts": [],
+    "missing_scripts": [],
+    "mismatches": [],
+    "default_policy": {}
+  },
+  "help_smoke": {
+    "enabled": false,
+    "timeout_seconds": 5.0,
+    "candidate_count": 14,
+    "checked_count": 0,
+    "passed_count": 0,
+    "failed_count": 0,
+    "skipped_count": 15,
+    "failed_scripts": [],
+    "results": [],
+    "skipped": [
+      {
+        "path": "scripts\\_common.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\analyze_static_pages.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\archive_assets.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\attest_environment.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\build_inventory.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\capture_state.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\evaluate_advanced_gates.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\evaluate_page_gates.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\init_inventory.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\manage_recheck.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\record_advanced_observation.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\record_runtime_observation.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\seal_side_effect_probe.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\validate_evidence.py",
+        "reason": "help smoke disabled"
+      },
+      {
+        "path": "scripts\\validate_static_analysis.py",
+        "reason": "help smoke disabled"
+      }
+    ]
+  },
+  "permission_governance": {
+    "present": true,
+    "path": "security/permission_policy.json",
+    "schema_version": "1.0",
+    "reviewed_at": "2026-08-24",
+    "required_capabilities": [
+      "file_write",
+      "subprocess"
+    ],
+    "approved_capabilities": [
+      "file_write",
+      "subprocess"
+    ],
+    "missing_capabilities": [],
+    "invalid_capabilities": [],
+    "expired_capabilities": [],
+    "approval_count": 2,
+    "required_count": 2,
+    "missing_count": 0,
+    "invalid_count": 0,
+    "expired_count": 0,
+    "approvals": [
+      {
+        "capability": "file_write",
+        "status": "approved",
+        "scripts": [
+          "scripts\\_common.py",
+          "scripts\\analyze_static_pages.py",
+          "scripts\\archive_assets.py",
+          "scripts\\attest_environment.py",
+          "scripts\\capture_state.py",
+          "scripts\\seal_side_effect_probe.py"
+        ],
+        "reviewer": "Android-Harmony Migration Maintainers",
+        "scope": "Only the controller-selected Phase 2 workspace, immutable evidence packages, and governed reports; frozen Android source is read-only.",
+        "reason": "Inventory catalogs, runtime backlogs, evidence packages, hashes, and deterministic gate reports must be persisted.",
+        "expires_at": "2026-11-24",
+        "evidence": [
+          "references/governed-execution-contract.md",
+          "reports/security_trust_report.md"
+        ],
+        "target_enforcement": {
+          "openai": "workspace permission plus explicit workspace path",
+          "claude": "host workspace boundary",
+          "generic": "host workspace boundary",
+          "vscode": "workspace trust plus host boundary"
+        },
+        "validation": []
+      },
+      {
+        "capability": "subprocess",
+        "status": "approved",
+        "scripts": [
+          "scripts\\_common.py"
+        ],
+        "reviewer": "Android-Harmony Migration Maintainers",
+        "scope": "Frozen Android CLI and bundled deterministic scripts invoked without a shell.",
+        "reason": "Static/runtime correlation and formal evidence capture require reviewed local CLI execution.",
+        "expires_at": "2026-11-24",
+        "evidence": [
+          "references/android-cli-procedure.md",
+          "reports/security_trust_report.md"
+        ],
+        "target_enforcement": {
+          "openai": "tool approval and frozen CLI contract",
+          "claude": "host process policy",
+          "generic": "host process policy",
+          "vscode": "workspace trust plus host process policy"
+        },
+        "validation": []
+      }
+    ]
+  },
+  "trust_metadata": {
+    "source_tier": "local",
+    "remote_inline_execution": "forbid",
+    "remote_metadata_policy": "allow-metadata-only"
+  },
+  "artifacts": {
+    "json": "<skill-root>/reports/security_trust_report.json",
+    "markdown": "<skill-root>/reports/security_trust_report.md"
+  }
+}

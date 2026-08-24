@@ -7,6 +7,8 @@ description: Automatically build a migration-grade semantic inventory of an exis
 
 Produce a complete, reproducible description of the Android app before migration work begins. Treat observable states, not pages alone, as the inventory unit.
 
+Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Skill quality evidence cannot grant Android coverage; only the deterministic Phase 2 scripts may do so.
+
 ## Hard rules
 
 - Runtime inspection uses Android CLI. Layout Inspector is prohibited for formal evidence.
@@ -19,6 +21,7 @@ Produce a complete, reproducible description of the Android app before migration
 - A given emulator or device is controlled by only one runtime-state agent at a time.
 - Phase 2 performs no human annotation or manual page enumeration. Unresolved facts become automatic runtime tasks with explicit confidence; they are never guessed or silently omitted.
 - No agent may grant `PASS`. Agents only bind static subjects to evidence; deterministic scripts compute every `PAGE_PASS` and the final verdict.
+- The inventory lead must dispatch the code-map, every runtime-state, business-rule, data-dependency, evidence-administrator, and coverage-checker assignment as distinct real worker tasks. Actor-ID strings without controller team-execution receipts do not satisfy the assignment.
 
 ## Initialize Phase 2
 
@@ -69,6 +72,8 @@ The inventory lead dispatches four independent automated lenses:
 - Runtime-state agent: consumes `runtime-tasks.json`, autonomously navigates user journeys, and captures observable states on the frozen environment.
 - Business-rule agent: entry conditions, validations, roles, feature flags, and transitions.
 - Data-dependency agent: APIs, local data, permissions, SDKs, system capabilities, and native libraries.
+
+Do not collapse these lenses into one general worker. Each worker receives only its frozen role and returns role-owned artifacts. After closure, return the real CodeArts task ID and artifact paths to the controller so it can run `record_team_execution.py` for every Phase 2 assignment. Missing receipts prevent issuance of Phase 3 even when the content gate otherwise passes.
 
 Read [references/inventory-contract.md](references/inventory-contract.md) before creating claim records.
 Complete `coverage-ledger.csv` and the five files under `catalogs/` from machine findings. A final `PASS` requires every included Feature-ID and applicable ENV-ID to be marked `COMPLETE`, every in-scope code state candidate to be linked to a formal state row, and every static runtime task to be resolved or retained as an explicit blocking risk.

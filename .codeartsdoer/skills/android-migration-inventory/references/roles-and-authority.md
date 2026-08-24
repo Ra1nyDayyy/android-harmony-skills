@@ -1,5 +1,7 @@
 # Roles and authority
 
+Each heading below represents a separately dispatched worker task, not a persona label that one worker may switch between. Every assigned actor returns its real CodeArts task ID and at least one hashable role-owned artifact to the controller. Reused task IDs, missing receipts, or one worker acting under multiple actor IDs block the Phase 3 handoff.
+
 ## Android inventory lead
 
 - Accept the controller work order, assign exclusive feature/page ranges, and freeze the environment registry.

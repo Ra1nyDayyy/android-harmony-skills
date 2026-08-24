@@ -1,0 +1,16 @@
+{
+  "name": "harmonyos-migration-scaffold",
+  "version": "2.0.0",
+  "owner": "Android-Harmony Migration Maintainers",
+  "updated_at": "2026-08-24",
+  "review_due": "2026-11-24",
+  "review_cadence": "per-release",
+  "status": "active",
+  "maturity_tier": "governed",
+  "lifecycle_stage": "governed",
+  "context_budget_tier": "production",
+  "skill_archetype": "constrained-project-builder",
+  "skill_ir_source": "reports/skill-ir.json",
+  "target_platforms": ["openai", "claude", "agent-skills", "vscode", "generic"],
+  "factory_components": ["references", "scripts", "assets", "evals", "reports"]
+}

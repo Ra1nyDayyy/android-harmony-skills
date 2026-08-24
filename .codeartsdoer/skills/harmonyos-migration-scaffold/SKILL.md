@@ -7,6 +7,8 @@ description: Build and verify a non-business HarmonyOS NEXT project scaffold fro
 
 Create a HarmonyOS NEXT project that builds, installs, launches, and contains a real architectural landing point for every frozen Phase 2 record. Stop before business implementation.
 
+Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Skill governance evidence never substitutes for a real toolchain, emulator, screenshot, Stage 3 report, or controller Gate 3.
+
 ## Hard boundaries
 
 - Phase 1 and Phase 2 must both be `PASS`; Phase 2 inputs are read-only and hash-locked.
@@ -19,6 +21,7 @@ Create a HarmonyOS NEXT project that builds, installs, launches, and contains a 
 - Never store passwords, tokens, private keys, passphrases, or signing secrets in the workspace.
 - Environments and verification packages are immutable. Issue a new `HENV-ID` or `HVER-ID` instead of overwriting one. Manage rework only through the governed rework script; never delete or reuse a ticket ID.
 - The architecture acceptance agent is the only final reviewer and must not be a creator or verification executor.
+- All six frozen Phase 3 roles must be six separately dispatched CodeArts worker tasks. Writing six actor IDs while one worker performs the phase is invalid.
 
 ## Initialize Phase 3
 
@@ -54,6 +57,8 @@ Read [references/roles-and-authority.md](references/roles-and-authority.md) and 
 - Public UI agent: creates only generic tokens, containers, common state shells, and responsive rules.
 - Capability-contract agent: creates interface-only contracts for the seeded requirements.
 - Architecture acceptance agent: independently verifies the exact snapshot and alone issues the gate verdict.
+
+The architecture lead must not implement the other five assignments. Each role returns a real platform task ID and at least one role-owned artifact to the controller. Record all six receipts after the canonical Stage 3 report is sealed; Phase 4 issuance rejects an incomplete, reused, fabricated, or hash-stale receipt set.
 
 Populate the registries with paths to real files inside `harmony-project/`. Documentation-only mappings are invalid. Asset rows are landing plans, not permission to copy or recreate business assets during Phase 3. Keep `migration-status.csv` separate from Phase 2.
 
@@ -134,3 +139,5 @@ python3 ../android-harmony-migration-controller/scripts/validate_gate.py \
 ```
 
 The controller recomputes the registered work order, role separation, locked Phase 2 snapshots, HENV/HVER evidence, current scaffold/artifact/screenshot hashes, mirrored rework state, and complete Phase 3 closure. Enter business implementation only under a later separately approved work order; Gate 3 PASS closes the scaffold phase but does not itself authorize feature work.
+
+Only `stage-03-gate-report.json` with exact `verdict: PASS` is valid. `PASS_WITH_GAPS`, a syntax error, a missing registry, or any `PENDING` scaffold obligation is blocking and may not be renamed a design decision.

@@ -1,0 +1,273 @@
+{
+  "schema_version": "1.0",
+  "ok": true,
+  "cases": "<skill-root>/evals/output/cases.jsonl",
+  "runner": {
+    "mode": "recorded_fixture",
+    "command": [],
+    "timeout_seconds": null
+  },
+  "summary": {
+    "case_count": 5,
+    "variant_run_count": 10,
+    "command_executed_count": 0,
+    "model_executed_count": 0,
+    "recorded_fixture_count": 10,
+    "timing_observed_count": 0,
+    "token_observed_count": 0,
+    "token_estimated_count": 10,
+    "baseline_pass_rate": 0.0,
+    "with_skill_pass_rate": 100.0,
+    "delta": 100.0,
+    "regression_count": 0,
+    "failure_count": 0,
+    "gate_pass": true
+  },
+  "runs": [
+    {
+      "case_id": "inventory-file-backed",
+      "variant": "baseline",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 12,
+        "total_tokens": 20,
+        "estimated": true
+      },
+      "score": 0.0,
+      "passed_count": 0,
+      "failed_count": 1,
+      "failed_assertions": [
+        "coverage"
+      ],
+      "output_sha256": "1a1dcccfbc494a669283f7af5443f9eeaa1ab1e5e7fc4f7410f8d1cde2c1af39",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-file-backed",
+      "variant": "with_skill",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 57,
+        "total_tokens": 65,
+        "estimated": true
+      },
+      "score": 100.0,
+      "passed_count": 1,
+      "failed_count": 0,
+      "failed_assertions": [],
+      "output_sha256": "85a4df4328fee37be4f623fe255db60c68e6d15065b6a7ce73d7f71649a62c89",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-static-runtime",
+      "variant": "baseline",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 12,
+        "total_tokens": 20,
+        "estimated": true
+      },
+      "score": 0.0,
+      "passed_count": 0,
+      "failed_count": 1,
+      "failed_assertions": [
+        "two-lens"
+      ],
+      "output_sha256": "fbbfaf79b32bb91cf5ff9528cdbd8f922fa324e491eacab6655a20f3d1239a66",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-static-runtime",
+      "variant": "with_skill",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 57,
+        "total_tokens": 65,
+        "estimated": true
+      },
+      "score": 100.0,
+      "passed_count": 1,
+      "failed_count": 0,
+      "failed_assertions": [],
+      "output_sha256": "066d431b105d931c539cf4959f0986997a78c62ac171ca5262523f0b73644582",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-model-pass",
+      "variant": "baseline",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 16,
+        "output_tokens": 13,
+        "total_tokens": 29,
+        "estimated": true
+      },
+      "score": 0.0,
+      "passed_count": 0,
+      "failed_count": 1,
+      "failed_assertions": [
+        "anti-self-pass"
+      ],
+      "output_sha256": "74c21d9f62fdaa5867351a951af69bf8f9efe3e4bd36476359ce36c6d9182977",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-model-pass",
+      "variant": "with_skill",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 16,
+        "output_tokens": 47,
+        "total_tokens": 63,
+        "estimated": true
+      },
+      "score": 100.0,
+      "passed_count": 1,
+      "failed_count": 0,
+      "failed_assertions": [],
+      "output_sha256": "9d9a6401d284f1264b579e36eff72dbef217137d68ee37348c36f2ef413f74a6",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-near-neighbor",
+      "variant": "baseline",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 14,
+        "output_tokens": 12,
+        "total_tokens": 26,
+        "estimated": true
+      },
+      "score": 0.0,
+      "passed_count": 0,
+      "failed_count": 1,
+      "failed_assertions": [
+        "boundary"
+      ],
+      "output_sha256": "9e94a51d19d57e721a33f74b3aa4d5988dcd6cc923b67e5189cf85136886cb6e",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-near-neighbor",
+      "variant": "with_skill",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 14,
+        "output_tokens": 40,
+        "total_tokens": 54,
+        "estimated": true
+      },
+      "score": 100.0,
+      "passed_count": 1,
+      "failed_count": 0,
+      "failed_assertions": [],
+      "output_sha256": "6b2b5f35d7f3909a1546627a5a299304d2d1e4c96819b3e5deeb56f80d6e58ee",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-unreachable",
+      "variant": "baseline",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 10,
+        "total_tokens": 30,
+        "estimated": true
+      },
+      "score": 0.0,
+      "passed_count": 0,
+      "failed_count": 1,
+      "failed_assertions": [
+        "missing-evidence"
+      ],
+      "output_sha256": "fdf69d4cd6739659a6e2b844aa1c7520c5616878e9f80226a806286744d35b4d",
+      "failure": ""
+    },
+    {
+      "case_id": "inventory-unreachable",
+      "variant": "with_skill",
+      "status": "pass",
+      "execution_mode": "recorded_fixture",
+      "model_executed": false,
+      "command_executed": false,
+      "duration_ms": null,
+      "provider": "",
+      "model": "",
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 49,
+        "total_tokens": 69,
+        "estimated": true
+      },
+      "score": 100.0,
+      "passed_count": 1,
+      "failed_count": 0,
+      "failed_assertions": [],
+      "output_sha256": "daf500e065372895a9c1079c5cca9c6e5579c742288843ddecbe902d00176fad",
+      "failure": ""
+    }
+  ],
+  "failures": [],
+  "artifacts": {
+    "json": "<skill-root>/reports/output_execution_runs.json",
+    "markdown": "<skill-root>/reports/output_execution_runs.md"
+  }
+}

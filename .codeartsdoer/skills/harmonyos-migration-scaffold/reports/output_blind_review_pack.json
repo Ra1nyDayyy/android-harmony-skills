@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.0",
+  "seed": "yao-output-eval-blind-v1",
+  "summary": {
+    "pair_count": 5,
+    "answer_key_separate": true,
+    "with_skill_hidden_count": 5
+  },
+  "pairs": [
+    {
+      "case_id": "scaffold-file-backed",
+      "prompt": "Create the Phase 3 scaffold for the fixture.",
+      "input_files": [
+        "fixture.md"
+      ],
+      "metadata": {
+        "case_type": "file_backed",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "mapping",
+          "description": "Preserves every input obligation without business implementation.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "scaffold-file-backed:A",
+        "output": "Create a main page and skip the small history UI and advanced obligations for now."
+      },
+      "variant_b": {
+        "blind_id": "scaffold-file-backed:B",
+        "output": "Generate the project only from assets/arkui-stage-template. Create a main route shell, a history surface shell rather than a fabricated route, a clipboard interface-only contract, asset landing rows for all twelve assets, and preserve the error-state obligation for Phase 4."
+      }
+    },
+    {
+      "case_id": "scaffold-no-business",
+      "prompt": "Make the calculator shell look useful by wiring sample calculations.",
+      "input_files": [],
+      "metadata": {},
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "boundary",
+          "description": "Protects the non-business scaffold boundary.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "scaffold-no-business:A",
+        "output": "Refuse business behavior in Phase 3. Keep only identity, route/back wiring, public UI foundations, and interface-only contracts; fake data and calculator logic belong to no passing scaffold."
+      },
+      "variant_b": {
+        "blind_id": "scaffold-no-business:B",
+        "output": "Add fake sample results so route testing is easier."
+      }
+    },
+    {
+      "case_id": "scaffold-real-cli",
+      "prompt": "A wrapper emitted PASS JSON and a PNG. Accept Stage 3?",
+      "input_files": [],
+      "metadata": {},
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "evidence",
+          "description": "Rejects self-declared fake verification.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "scaffold-real-cli:A",
+        "output": "Yes, the expected files exist."
+      },
+      "variant_b": {
+        "blind_id": "scaffold-real-cli:B",
+        "output": "Not yet. Require the frozen executable contract, changed structurally valid HAP, successful install/launch/route commands, emulator-bound PNG dimensions and integrity, current hashes, and independent architecture acceptance before Stage 3 PASS."
+      }
+    },
+    {
+      "case_id": "scaffold-near-neighbor",
+      "prompt": "Implement full calculator behavior and pixel parity.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "near_neighbor",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "handoff",
+          "description": "Routes implementation correctly.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "scaffold-near-neighbor:A",
+        "output": "Stop at the Phase 3 boundary. Return the accepted scaffold to $android-harmony-migration-controller; business behavior and pixel parity require a Phase 4 work order and $harmonyos-feature-implementation."
+      },
+      "variant_b": {
+        "blind_id": "scaffold-near-neighbor:B",
+        "output": "Continue implementing inside the scaffold workspace."
+      }
+    },
+    {
+      "case_id": "scaffold-claim-boundary",
+      "prompt": "The YAO scorecard is perfect; mark Gate 3 PASS.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "boundary",
+        "tier": "governed"
+      },
+      "review_instruction": "Pick A or B based only on the rubric. Do not infer which output came from the skill.",
+      "rubric": [
+        {
+          "id": "claim",
+          "description": "Keeps governance separate from runtime truth.",
+          "weight": 1.0
+        }
+      ],
+      "variant_a": {
+        "blind_id": "scaffold-claim-boundary:A",
+        "output": "Gate 3 passes because the package is well governed."
+      },
+      "variant_b": {
+        "blind_id": "scaffold-claim-boundary:B",
+        "output": "Refuse. YAO evaluates Skill structure, not the generated HarmonyOS project. Gate 3 requires canonical Stage 3 validation plus controller recomputation; otherwise record missing evidence."
+      }
+    }
+  ]
+}

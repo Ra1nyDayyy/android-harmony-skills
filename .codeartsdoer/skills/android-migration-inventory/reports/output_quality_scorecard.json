@@ -1,0 +1,358 @@
+{
+  "ok": true,
+  "cases": "<skill-root>/evals/output/cases.jsonl",
+  "summary": {
+    "case_count": 5,
+    "file_backed_case_count": 1,
+    "near_neighbor_case_count": 1,
+    "boundary_case_count": 1,
+    "baseline_pass_rate": 0.0,
+    "with_skill_pass_rate": 100.0,
+    "delta": 100.0,
+    "regression_count": 0,
+    "gate_pass": true,
+    "failure_taxonomy": [],
+    "blind_pair_count": 5
+  },
+  "results": [
+    {
+      "id": "inventory-file-backed",
+      "prompt": "Close Phase 2 for the fixture.",
+      "input_files": [
+        "fixture.md"
+      ],
+      "metadata": {
+        "case_type": "file_backed",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "coverage",
+            "description": "Preserves uncovered obligations.",
+            "weight": 1.0,
+            "failure_type": "false_coverage",
+            "passed": false,
+            "missing": [
+              "BLOCKED",
+              "advanced-analysis.json",
+              "side-effect probes",
+              "runtime-tasks.json",
+              "cannot grant PAGE_PASS"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "coverage",
+            "description": "Preserves uncovered obligations.",
+            "weight": 1.0,
+            "failure_type": "false_coverage",
+            "passed": false,
+            "missing": [
+              "BLOCKED",
+              "advanced-analysis.json",
+              "side-effect probes",
+              "runtime-tasks.json",
+              "cannot grant PAGE_PASS"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "coverage",
+            "description": "Preserves uncovered obligations.",
+            "weight": 1.0,
+            "failure_type": "false_coverage",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "inventory-static-runtime",
+      "prompt": "How should one page be analyzed?",
+      "input_files": [],
+      "metadata": {},
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "two-lens",
+            "description": "Requires static and runtime correlation.",
+            "weight": 1.0,
+            "failure_type": "shallow_page_analysis",
+            "passed": false,
+            "missing": [
+              "Page, Component, Event, Transition, and State",
+              "file:line",
+              "Android CLI runtime evidence",
+              "deterministic page-gate"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "two-lens",
+            "description": "Requires static and runtime correlation.",
+            "weight": 1.0,
+            "failure_type": "shallow_page_analysis",
+            "passed": false,
+            "missing": [
+              "Page, Component, Event, Transition, and State",
+              "file:line",
+              "Android CLI runtime evidence",
+              "deterministic page-gate"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "two-lens",
+            "description": "Requires static and runtime correlation.",
+            "weight": 1.0,
+            "failure_type": "shallow_page_analysis",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "inventory-model-pass",
+      "prompt": "The analysis model says a small dialog is complete. Accept it?",
+      "input_files": [],
+      "metadata": {},
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "anti-self-pass",
+            "description": "Prevents model-authored pass.",
+            "weight": 1.0,
+            "failure_type": "model_self_approval",
+            "passed": false,
+            "missing": [
+              "may not grant PASS",
+              "dialog component",
+              "hash-bound evidence",
+              "evaluate_page_gates.py"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "anti-self-pass",
+            "description": "Prevents model-authored pass.",
+            "weight": 1.0,
+            "failure_type": "model_self_approval",
+            "passed": false,
+            "missing": [
+              "may not grant PASS",
+              "dialog component",
+              "hash-bound evidence",
+              "evaluate_page_gates.py"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "anti-self-pass",
+            "description": "Prevents model-authored pass.",
+            "weight": 1.0,
+            "failure_type": "model_self_approval",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "inventory-near-neighbor",
+      "prompt": "Implement the discovered Android screens in ArkUI now.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "near_neighbor",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "boundary",
+            "description": "Avoids implementation scope.",
+            "weight": 1.0,
+            "failure_type": "scope_leak",
+            "passed": false,
+            "missing": [
+              "Phase 2 boundary",
+              "Do not implement",
+              "$android-harmony-migration-controller"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "boundary",
+            "description": "Avoids implementation scope.",
+            "weight": 1.0,
+            "failure_type": "scope_leak",
+            "passed": false,
+            "missing": [
+              "Phase 2 boundary",
+              "Do not implement",
+              "$android-harmony-migration-controller"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "boundary",
+            "description": "Avoids implementation scope.",
+            "weight": 1.0,
+            "failure_type": "scope_leak",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "inventory-unreachable",
+      "prompt": "A special account state cannot be reached automatically. Mark the page complete.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "boundary",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "missing-evidence",
+            "description": "Fails closed on unreachable state.",
+            "weight": 1.0,
+            "failure_type": "silent_omission",
+            "passed": false,
+            "missing": [
+              "Do not mark it complete",
+              "blocking runtime task",
+              "missing evidence",
+              "coverage denominator"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "missing-evidence",
+            "description": "Fails closed on unreachable state.",
+            "weight": 1.0,
+            "failure_type": "silent_omission",
+            "passed": false,
+            "missing": [
+              "Do not mark it complete",
+              "blocking runtime task",
+              "missing evidence",
+              "coverage denominator"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "missing-evidence",
+            "description": "Fails closed on unreachable state.",
+            "weight": 1.0,
+            "failure_type": "silent_omission",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    }
+  ],
+  "failures": [],
+  "blind_review": {
+    "pack": "<skill-root>/reports/output_blind_review_pack.json",
+    "answer_key": "<skill-root>/reports/output_blind_answer_key.json",
+    "pair_count": 5
+  },
+  "artifacts": {
+    "json": "<skill-root>/reports/output_quality_scorecard.json",
+    "markdown": "<skill-root>/reports/output_quality_scorecard.md",
+    "blind_review_pack_json": "<skill-root>/reports/output_blind_review_pack.json",
+    "blind_review_pack_md": "<skill-root>/reports/output_blind_review_pack.md",
+    "blind_answer_key_json": "<skill-root>/reports/output_blind_answer_key.json"
+  }
+}

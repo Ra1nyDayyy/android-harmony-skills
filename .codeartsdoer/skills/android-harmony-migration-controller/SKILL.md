@@ -7,11 +7,31 @@ description: Coordinate or continuously execute an Android-to-HarmonyOS migratio
 
 Create one auditable migration run and keep it governed. This skill is the project controller; it does not perform specialist analysis or write application code.
 
+Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Governance reports assess this Skill, not an app migration; only canonical run gates may declare a phase complete.
+
 ## Default: run Phase 1–4 continuously
 
 Read [references/continuous-run.md](references/continuous-run.md) when the user asks for a complete migration or the whole workflow. Treat continuous execution as the default: invoke the three specialist Skills and proceed from one passing gate to the next in the same task. Do not wait for the user to say “继续”, and do not ask for a HarmonyOS template path; Phase 3 uses its bundled `assets/arkui-stage-template`.
 
 Pause only for a real external blocker listed in the continuous-run contract. A recoverable build failure, incomplete mapping, parity defect, or failed gate must enter the governed repair loop automatically.
+
+## Actual team execution is mandatory
+
+Frozen actor IDs are assignments, not evidence that workers ran. For every Phase 2, 3, and 4 role, dispatch a distinct CodeArts worker task before that role acts. Never let one worker impersonate several roles by changing an ID string, and never have the controller perform specialist work when delegation is unavailable.
+
+After the assigned worker finishes, record its real platform task ID and hashes of the artifacts it produced or independently reviewed:
+
+```bash
+python3 scripts/record_team_execution.py \
+  --run-dir <migration-run> \
+  --work-order <run-relative-work-order.json> \
+  --role-key <frozen-role-key> \
+  --actor-id <frozen-actor-id> \
+  --platform-task-id <real-CodeArts-task-id> \
+  --artifact <run-relative-artifact-file>
+```
+
+Repeat this for every frozen role and every Phase 4 feature-role assignment. A fabricated, reused, missing, or hash-stale worker receipt is blocking. Phase 3 issuance verifies all Phase 2 receipts; Phase 4 issuance verifies all Phase 3 receipts; the final audit verifies Phase 2-4 controller roles and all feature roles.
 
 ## Boundaries
 
@@ -148,5 +168,13 @@ python3 scripts/validate_gate.py --run-dir <migration-run> --phase 4 --write
 Gate 4 first revalidates Phases 1–3. It then recomputes the Phase 4 input archive, one final HBUILD per required H4ENV, one sealed HEVD and one accepted HREV per parity row, both rework ledgers, all evidence and artifact hashes, and the complete Phase 4 closure manifest. Any mismatch or open ticket keeps the gate closed.
 
 ## Current executable boundary
+
+Do not create alternative reports such as `phase3-gate-report.json`, `phase2-final-report.json`, or a prose `PASS_WITH_GAPS`. Only the canonical script-authored reports have authority. After Gate 4 passes and all worker receipts are recorded, run:
+
+```bash
+python3 scripts/audit_delivery.py --run-dir <migration-run> --through-phase 4
+```
+
+The one-shot workflow is complete only when this command exits zero and prints `verdict: PASS`. On failure, continue the governed repair loop or report the real blocker; never reinterpret it as non-blocking.
 
 This bundle provides a complete specialist workflow only through Phase 4. Controller records for later phases do not supply a system-regression or delivery specialist Skill. Do not describe a Gate 5/6 result as executable end-to-end capability until those specialist Skills and real-device tests exist.

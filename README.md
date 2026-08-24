@@ -26,6 +26,12 @@ Gate 通过后直接进入下一阶段，不要等待我回复继续；可修复
 
 Phase 3 已内置完整 `assets/arkui-stage-template`，不需要另外填写模板路径。
 
+## Skill OS 治理层
+
+四个 Skill 均按 YAO Skill OS 2.0 的 Governed 模式维护。每个目录包含 `manifest.json`、`agents/interface.yaml`、`reports/skill-ir.json`、触发/输出评测、权限契约、信任报告和 Review Studio 摘要。它们用于约束触发边界、角色权限、回滚范围和完成声明，不替代迁移运行本身的 APK、CLI、模拟器、截图、Inspector、断言或阶段 Gate 证据。
+
+评测中的输出文本是 `file-backed fixture`，只能证明已提交规约能拦截对应回归；真实模型执行、盲审结论、CodeArts 身份认证和真机迁移效果若未采集，统一保留为 `missing evidence`，不得据此宣布应用迁移成功。
+
 ## 关键约束
 
 - Phase 2 的页面、组件、事件和跳转必须同时经过静态扫描与运行证据绑定。确定性门禁计算覆盖率，模型不能自行宣布 `PASS`。
@@ -45,5 +51,18 @@ Phase 3 已内置完整 `assets/arkui-stage-template`，不需要另外填写模
 git clone https://github.com/Ra1nyDayyy/android-harmony-skills.git
 cp -r android-harmony-skills/.codeartsdoer/skills/* /path/to/project/.codeartsdoer/skills/
 ```
+
+## 强制分工与最终审计
+
+工单里的角色 ID 只代表分配，不能证明多个 Agent 真实执行。Phase 2、Phase 3、Phase 4 以及每个 Phase 4 功能工单的角色都必须对应独立的 CodeArts 任务，并通过 `record_team_execution.py`登记平台任务 ID 和产物哈希。阶段2回执不完整时不能签发阶段3，阶段3回执不完整时不能签发阶段4。
+
+四阶段完成后必须运行：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/audit_delivery.py \
+  --run-dir <migration-run> --through-phase 4
+```
+
+只有命令退出码为0且输出 `verdict: PASS` 才能声明交付完成。`PASS_WITH_GAPS`、`PARTIAL`、`PENDING`、占位业务代码、替代门禁报告或“后续 Agent 再注入”都会被判定为失败。
 
 仓库当前提供可执行的 Phase 1–4 专项流程。后续全应用回归和交付阶段尚缺独立执行 Skill 与真实设备集成测试，因此不能把现有代码描述成完整的 Phase 1–6 自动闭环。

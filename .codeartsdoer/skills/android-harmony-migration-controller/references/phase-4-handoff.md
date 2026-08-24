@@ -9,6 +9,8 @@ The work order freezes four actor IDs:
 - verification executor;
 - parity acceptance agent.
 
+The four governance assignments and every feature work order's owner/UI/business-data/native assignments are distinct real CodeArts worker tasks. Before delivery, record a unique platform task ID and hash-bound role-owned artifact for every assignment. The final audit rejects a role-name-only team, task-ID reuse, missing receipts, and self-acceptance.
+
 They are mutually distinct and do not reuse a Phase 1–3 actor. The implementation lead owns the Phase 4 task row. Only the verification executor may seal HBUILD or HEVD packages, and only the parity acceptance agent may accept parity or open and close Phase 4 rework.
 
 ## Frozen inputs

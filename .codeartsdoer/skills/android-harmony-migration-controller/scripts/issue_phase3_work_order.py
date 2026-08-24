@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from _team_execution import validate_order_receipts
+
 
 ACTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
 STAGE3_ROLE_KEYS = (
@@ -233,6 +235,22 @@ def main() -> int:
         ledger_fields, ledger_rows = load_csv(ledger_path)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
+
+    active_phase2 = [
+        row for row in registry_rows
+        if row.get("phase") == "2" and row.get("status", "").upper() != "SUPERSEDED"
+    ]
+    if len(active_phase2) != 1:
+        parser.error("Exactly one active Phase 2 work order is required")
+    try:
+        phase2_order_path = safe_run_file(
+            run_dir, active_phase2[0].get("relative_path", ""), "Phase 2 work order"
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    receipt_errors = validate_order_receipts(run_dir, phase2_order_path)
+    if receipt_errors:
+        parser.error("Phase 2 worker dispatch is incomplete: " + "; ".join(receipt_errors[:8]))
 
     phase3_ledger = [row for row in ledger_rows if row.get("phase") == "3"]
     if len(phase3_ledger) != 1:

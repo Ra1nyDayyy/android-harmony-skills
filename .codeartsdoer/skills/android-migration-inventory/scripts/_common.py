@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+SCRIPT_INTERFACE = "internal-module"
+SCRIPT_INTERFACE_REASON = "Shared deterministic library imported by Phase 2 inventory CLIs."
+
 import csv
 import binascii
 import hashlib

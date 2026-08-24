@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+SCRIPT_INTERFACE = "internal-module"
+SCRIPT_INTERFACE_REASON = "Read-only audit library imported by the Phase 4 validator."
+
 import hashlib
 import json
 import re

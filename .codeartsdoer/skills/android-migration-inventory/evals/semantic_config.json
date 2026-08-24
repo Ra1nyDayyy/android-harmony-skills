@@ -1,0 +1,6 @@
+{
+  "optimizer_hints": {"capability":"Build an Android semantic inventory for Phase 2","inputs":["Android source","APK","runtime"],"trigger_actions":["discover pages and behavior","run Phase 2","probe dynamic risks"],"exclusions":["HarmonyOS implementation"],"artifacts":["catalogs","runtime evidence"]},
+  "fallback_positive_concepts": ["inventory_job"],
+  "positive_concepts": {"inventory_job":{"weight":0.8,"phrases":["semantic inventory","所有页面、控件、状态、功能和跳转","执行阶段2","WebView、反射、网络、数据库"]}},
+  "negative_concepts": {}
+}

@@ -1,0 +1,1 @@
+{"date":"2026-08-24","change":"YAO Governed refactor","trigger":{"cases":9,"precision":1.0,"recall":1.0},"output":{"cases":5,"baseline_pass_rate":0.0,"with_skill_pass_rate":100.0,"regressions":0},"limitations":["public fixtures only","provider execution missing","blind reviewer decisions pending"]}

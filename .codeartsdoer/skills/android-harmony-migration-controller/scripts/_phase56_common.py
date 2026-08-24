@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+SCRIPT_INTERFACE = "internal-module"
+SCRIPT_INTERFACE_REASON = "Imported by Phase 5/6 controller work-order scripts; not a standalone CLI."
+
 import csv
 import hashlib
 import json

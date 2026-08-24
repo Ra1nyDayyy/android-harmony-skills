@@ -1,6 +1,6 @@
 interface:
-  display_name: "安卓迁移总管"
-  short_description: "一次指令连续执行安卓盘点、鸿蒙基座、功能迁移与四阶段门禁"
-  default_prompt: "使用 $android-harmony-migration-controller 对当前 Android 项目连续执行 Phase 1–4。自动发现可确定的项目、APK 和环境信息，Phase 3 使用 Skill 内置 ArkUI 模板；每个 Gate 通过后直接进入下一阶段，不要等待我回复继续。遇到可修复问题自动返工和复验，只有外部凭据、工具链或模拟器确实缺失时才暂停并一次列全阻塞项。"
+  display_name: "安卓到鸿蒙迁移总控"
+  short_description: "一次指令执行四阶段迁移、真实多Agent分工与确定性门禁"
+  default_prompt: "使用 $android-harmony-migration-controller 对当前 Android 项目连续执行 Phase 1-4。每个冻结角色必须分配给独立的真实 CodeArts 工作任务并登记平台任务ID和产物哈希；每个 Gate 仅接受规范脚本的精确 PASS，失败后自动返工复验；最终必须运行 audit_delivery.py 且退出码为0，禁止 PASS_WITH_GAPS、占位业务和自行重设计。"
 policy:
   allow_implicit_invocation: true

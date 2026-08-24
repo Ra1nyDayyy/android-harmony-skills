@@ -21,7 +21,7 @@ CONTROLLER = BUNDLE / "android-harmony-migration-controller"
 STAGE3_TESTS = BUNDLE / "harmonyos-migration-scaffold" / "scripts" / "tests"
 sys.path.insert(0, str(STAGE3_TESTS))
 
-from phase2_fixture import build_closed_phase2, write_csv  # noqa: E402
+from phase2_fixture import build_closed_phase2, record_team_receipt, write_csv  # noqa: E402
 from test_stage3_workflow import (  # noqa: E402
     create_project_and_registries,
     freeze_environment,
@@ -81,6 +81,16 @@ def close_stage3(root: Path) -> Path:
         sys.executable, str(CONTROLLER / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "3", "--write",
     )
+    phase3_receipts = [
+        ("architecture_lead_id", "architecture-lead-1", "TASK-P3-ARCH", workspace / "architecture-map.csv"),
+        ("toolchain_agent_id", "toolchain-agent-1", "TASK-P3-TOOL", workspace / "verification" / "HVER-001" / "COMMITTED"),
+        ("navigation_agent_id", "navigation-agent-1", "TASK-P3-NAV", workspace / "route-registry.csv"),
+        ("public_ui_agent_id", "public-ui-agent-1", "TASK-P3-UI", workspace / "public-ui-registry.csv"),
+        ("capability_contract_agent_id", "capability-agent-1", "TASK-P3-CAP", workspace / "capability-contracts.csv"),
+        ("architecture_acceptance_agent_id", "architecture-acceptance-1", "TASK-P3-ACCEPT", workspace / "stage-03-gate-report.json"),
+    ]
+    for role_key, actor_id, task_id, artifact in phase3_receipts:
+        record_team_receipt(run_dir, order, role_key, actor_id, task_id, artifact)
     return run_dir
 
 
@@ -418,6 +428,27 @@ class Stage4WorkflowTest(unittest.TestCase):
             )
             self.assertEqual(json.loads(gate4.stdout)["verdict"], "PASS")
             self.assertTrue((workspace / "CLOSED").is_file())
+
+            phase4_receipts = [
+                (phase4_order, "implementation_lead_id", "implementation-lead-4", "TASK-P4-LEAD", workspace / "phase-manifest.json"),
+                (phase4_order, "visual_asset_agent_id", "visual-asset-agent-4", "TASK-P4-ASSET", workspace / "asset-migration.csv"),
+                (phase4_order, "verification_executor_id", "verification-executor-4", "TASK-P4-VERIFY", workspace / "evidence-index.csv"),
+                (phase4_order, "parity_acceptance_agent_id", "parity-acceptance-4", "TASK-P4-ACCEPT", workspace / "stage-04-gate-report.json"),
+            ]
+            feature_order = workspace / "feature-work-orders" / f"{feature_order_id}.json"
+            phase4_receipts.extend([
+                (feature_order, "feature_owner_id", "feature-owner-4", "TASK-P4-FEATURE", workspace / "implementation-ledger.csv"),
+                (feature_order, "ui_agent_id", "ui-agent-4", "TASK-P4-UI", workspace / "visual-elements.csv"),
+                (feature_order, "business_data_agent_id", "business-data-agent-4", "TASK-P4-BIZ", workspace / "implementation-ledger.csv"),
+                (feature_order, "native_capability_agent_id", "native-capability-agent-4", "TASK-P4-NATIVE", workspace / "capability-implementation.csv"),
+            ])
+            for order_path, role_key, actor_id, task_id, artifact in phase4_receipts:
+                record_team_receipt(run_dir, order_path, role_key, actor_id, task_id, artifact)
+            audit = run_cmd(
+                sys.executable, str(CONTROLLER / "scripts" / "audit_delivery.py"),
+                "--run-dir", str(run_dir), "--through-phase", "4",
+            )
+            self.assertEqual(json.loads(audit.stdout)["verdict"], "PASS")
 
             source.chmod(0o644)
             source.write_text(source.read_text(encoding="utf-8") + "// tampered\n", encoding="utf-8")

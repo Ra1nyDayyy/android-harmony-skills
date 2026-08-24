@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from _team_execution import validate_order_receipts
+
 
 ACTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
 STAGE4_ROLE_KEYS = (
@@ -221,6 +223,10 @@ def main() -> int:
         phase3_order = load_json(phase3_order_path)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
+
+    receipt_errors = validate_order_receipts(run_dir, phase3_order_path)
+    if receipt_errors:
+        parser.error("Phase 3 worker dispatch is incomplete: " + "; ".join(receipt_errors[:8]))
     prior_actors = ownership_actor_ids(controller_ownership)
     phase3_ownership = phase3_order.get("ownership") if isinstance(phase3_order.get("ownership"), dict) else {}
     prior_actors.update(ownership_actor_ids(phase3_ownership))

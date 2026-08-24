@@ -1,0 +1,23 @@
+interface:
+  display_name: "HarmonyOS Migration Scaffold"
+  short_description: "Build the verified non-business ArkUI scaffold"
+  default_prompt: "Use $harmonyos-migration-scaffold after Gate 2 to create and close the constrained Phase 3 project foundation."
+compatibility:
+  canonical_format: "agent-skills"
+  adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]
+  activation:
+    mode: "manual"
+    paths: []
+  execution:
+    context: "inline"
+    shell: "bash"
+  trust:
+    source_tier: "local"
+    remote_inline_execution: "forbid"
+    remote_metadata_policy: "allow-metadata-only"
+  degradation:
+    openai: "native-skill-metadata"
+    claude: "neutral-source-plus-adapter"
+    vscode: "agent-skills-source-with-workspace-trust"
+    agent-skills: "neutral-source"
+    generic: "neutral-source"

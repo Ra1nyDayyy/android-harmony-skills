@@ -1,0 +1,6 @@
+{
+  "optimizer_hints": {"capability":"Govern an Android-to-HarmonyOS migration through Phases 1-4","inputs":["Android project","migration run"],"trigger_actions":["run Phases 1-4","govern gates","audit delivery"],"exclusions":["specialist-only work","explanation"],"artifacts":["gate reports","work orders"]},
+  "fallback_positive_concepts": ["controller_job"],
+  "positive_concepts": {"controller_job":{"weight":0.8,"phrases":["Android-to-HarmonyOS migration","Phases 1–4","阶段1到4","门禁并把失败项送回修复","阶段1-4交付"]}},
+  "negative_concepts": {}
+}

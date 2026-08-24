@@ -1,0 +1,6 @@
+{
+  "optimizer_hints": {"capability":"Implement and verify HarmonyOS Phase 4 parity","inputs":["Android inventory","accepted scaffold"],"trigger_actions":["implement parity","repair parity","verify every state"],"exclusions":["redesign","discovery","scaffold"],"artifacts":["HBUILD","HEVD","HREV"]},
+  "fallback_positive_concepts": ["implementation_job"],
+  "positive_concepts": {"implementation_job":{"weight":0.8,"phrases":["real HarmonyOS NEXT business features","ArkUI 功能和视觉一致性","一致性问题","逐状态验证 UI"]}},
+  "negative_concepts": {}
+}

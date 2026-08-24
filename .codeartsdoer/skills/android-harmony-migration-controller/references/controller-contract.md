@@ -20,6 +20,7 @@ The Phase 4 implementation lead owns implementation coordination. The visual-ass
 - `controller/gate-report.json`: latest machine gate result.
 - `controller/work-orders/`: immutable, controller-issued phase assignments bound to the scope digest.
 - `controller/evidence-anchor-registry.csv`: controller-owned digest anchor for every sealed Phase 2 Evidence-ID.
+- `controller/team-execution-registry.csv` and `controller/team-execution-receipts/`: immutable bindings from every frozen role to a distinct real CodeArts task ID and hash-bound artifacts.
 - `controller/work-orders/<Phase-3-Work-Order-ID>.phase-02-gate-report.json`: immutable Gate 2 snapshot used by Phase 3.
 - `controller/work-orders/<Phase-4-Work-Order-ID>.phase-03-gate-report.json`: immutable Gate 3 snapshot used by Phase 4.
 
@@ -44,3 +45,5 @@ The Phase 4 implementation lead owns implementation coordination. The visual-ass
 ## Status values
 
 Use only `NOT_STARTED`, `IN_PROGRESS`, `PENDING_CONFIRMATION`, `REWORK`, `PASS`, or `FAIL` in controller records.
+
+`PASS_WITH_GAPS`, `PARTIAL`, and any locally invented synonym are prohibited gate outcomes. A role name or actor ID without a valid team-execution receipt proves assignment only, not execution.

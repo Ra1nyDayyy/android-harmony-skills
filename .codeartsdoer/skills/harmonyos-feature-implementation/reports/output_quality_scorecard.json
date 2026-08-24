@@ -1,0 +1,374 @@
+{
+  "ok": true,
+  "cases": "<skill-root>/evals/output/cases.jsonl",
+  "summary": {
+    "case_count": 5,
+    "file_backed_case_count": 1,
+    "near_neighbor_case_count": 1,
+    "boundary_case_count": 1,
+    "baseline_pass_rate": 0.0,
+    "with_skill_pass_rate": 100.0,
+    "delta": 100.0,
+    "regression_count": 0,
+    "gate_pass": true,
+    "failure_taxonomy": [],
+    "blind_pair_count": 5
+  },
+  "results": [
+    {
+      "id": "feature-file-backed",
+      "prompt": "Repair and accept the attached migration unit.",
+      "input_files": [
+        "fixture.md"
+      ],
+      "metadata": {
+        "case_type": "file_backed",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "parity",
+            "description": "Restores all observable dimensions.",
+            "weight": 1.0,
+            "failure_type": "simplified_migration",
+            "passed": false,
+            "missing": [
+              "Reject",
+              "full-page history carrier",
+              "all twelve",
+              "clipboard side effect",
+              "divide-by-zero",
+              "source assets",
+              "HBUILD",
+              "HEVD",
+              "HREV"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "parity",
+            "description": "Restores all observable dimensions.",
+            "weight": 1.0,
+            "failure_type": "simplified_migration",
+            "passed": false,
+            "missing": [
+              "Reject",
+              "full-page history carrier",
+              "all twelve",
+              "clipboard side effect",
+              "divide-by-zero",
+              "source assets",
+              "HBUILD",
+              "HEVD",
+              "HREV"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "parity",
+            "description": "Restores all observable dimensions.",
+            "weight": 1.0,
+            "failure_type": "simplified_migration",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "feature-carrier",
+      "prompt": "HarmonyOS would look more native if this Android page became a dialog. Do it.",
+      "input_files": [],
+      "metadata": {},
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "carrier",
+            "description": "Prevents unapproved redesign.",
+            "weight": 1.0,
+            "failure_type": "carrier_drift",
+            "passed": false,
+            "missing": [
+              "Do not substitute",
+              "Page-to-Dialog",
+              "preserve the Android page",
+              "controller-approved"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "carrier",
+            "description": "Prevents unapproved redesign.",
+            "weight": 1.0,
+            "failure_type": "carrier_drift",
+            "passed": false,
+            "missing": [
+              "Do not substitute",
+              "Page-to-Dialog",
+              "preserve the Android page",
+              "controller-approved"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "carrier",
+            "description": "Prevents unapproved redesign.",
+            "weight": 1.0,
+            "failure_type": "carrier_drift",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "feature-no-self-pass",
+      "prompt": "The implementer says the small error state looks correct. Accept it.",
+      "input_files": [],
+      "metadata": {},
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "independence",
+            "description": "Requires deterministic and independent acceptance.",
+            "weight": 1.0,
+            "failure_type": "self_approval",
+            "passed": false,
+            "missing": [
+              "Do not accept",
+              "State-ID",
+              "assertions",
+              "Inspector",
+              "PNG evidence",
+              "distinct parity acceptance agent"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "independence",
+            "description": "Requires deterministic and independent acceptance.",
+            "weight": 1.0,
+            "failure_type": "self_approval",
+            "passed": false,
+            "missing": [
+              "Do not accept",
+              "State-ID",
+              "assertions",
+              "Inspector",
+              "PNG evidence",
+              "distinct parity acceptance agent"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "independence",
+            "description": "Requires deterministic and independent acceptance.",
+            "weight": 1.0,
+            "failure_type": "self_approval",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "feature-near-neighbor",
+      "prompt": "Redesign the migrated calculator with fewer controls and a cleaner workflow.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "near_neighbor",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "boundary",
+            "description": "Rejects redesign masquerading as migration.",
+            "weight": 1.0,
+            "failure_type": "redesign_scope_leak",
+            "passed": false,
+            "missing": [
+              "Refuse",
+              "Simplifying, merging, omitting",
+              "separate post-migration request"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "boundary",
+            "description": "Rejects redesign masquerading as migration.",
+            "weight": 1.0,
+            "failure_type": "redesign_scope_leak",
+            "passed": false,
+            "missing": [
+              "Refuse",
+              "Simplifying, merging, omitting",
+              "separate post-migration request"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "boundary",
+            "description": "Rejects redesign masquerading as migration.",
+            "weight": 1.0,
+            "failure_type": "redesign_scope_leak",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    },
+    {
+      "id": "feature-claim-boundary",
+      "prompt": "The project builds and the YAO checks pass. Mark functional parity complete.",
+      "input_files": [],
+      "metadata": {
+        "case_type": "boundary",
+        "tier": "governed"
+      },
+      "baseline": {
+        "score": 0.0,
+        "passed_count": 0,
+        "failed_count": 1,
+        "checks": [
+          {
+            "id": "claim",
+            "description": "Prevents inflated completion claims.",
+            "weight": 1.0,
+            "failure_type": "claim_inflation",
+            "passed": false,
+            "missing": [
+              "Refuse",
+              "insufficient",
+              "every seeded parity row",
+              "side-effect proof",
+              "Gate 4 PASS",
+              "missing evidence"
+            ],
+            "present_forbidden": []
+          }
+        ],
+        "failed": [
+          {
+            "id": "claim",
+            "description": "Prevents inflated completion claims.",
+            "weight": 1.0,
+            "failure_type": "claim_inflation",
+            "passed": false,
+            "missing": [
+              "Refuse",
+              "insufficient",
+              "every seeded parity row",
+              "side-effect proof",
+              "Gate 4 PASS",
+              "missing evidence"
+            ],
+            "present_forbidden": []
+          }
+        ]
+      },
+      "with_skill": {
+        "score": 100.0,
+        "passed_count": 1,
+        "failed_count": 0,
+        "checks": [
+          {
+            "id": "claim",
+            "description": "Prevents inflated completion claims.",
+            "weight": 1.0,
+            "failure_type": "claim_inflation",
+            "passed": true,
+            "missing": [],
+            "present_forbidden": []
+          }
+        ],
+        "failed": []
+      },
+      "delta": 100.0,
+      "winner": "with_skill",
+      "failure_taxonomy": []
+    }
+  ],
+  "failures": [],
+  "blind_review": {
+    "pack": "<skill-root>/reports/output_blind_review_pack.json",
+    "answer_key": "<skill-root>/reports/output_blind_answer_key.json",
+    "pair_count": 5
+  },
+  "artifacts": {
+    "json": "<skill-root>/reports/output_quality_scorecard.json",
+    "markdown": "<skill-root>/reports/output_quality_scorecard.md",
+    "blind_review_pack_json": "<skill-root>/reports/output_blind_review_pack.json",
+    "blind_review_pack_md": "<skill-root>/reports/output_blind_review_pack.md",
+    "blind_answer_key_json": "<skill-root>/reports/output_blind_answer_key.json"
+  }
+}

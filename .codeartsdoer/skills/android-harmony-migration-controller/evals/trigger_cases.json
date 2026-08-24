@@ -1,0 +1,18 @@
+{
+  "recommended_threshold": 0.33,
+  "should_trigger": [
+    {"text": "把这个 Android 项目一次性迁移到鸿蒙，连续执行阶段1到4。", "family": "full_migration"},
+    {"text": "继续这个迁移任务，检查门禁并把失败项送回修复。", "family": "migration_governance"},
+    {"text": "审计这份阶段1-4交付，禁止模型自己宣布通过。", "family": "delivery_audit"}
+  ],
+  "should_not_trigger": [
+    {"text": "只分析这个 Android 页面有哪些控件和跳转。", "family": "phase2_only"},
+    {"text": "直接实现这个 ArkUI 计算器页面。", "family": "phase4_only"},
+    {"text": "解释 Android 和 HarmonyOS 的区别，不执行迁移。", "family": "explain_only"}
+  ],
+  "near_neighbor": [
+    {"text": "我只想生成一个可运行的鸿蒙空项目，不做业务迁移。", "family": "phase3_only"},
+    {"text": "修复一个已经存在的鸿蒙应用 bug，不涉及 Android 基线。", "family": "harmony_bugfix"},
+    {"text": "迁移已经结束，只需要准备应用商店发布材料。", "family": "post_phase4_delivery"}
+  ]
+}

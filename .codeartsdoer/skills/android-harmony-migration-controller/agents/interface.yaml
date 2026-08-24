@@ -1,0 +1,23 @@
+interface:
+  display_name: "Android-Harmony Migration Controller"
+  short_description: "Govern a complete Android-to-HarmonyOS migration"
+  default_prompt: "Use $android-harmony-migration-controller to run Phases 1-4 continuously and stop only on a canonical blocking gate."
+compatibility:
+  canonical_format: "agent-skills"
+  adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]
+  activation:
+    mode: "manual"
+    paths: []
+  execution:
+    context: "inline"
+    shell: "bash"
+  trust:
+    source_tier: "local"
+    remote_inline_execution: "forbid"
+    remote_metadata_policy: "allow-metadata-only"
+  degradation:
+    openai: "native-skill-metadata"
+    claude: "neutral-source-plus-adapter"
+    vscode: "agent-skills-source-with-workspace-trust"
+    agent-skills: "neutral-source"
+    generic: "neutral-source"

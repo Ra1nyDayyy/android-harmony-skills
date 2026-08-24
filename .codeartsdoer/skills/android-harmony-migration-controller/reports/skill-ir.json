@@ -1,0 +1,137 @@
+{
+  "schema_version": "2.0.0",
+  "name": "android-harmony-migration-controller",
+  "title": "Android-Harmony Migration Controller",
+  "job_to_be_done": "Coordinate or continuously execute an Android-to-HarmonyOS migration through Phases 1–4 by freezing scope and baselines, invoking specialist Skills, issuing work orders, routing rework, and enforcing gates. Use for one-shot full migration requests as well as migration governance; do not directly inspect Android runtime UI or implement HarmonyOS features inside the controller role.",
+  "trigger_surface": {
+    "description": "Coordinate or continuously execute an Android-to-HarmonyOS migration through Phases 1–4 by freezing scope and baselines, invoking specialist Skills, issuing work orders, routing rework, and enforcing gates. Use for one-shot full migration requests as well as migration governance; do not directly inspect Android runtime UI or implement HarmonyOS features inside the controller role.",
+    "should_trigger": [
+      "把这个 Android 项目一次性迁移到鸿蒙，连续执行阶段1到4。",
+      "继续这个迁移任务，检查门禁并把失败项送回修复。",
+      "审计这份阶段1-4交付，禁止模型自己宣布通过。"
+    ],
+    "should_not_trigger": [
+      "只分析这个 Android 页面有哪些控件和跳转。",
+      "直接实现这个 ArkUI 计算器页面。",
+      "解释 Android 和 HarmonyOS 的区别，不执行迁移。"
+    ],
+    "edge_cases": [
+      "我只想生成一个可运行的鸿蒙空项目，不做业务迁移。",
+      "修复一个已经存在的鸿蒙应用 bug，不涉及 Android 基线。",
+      "迁移已经结束，只需要准备应用商店发布材料。"
+    ]
+  },
+  "workflow": {
+    "steps": [
+      "Freeze Phase 1 scope, clean source commit, APK hash, environments, actors, and exclusions.",
+      "Open Gate 1 and issue immutable Phase 2 work only after PASS.",
+      "Dispatch distinct specialist workers, record authenticated execution receipts, and anchor Phase 2 evidence.",
+      "Recompute each canonical phase gate and route failures through the phase lead without skipping forward.",
+      "After Gate 4, run the delivery audit and return only exact PASS or an evidence-backed BLOCKED result."
+    ],
+    "decision_points": [
+      "Full migration requests run Phase 1-4 continuously; specialist-only requests route to the owning skill.",
+      "Any failed or stale gate, receipt, hash, evidence anchor, or closure record blocks the next work order.",
+      "Recoverable defects enter governed rework; missing external authority or environment readiness becomes BLOCKED."
+    ],
+    "failure_modes": [
+      "A model or prose report declares PASS without the canonical gate script.",
+      "One worker impersonates several frozen roles using different actor strings.",
+      "A later phase opens from incomplete, stale, overwritten, or unanchored evidence.",
+      "Governance reports are misrepresented as proof that the app migrated successfully."
+    ]
+  },
+  "resources": {
+    "references": [
+      "references\\continuous-run.md",
+      "references\\controller-contract.md",
+      "references\\governed-execution-contract.md",
+      "references\\phase-2-handoff.md",
+      "references\\phase-3-handoff.md",
+      "references\\phase-4-handoff.md",
+      "references\\phase-gates.md"
+    ],
+    "scripts": [
+      "scripts\\_phase56_common.py",
+      "scripts\\_team_execution.py",
+      "scripts\\anchor_phase2_evidence.py",
+      "scripts\\audit_delivery.py",
+      "scripts\\init_migration.py",
+      "scripts\\issue_phase2_work_order.py",
+      "scripts\\issue_phase3_work_order.py",
+      "scripts\\issue_phase4_work_order.py",
+      "scripts\\issue_phase5_work_order.py",
+      "scripts\\issue_phase6_work_order.py",
+      "scripts\\record_team_execution.py",
+      "scripts\\tests\\test_team_execution.py",
+      "scripts\\validate_gate.py"
+    ],
+    "assets": [
+      "assets\\decision-log.template.csv",
+      "assets\\evidence-anchor-registry.template.csv",
+      "assets\\gate-report.template.json",
+      "assets\\phase4-attempt-ledger.template.csv",
+      "assets\\rework-log.template.csv",
+      "assets\\scope.template.json",
+      "assets\\task-ledger.template.csv",
+      "assets\\team-execution-registry.template.csv",
+      "assets\\work-order-registry.template.csv"
+    ],
+    "reports": [
+      "reports/output-risk-profile.json",
+      "reports/output-risk-profile.md",
+      "reports/artifact-design-profile.json",
+      "reports/artifact-design-profile.md",
+      "reports/output_quality_scorecard.json",
+      "reports/output_quality_scorecard.md",
+      "reports/output_execution_runs.json",
+      "reports/output_execution_runs.md",
+      "reports/output_blind_review_pack.json",
+      "reports/output_blind_review_pack.md",
+      "reports/output_blind_answer_key.json",
+      "reports/conformance_matrix.json",
+      "reports/conformance_matrix.md",
+      "reports/security_trust_report.json",
+      "reports/security_trust_report.md"
+    ]
+  },
+  "eval_plan": {
+    "trigger": [
+      "evals\\history\\2026-08-24-yao-refactor.json",
+      "evals\\output\\cases.jsonl",
+      "evals\\output\\fixture.md",
+      "evals\\semantic_config.json",
+      "evals\\trigger_cases.json"
+    ],
+    "output": [
+      "evals\\output\\cases.jsonl",
+      "evals\\output\\fixture.md"
+    ],
+    "adversarial": [],
+    "baseline": "without_skill"
+  },
+  "risk": {
+    "output_risk": "medium",
+    "execution_risk": "medium",
+    "trust_boundary": "external"
+  },
+  "governance": {
+    "owner": "Android-Harmony Migration Maintainers",
+    "maturity": "governed",
+    "review_cadence": "per-release",
+    "review_due": "2026-11-24"
+  },
+  "targets": [
+    "openai",
+    "claude",
+    "agent-skills",
+    "vscode",
+    "generic"
+  ],
+  "source_files": [
+    "SKILL.md",
+    "manifest.json",
+    "agents/interface.yaml",
+    "reports/output-risk-profile.json"
+  ]
+}

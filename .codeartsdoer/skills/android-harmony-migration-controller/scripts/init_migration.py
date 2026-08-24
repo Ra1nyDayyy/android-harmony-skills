@@ -94,6 +94,7 @@ def main() -> int:
             ("work-order-registry.template.csv", "work-order-registry.csv"),
             ("evidence-anchor-registry.template.csv", "evidence-anchor-registry.csv"),
             ("phase4-attempt-ledger.template.csv", "phase4-attempt-ledger.csv"),
+            ("team-execution-registry.template.csv", "team-execution-registry.csv"),
         ):
             shutil.copyfile(ASSETS / source, controller / target)
 

@@ -1,0 +1,151 @@
+{
+  "schema_version": "2.0.0",
+  "name": "android-migration-inventory",
+  "title": "Android Migration Inventory",
+  "job_to_be_done": "Automatically build a migration-grade semantic inventory of an existing Android app using frozen-source page/UI/event/navigation discovery, Android CLI runtime traversal, source-runtime binding, state-level records, and an immutable evidence chain. Use before Android-to-HarmonyOS migration when every page, component, state, function, and transition must be discovered with minimal later manual repair; do not use it to implement HarmonyOS code.",
+  "trigger_surface": {
+    "description": "Automatically build a migration-grade semantic inventory of an existing Android app using frozen-source page/UI/event/navigation discovery, Android CLI runtime traversal, source-runtime binding, state-level records, and an immutable evidence chain. Use before Android-to-HarmonyOS migration when every page, component, state, function, and transition must be discovered with minimal later manual repair; do not use it to implement HarmonyOS code.",
+    "should_trigger": [
+      "自动分析这个 Android 项目的所有页面、控件、状态、功能和跳转。",
+      "执行阶段2，用静态扫描和 Android CLI 建立迁移清单。",
+      "查清 WebView、反射、网络、数据库和特殊账号状态是否漏扫。"
+    ],
+    "should_not_trigger": [
+      "把整个 Android 项目直接迁移到鸿蒙。",
+      "生成鸿蒙工程基座并编译。",
+      "在 ArkUI 中实现这个页面。"
+    ],
+    "edge_cases": [
+      "只做一次普通 Android 代码审查，不需要迁移清单。",
+      "只把一个 XML 布局转成 JSON。",
+      "手工列出截图里的控件，不运行 Android CLI。"
+    ]
+  },
+  "workflow": {
+    "steps": [
+      "Verify Gate 1, frozen inputs, Android CLI, environments, and distinct Phase 2 roles.",
+      "Deterministically discover Page, Component, Event, Transition, State, asset, dynamic-risk, side-effect, and special-scenario candidates from source.",
+      "Traverse runtime tasks with Android CLI and bind every atomic candidate to immutable state evidence.",
+      "Archive assets and build normalized feature/page/state/environment inventory records with file-line and evidence provenance.",
+      "Compute page and advanced gates, seal closure, and return exact PASS or a blocking unresolved backlog."
+    ],
+    "decision_points": [
+      "Static findings create candidates, never verified facts; runtime evidence promotes or blocks them.",
+      "Unreachable dynamic, side-effect, account, permission, error, or extreme state remains in the coverage denominator.",
+      "Only deterministic evaluators may grant PAGE_PASS or Phase 2 PASS."
+    ],
+    "failure_modes": [
+      "A small dialog, menu, event, transition, or hidden state is omitted from atomic coverage.",
+      "Model confidence or a status field overrides missing evidence.",
+      "Reflection, WebView, server-driven UI, database, clipboard, network, or background effects are treated as non-blocking notes.",
+      "Evidence or controller anchors are overwritten, stale, ambiguous, or not hash-bound."
+    ]
+  },
+  "resources": {
+    "references": [
+      "references\\advanced-runtime-analysis.md",
+      "references\\android-cli-procedure.md",
+      "references\\deterministic-page-gates.md",
+      "references\\environment-contract.md",
+      "references\\evidence-contract.md",
+      "references\\governed-execution-contract.md",
+      "references\\inventory-contract.md",
+      "references\\review-and-rework.md",
+      "references\\roles-and-authority.md",
+      "references\\static-page-analysis.md"
+    ],
+    "scripts": [
+      "scripts\\_common.py",
+      "scripts\\analyze_static_pages.py",
+      "scripts\\archive_assets.py",
+      "scripts\\attest_environment.py",
+      "scripts\\build_inventory.py",
+      "scripts\\capture_state.py",
+      "scripts\\evaluate_advanced_gates.py",
+      "scripts\\evaluate_page_gates.py",
+      "scripts\\init_inventory.py",
+      "scripts\\manage_recheck.py",
+      "scripts\\record_advanced_observation.py",
+      "scripts\\record_runtime_observation.py",
+      "scripts\\seal_side_effect_probe.py",
+      "scripts\\tests\\fake_android.py",
+      "scripts\\tests\\test_page_gates.py",
+      "scripts\\tests\\test_static_page_analysis.py",
+      "scripts\\tests\\test_workflow.py",
+      "scripts\\validate_evidence.py",
+      "scripts\\validate_static_analysis.py"
+    ],
+    "assets": [
+      "assets\\asset-inventory.template.csv",
+      "assets\\asset-mapping.template.json",
+      "assets\\business-rules.template.csv",
+      "assets\\code-map.template.csv",
+      "assets\\coverage-ledger.template.csv",
+      "assets\\data-dependencies.template.csv",
+      "assets\\environment-attestations.template.csv",
+      "assets\\evidence-index.template.csv",
+      "assets\\evidence-metadata.schema.json",
+      "assets\\inventory-record.schema.json",
+      "assets\\inventory.template.csv",
+      "assets\\rechecks.template.csv",
+      "assets\\system-capabilities.template.csv",
+      "assets\\third-party-dependencies.template.csv"
+    ],
+    "reports": [
+      "reports/output-risk-profile.json",
+      "reports/output-risk-profile.md",
+      "reports/artifact-design-profile.json",
+      "reports/artifact-design-profile.md",
+      "reports/output_quality_scorecard.json",
+      "reports/output_quality_scorecard.md",
+      "reports/output_execution_runs.json",
+      "reports/output_execution_runs.md",
+      "reports/output_blind_review_pack.json",
+      "reports/output_blind_review_pack.md",
+      "reports/output_blind_answer_key.json",
+      "reports/conformance_matrix.json",
+      "reports/conformance_matrix.md",
+      "reports/security_trust_report.json",
+      "reports/security_trust_report.md"
+    ]
+  },
+  "eval_plan": {
+    "trigger": [
+      "evals\\history\\2026-08-24-yao-refactor.json",
+      "evals\\output\\cases.jsonl",
+      "evals\\output\\fixture.md",
+      "evals\\semantic_config.json",
+      "evals\\trigger_cases.json"
+    ],
+    "output": [
+      "evals\\output\\cases.jsonl",
+      "evals\\output\\fixture.md"
+    ],
+    "adversarial": [],
+    "baseline": "without_skill"
+  },
+  "risk": {
+    "output_risk": "high",
+    "execution_risk": "medium",
+    "trust_boundary": "external"
+  },
+  "governance": {
+    "owner": "Android-Harmony Migration Maintainers",
+    "maturity": "governed",
+    "review_cadence": "per-release",
+    "review_due": "2026-11-24"
+  },
+  "targets": [
+    "openai",
+    "claude",
+    "agent-skills",
+    "vscode",
+    "generic"
+  ],
+  "source_files": [
+    "SKILL.md",
+    "manifest.json",
+    "agents/interface.yaml",
+    "reports/output-risk-profile.json"
+  ]
+}

@@ -44,6 +44,26 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def record_team_receipt(
+    run_dir: Path,
+    work_order: Path,
+    role_key: str,
+    actor_id: str,
+    platform_task_id: str,
+    artifact: Path,
+) -> None:
+    run(
+        sys.executable,
+        str(CONTROLLER_SKILL / "scripts" / "record_team_execution.py"),
+        "--run-dir", str(run_dir),
+        "--work-order", work_order.relative_to(run_dir).as_posix(),
+        "--role-key", role_key,
+        "--actor-id", actor_id,
+        "--platform-task-id", platform_task_id,
+        "--artifact", artifact.relative_to(run_dir).as_posix(),
+    )
+
+
 def build_closed_phase2(root: Path) -> tuple[Path, Path]:
     """Run the real Phase 1/2 scripts and return (run_dir, scope_path)."""
     project = root / "android-project"
@@ -379,4 +399,15 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "2", "--write",
     )
+    phase2_receipts = [
+        ("inventory_lead_id", "inventory-lead-1", "TASK-P2-LEAD", workspace / "phase-manifest.json"),
+        ("code_map_agent_id", "code-map-agent-1", "TASK-P2-CODE", workspace / "static-analysis" / "COMMITTED"),
+        ("runtime_state_agent_ids", "runtime-state-agent-1", "TASK-P2-RUNTIME", workspace / "evidence-index.csv"),
+        ("business_rule_agent_id", "business-rule-agent-1", "TASK-P2-RULE", workspace / "catalogs" / "business-rules.csv"),
+        ("data_dependency_agent_id", "data-dependency-agent-1", "TASK-P2-DATA", workspace / "catalogs" / "data-dependencies.csv"),
+        ("evidence_administrator_id", "evidence-administrator-1", "TASK-P2-EVIDENCE", workspace / "evidence-index.csv"),
+        ("coverage_checker_id", "coverage-checker-1", "TASK-P2-COVERAGE", workspace / "closure-report.json"),
+    ]
+    for role_key, actor_id, task_id, artifact in phase2_receipts:
+        record_team_receipt(run_dir, phase2_work_order, role_key, actor_id, task_id, artifact)
     return run_dir, scope_path

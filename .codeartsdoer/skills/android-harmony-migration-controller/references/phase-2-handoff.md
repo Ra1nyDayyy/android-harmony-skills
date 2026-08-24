@@ -16,6 +16,8 @@ Pass the migration run directory, frozen `controller/scope.json`, and the immuta
 
 Do not dispatch Phase 2 when Phase 1 is not `PASS`.
 
+Dispatch every ownership entry as a distinct real CodeArts task. After deterministic closure, record one immutable team-execution receipt per assigned actor. Phase 3 work-order issuance rejects missing receipts, duplicate platform task IDs, actor/role mismatches, and changed artifact hashes.
+
 ## Package returned by Android inventory
 
 Expect these files below `phase-02-android-inventory/`:

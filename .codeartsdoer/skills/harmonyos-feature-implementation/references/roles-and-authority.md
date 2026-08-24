@@ -1,5 +1,7 @@
 # Roles and authority
 
+Every role below is a separately dispatched CodeArts worker task. Each worker returns a unique platform task ID and hash-bound role-owned artifacts. Distinct actor strings without distinct execution receipts are invalid, and a worker may not review, verify, or accept work it implemented.
+
 ## Phase 4 implementation lead
 
 Freezes feature work orders, dependencies, and code ownership, and confirms every rework open/close operation. The verification executor creates HBUILDs, the parity acceptance agent selects the final per-environment build set, and problem type determines rework routing. The lead may arbitrate implementation placement but cannot change frozen Android facts or approve observable parity deviations.

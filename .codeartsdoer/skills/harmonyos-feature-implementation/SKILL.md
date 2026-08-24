@@ -7,6 +7,8 @@ description: Implement and verify real HarmonyOS NEXT business features from fro
 
 Implement real business behavior in a writable copy of the accepted Phase 3 project. Work by `Feature-ID`; accept by Android `Inventory-ID` and `State-ID`.
 
+Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Governance scorecards cannot grant functional or visual parity; only canonical build, emulator, Inspector, assertion, review, and Gate 4 evidence may do so.
+
 ## Hard boundaries
 
 - Controller Gates 1–3 and the Phase 3 acceptance report must be `PASS` before initialization.
@@ -19,6 +21,7 @@ Implement real business behavior in a writable copy of the accepted Phase 3 proj
 - No fake data, no-op adapters, placeholder business behavior, or unimplemented production branches may pass.
 - The emulator verification executor and parity acceptance agent are distinct from implementers. Only the parity acceptance agent closes Phase 4.
 - MP4 is neither required nor accepted as formal evidence.
+- The four global governance roles and the four roles in every feature work order must be separately dispatched CodeArts worker tasks. A single worker may not implement UI, business/data, native capability, execute verification, and accept its own result under different IDs.
 
 ## Initialize Phase 4
 
@@ -51,6 +54,8 @@ python3 scripts/issue_feature_work_order.py \
 ```
 
 Issue exactly one active work order for every included `Feature-ID`; repeat `--exclusive-code-path` when one feature owns multiple existing directories. The feature owner integrates UI, business/data logic, native-capability adapters, and assets. Specialists may work in parallel only after exclusive code ownership is recorded. Every accepted implementation row must bind this work order, and every parity/visual/capability row must cite real `path:line` source references below its exclusive paths.
+
+Actually dispatch the feature owner, UI agent, business/data agent, and native-capability agent. Record each completed task's real platform task ID and role-owned artifact hashes through the controller. Do the same for the implementation lead, visual-asset agent, verification executor, and parity acceptance agent. The final delivery audit rejects absent or reused receipts.
 
 Implement each immutable `migration-unit-contracts.json` record without changing its observable dimensions. Populate the implementation, parity, visual-element, asset, capability, nativeization, and rework registries. A missing or conflicting Android fact blocks the current Phase 4 and returns through the controller to Phase 2; a wrong module, route, surface, contract, or resource landing similarly returns to Phase 3. Do not disguise an upstream contradiction as local implementation rework.
 
@@ -130,3 +135,5 @@ python3 android-harmony-migration-controller/scripts/validate_gate.py \
 ```
 
 Later changes require a new Phase 4 run or a newly issued controller work order; sealed evidence is never edited.
+
+Exact completion is mandatory: no `PASS_WITH_GAPS`, `PARTIAL`, `PENDING`, `INPUT_LOCKED`, placeholder, or imaginary later implementation phase may appear in the final report or production source. Build/install/launch success alone never closes Phase 4.

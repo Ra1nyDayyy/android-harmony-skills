@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+SCRIPT_INTERFACE = "internal-module"
+SCRIPT_INTERFACE_REASON = "Inspector normalization library imported by Phase 4 evidence and audit scripts."
+
 import hashlib
 import json
 from typing import Any

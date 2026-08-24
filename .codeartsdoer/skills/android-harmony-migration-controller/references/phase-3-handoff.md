@@ -13,6 +13,8 @@ The work order freezes six actor IDs:
 
 They must be mutually distinct and must not reuse any frozen Phase 1/2 actor ID. The architecture lead owns the Phase 3 task-ledger row; only the acceptance agent can issue the final Stage 3 report.
 
+All six assignments are distinct real CodeArts worker tasks. Record their unique platform task IDs and hash-bound artifacts after Stage 3 closes. Phase 4 work-order issuance rejects an incomplete receipt set; actor names alone are insufficient.
+
 The Phase 3 input lock must identify and hash:
 
 - controller scope;
