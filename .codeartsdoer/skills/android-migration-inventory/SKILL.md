@@ -54,5 +54,5 @@ Return the closed workspace to the controller. The controller independently reco
 - [inventory-contract.md](references/inventory-contract.md): IDs, rows, and catalogs.
 - [static-page-analysis.md](references/static-page-analysis.md): source denominator and runtime backlog.
 - [android-cli-procedure.md](references/android-cli-procedure.md) and [evidence-contract.md](references/evidence-contract.md): formal runtime capture.
-- [advanced-coverage-contract.md](references/advanced-coverage-contract.md): dynamic risks, side effects, and scenarios.
+- [advanced-runtime-analysis.md](references/advanced-runtime-analysis.md): dynamic risks, side effects, and scenarios.
 - [deterministic-page-gates.md](references/deterministic-page-gates.md) and [review-and-rework.md](references/review-and-rework.md): closure and failure routing.
