@@ -1,6 +1,6 @@
 interface:
-  display_name: "HarmonyOS 工程基座"
-  short_description: "从冻结盘点创建可运行、无业务实现的鸿蒙基座"
-  default_prompt: "使用 $harmonyos-migration-scaffold 从内置 ArkUI Stage 模板创建并验证基座，逐 Page-ID 保持页面、Dialog、Sheet 等载体一致，不提前实现业务；机器 Gate 后停在 WAITING_HUMAN_REVIEW。"
+  display_name: "HarmonyOS Migration Scaffold"
+  short_description: "Build the verified non-business ArkUI scaffold"
+  default_prompt: "Use $harmonyos-migration-scaffold after approved Gate 2 to build the non-business scaffold, preserve every Android carrier, and stop at WAITING_HUMAN_REVIEW."
 policy:
   allow_implicit_invocation: true

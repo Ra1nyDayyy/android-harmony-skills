@@ -2,175 +2,24 @@
   "schema_version": "2.0.0",
   "name": "harmonyos-migration-scaffold",
   "title": "HarmonyOS Migration Scaffold",
-  "job_to_be_done": "Build and verify a non-business HarmonyOS NEXT project scaffold from a frozen Android migration inventory, with immutable inputs and environments, real module and route landing points, interface-only capability contracts, frozen-emulator PNG evidence, command-line build proof, and an independent Phase 3 gate. Use after the Android inventory phase passes; do not use it to implement business behavior or alter Phase 2 artifacts.",
+  "job_to_be_done": "Build and verify a non-business HarmonyOS NEXT scaffold from an approved Android inventory using the bundled ArkUI Stage template, real routes or surfaces, public UI foundations, interface-only capability contracts, command-line build evidence, and a mandatory human checkpoint. Use after approved Gate 2; do not implement business behavior.",
   "trigger_surface": {
-    "description": "Build and verify a non-business HarmonyOS NEXT project scaffold from a frozen Android migration inventory, with immutable inputs and environments, real module and route landing points, interface-only capability contracts, frozen-emulator PNG evidence, command-line build proof, and an independent Phase 3 gate. Use after the Android inventory phase passes; do not use it to implement business behavior or alter Phase 2 artifacts.",
-    "should_trigger": [
-      "阶段2已经通过，用内置模板生成可运行的鸿蒙基座。",
-      "建立 ArkUI 模块、路由落点、公共 UI 和能力接口，但不要写业务。",
-      "验证鸿蒙基座能编译、安装、启动并打开所有页面壳。"
-    ],
-    "should_not_trigger": [
-      "分析 Android 项目的页面和功能。",
-      "实现计算器运算逻辑并做到视觉一致。",
-      "执行阶段1到4的完整迁移。"
-    ],
-    "edge_cases": [
-      "创建一个完全空白的普通鸿蒙示例项目。",
-      "修改已有鸿蒙应用的导航架构。",
-      "把 Android 页面直接改造成鸿蒙 Dialog。"
-    ]
+    "description": "Build and verify a non-business HarmonyOS NEXT scaffold from an approved Android inventory using the bundled ArkUI Stage template, real routes or surfaces, public UI foundations, interface-only capability contracts, command-line build evidence, and a mandatory human checkpoint. Use after approved Gate 2; do not implement business behavior.",
+    "should_trigger": ["Create the HarmonyOS project base after the Android inventory is approved."],
+    "should_not_trigger": ["Implement migrated business behavior.", "Discover Android pages."]
   },
   "workflow": {
-    "steps": [
-      "Verify Gates 1-2 and hash-lock the complete Phase 2 handoff and Phase 3 work order.",
-      "Generate the HarmonyOS project only from the bundled ArkUI Stage template and freeze toolchain provenance.",
-      "Assign every inventory record, asset, dynamic obligation, route, surface, and capability to a real project landing point.",
-      "Build only route/surface shells, public UI foundations, and interface-only contracts with no business behavior.",
-      "Run frozen build/install/launch/smoke/screenshot commands, seal HENV/HVER, and close with independent Gate 3 acceptance."
-    ],
-    "decision_points": [
-      "An Android route remains a route and a non-route visual surface remains a surface shell.",
-      "Business behavior, fake data, state logic, and real adapters are rejected from Phase 3.",
-      "Any Phase 2 drift or missing advanced obligation returns upstream instead of being simplified."
-    ],
-    "failure_modes": [
-      "The model silently drops routes, surfaces, assets, or advanced obligations.",
-      "A generic sample project replaces the frozen template or input mapping.",
-      "A fake executable, self-declared result, hand-written PNG, or invalid HAP is accepted as runtime proof.",
-      "Gate 3 is confused with authorization to implement business features."
-    ]
+    "steps": ["Verify approved Gate 2 inputs.", "Instantiate the bundled Stage template.", "Create real modules, routes, surfaces, public UI foundations, and interface-only capability contracts.", "Build and verify the exact scaffold snapshot.", "Produce the review packet and enter WAITING_HUMAN_REVIEW."],
+    "decision_points": ["Business logic is deferred to Phase 4.", "A failed build or route check returns to governed rework."],
+    "failure_modes": ["The scaffold hides business implementation.", "Declared routes do not land on real surfaces.", "Evidence is from a different snapshot."]
   },
   "resources": {
-    "references": [
-      "references\\environment-toolchain.md",
-      "references\\governed-execution-contract.md",
-      "references\\input-mapping-contract.md",
-      "references\\roles-and-authority.md",
-      "references\\scaffold-boundaries.md",
-      "references\\verification-and-rework.md"
-    ],
-    "scripts": [
-      "scripts\\_common.py",
-      "scripts\\freeze_environment.py",
-      "scripts\\init_scaffold.py",
-      "scripts\\manage_stage3_rework.py",
-      "scripts\\run_verification.py",
-      "scripts\\tests\\fake_harmony.py",
-      "scripts\\tests\\phase2_fixture.py",
-      "scripts\\tests\\test_stage3_workflow.py",
-      "scripts\\validate_stage3.py"
-    ],
-    "assets": [
-      "assets\\architecture-decisions.template.csv",
-      "assets\\architecture-map.template.csv",
-      "assets\\arkui-stage-template\\.gitignore",
-      "assets\\arkui-stage-template\\AppScope\\app.json5",
-      "assets\\arkui-stage-template\\AppScope\\resources\\base\\element\\string.json",
-      "assets\\arkui-stage-template\\AppScope\\resources\\base\\media\\background.png",
-      "assets\\arkui-stage-template\\AppScope\\resources\\base\\media\\foreground.png",
-      "assets\\arkui-stage-template\\AppScope\\resources\\base\\media\\layered_image.json",
-      "assets\\arkui-stage-template\\build-profile.json5",
-      "assets\\arkui-stage-template\\code-linter.json5",
-      "assets\\arkui-stage-template\\entry\\.gitignore",
-      "assets\\arkui-stage-template\\entry\\build-profile.json5",
-      "assets\\arkui-stage-template\\entry\\hvigorfile.ts",
-      "assets\\arkui-stage-template\\entry\\obfuscation-rules.txt",
-      "assets\\arkui-stage-template\\entry\\oh-package.json5",
-      "assets\\arkui-stage-template\\entry\\src\\main\\ets\\entryability\\EntryAbility.ets",
-      "assets\\arkui-stage-template\\entry\\src\\main\\ets\\entrybackupability\\EntryBackupAbility.ets",
-      "assets\\arkui-stage-template\\entry\\src\\main\\ets\\pages\\Index.ets",
-      "assets\\arkui-stage-template\\entry\\src\\main\\module.json5",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\element\\color.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\element\\float.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\element\\string.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\media\\background.png",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\media\\foreground.png",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\media\\layered_image.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\media\\startIcon.png",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\profile\\backup_config.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\base\\profile\\main_pages.json",
-      "assets\\arkui-stage-template\\entry\\src\\main\\resources\\dark\\element\\color.json",
-      "assets\\arkui-stage-template\\entry\\src\\mock\\mock-config.json5",
-      "assets\\arkui-stage-template\\entry\\src\\ohosTest\\ets\\test\\Ability.test.ets",
-      "assets\\arkui-stage-template\\entry\\src\\ohosTest\\ets\\test\\List.test.ets",
-      "assets\\arkui-stage-template\\entry\\src\\ohosTest\\module.json5",
-      "assets\\arkui-stage-template\\entry\\src\\test\\List.test.ets",
-      "assets\\arkui-stage-template\\entry\\src\\test\\LocalUnit.test.ets",
-      "assets\\arkui-stage-template\\hvigor\\hvigor-config.json5",
-      "assets\\arkui-stage-template\\hvigorfile.ts",
-      "assets\\arkui-stage-template\\oh-package.json5",
-      "assets\\asset-registry.template.csv",
-      "assets\\capability-contracts.template.csv",
-      "assets\\dependency-policy.template.json",
-      "assets\\harmony-environment.template.json",
-      "assets\\henv-registry.template.csv",
-      "assets\\migration-status.template.csv",
-      "assets\\module-registry.template.csv",
-      "assets\\public-ui-registry.template.csv",
-      "assets\\rework-tickets.template.csv",
-      "assets\\route-registry.template.csv",
-      "assets\\route-results.template.json",
-      "assets\\screenshot-index.template.csv",
-      "assets\\surface-registry.template.csv",
-      "assets\\surface-results.template.json",
-      "assets\\verification-plan.template.json"
-    ],
-    "reports": [
-      "reports/output-risk-profile.json",
-      "reports/output-risk-profile.md",
-      "reports/artifact-design-profile.json",
-      "reports/artifact-design-profile.md",
-      "reports/output_quality_scorecard.json",
-      "reports/output_quality_scorecard.md",
-      "reports/output_execution_runs.json",
-      "reports/output_execution_runs.md",
-      "reports/output_blind_review_pack.json",
-      "reports/output_blind_review_pack.md",
-      "reports/output_blind_answer_key.json",
-      "reports/conformance_matrix.json",
-      "reports/conformance_matrix.md",
-      "reports/security_trust_report.json",
-      "reports/security_trust_report.md"
-    ]
+    "references": ["references/scaffold-boundaries.md", "references/input-mapping-contract.md", "references/environment-toolchain.md", "references/governed-execution-contract.md", "references/roles-and-authority.md", "references/verification-and-rework.md"],
+    "scripts": ["scripts/_common.py", "scripts/freeze_environment.py", "scripts/init_scaffold.py", "scripts/manage_stage3_rework.py", "scripts/run_verification.py", "scripts/validate_stage3.py", "scripts/tests/phase2_fixture.py", "scripts/tests/test_stage3_workflow.py"],
+    "assets": ["assets/arkui-stage-template/oh-package.json5", "assets/architecture-map.template.csv", "assets/capability-contracts.template.csv", "assets/module-registry.template.csv", "assets/public-ui-registry.template.csv", "assets/route-registry.template.csv", "assets/surface-registry.template.csv", "assets/verification-plan.template.json"],
+    "reports": ["reports/output-risk-profile.json", "reports/output_quality_scorecard.json", "reports/security_trust_report.json", "reports/conformance_matrix.json"]
   },
-  "eval_plan": {
-    "trigger": [
-      "evals\\history\\2026-08-24-yao-refactor.json",
-      "evals\\output\\cases.jsonl",
-      "evals\\output\\fixture.md",
-      "evals\\semantic_config.json",
-      "evals\\trigger_cases.json"
-    ],
-    "output": [
-      "evals\\output\\cases.jsonl",
-      "evals\\output\\fixture.md"
-    ],
-    "adversarial": [],
-    "baseline": "without_skill"
-  },
-  "risk": {
-    "output_risk": "high",
-    "execution_risk": "medium",
-    "trust_boundary": "external"
-  },
-  "governance": {
-    "owner": "Android-Harmony Migration Maintainers",
-    "maturity": "governed",
-    "review_cadence": "per-release",
-    "review_due": "2026-11-24"
-  },
-  "targets": [
-    "openai",
-    "claude",
-    "agent-skills",
-    "vscode",
-    "generic"
-  ],
-  "source_files": [
-    "SKILL.md",
-    "manifest.json",
-    "agents/interface.yaml",
-    "reports/output-risk-profile.json"
-  ]
+  "risk": {"output_risk": "medium", "execution_risk": "medium", "trust_boundary": "external"},
+  "targets": ["openai", "claude", "agent-skills", "vscode", "generic"],
+  "source_files": ["SKILL.md", "manifest.json", "agents/interface.yaml", "agents/openai.yaml", "reports/output-risk-profile.json"]
 }

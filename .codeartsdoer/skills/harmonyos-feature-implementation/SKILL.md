@@ -1,6 +1,6 @@
 ---
 name: harmonyos-feature-implementation
-description: Implement and verify HarmonyOS NEXT pages from frozen Android page contracts and an approved scaffold, using page-owned work orders, shared capability orders, final-HAP emulator evidence, ArkUI Inspector trees, deterministic parity comparison, bounded repair, and human review. Use only after approved Gate 3.
+description: Implement and verify HarmonyOS NEXT pages from frozen Android page contracts and an approved scaffold, using a per-page UI understanding and conversion agent, page-owned work orders, shared capability orders, emulator screenshots, UiTest interaction and component evidence, functional and side-effect assertions, bounded repair, and human review. Use only after approved Gate 3.
 ---
 
 # HarmonyOS Feature Implementation

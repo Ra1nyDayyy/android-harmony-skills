@@ -1,6 +1,6 @@
 interface:
-  display_name: "Android 迁移语义盘点"
-  short_description: "自动发现页面、功能、状态、跳转和非 UI 副作用"
-  default_prompt: "使用 $android-migration-inventory 自动分析冻结的 Android 项目，记录页面、组件、功能、状态、跳转、副作用和运行证据；遗漏与低置信项必须显式阻断，模型不得自行宣布 PASS。"
+  display_name: "Android Migration Inventory"
+  short_description: "Discover Android pages, states, behavior, and evidence"
+  default_prompt: "Use $android-migration-inventory after approved Gate 1 to inventory Android pages, states, behavior, transitions, side effects, and evidence, then stop at WAITING_HUMAN_REVIEW."
 policy:
   allow_implicit_invocation: true

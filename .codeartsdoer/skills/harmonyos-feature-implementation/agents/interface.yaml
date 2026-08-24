@@ -1,7 +1,7 @@
 interface:
   display_name: "HarmonyOS Feature Implementation"
   short_description: "Implement and prove Android-to-ArkUI parity"
-  default_prompt: "Use $harmonyos-feature-implementation after approved Gate 3 to implement one PAGE_WORK_ORDER per Page-ID, verify one final HAP, and stop at WAITING_HUMAN_REVIEW."
+  default_prompt: "Use $harmonyos-feature-implementation after approved Gate 3. Assign one UI_UNDERSTANDING_AND_CONVERSION_AGENT per Page-ID to consume frozen Phase 2 JSON, CSV, and evidence, produce arkts-page-plan, and convert it to ArkTS without cross-page reuse or deleting components, states, transitions, or changing carrier. Issue one PAGE_WORK_ORDER per Page-ID and separate CAPABILITY_WORK_ORDER records; verify with emulator screenshots, UiTest interactions and component queries, functional and side-effect assertions, then stop at WAITING_HUMAN_REVIEW."
 compatibility:
   canonical_format: "agent-skills"
   adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]
