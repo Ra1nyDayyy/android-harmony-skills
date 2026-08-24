@@ -15,6 +15,26 @@
 
 Phase 3 固定使用 `harmonyos-migration-scaffold/assets/arkui-stage-template`，不要再提供另一套鸿蒙模板。
 
+### 首次建立迁移 Run
+
+在 CodeArts 任务终端执行（Windows 环境把 `python3` 换成 `python`）：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/init_migration.py \
+  --output <保存迁移Run的父目录> \
+  --project-root <Android项目目录> \
+  --project-name <项目名>
+```
+
+需要固定 Run-ID 时再追加 `--run-id <未使用的Run-ID>`。按真实环境补全 `<migration-run>/controller/scope.json`，不要保留模板占位值。Gate 1 `PASS` 后不要再修改它；Gate 1 失败时应先修正事实，再重新计算。然后首次写入 Gate 1：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/validate_gate.py \
+  --run-dir <migration-run> --phase 1 --write
+```
+
+命令退出码非零或报告 `FAIL` 时先修复，不得生成批准记录。
+
 ## 2. 唯一启动提示词
 
 在 Android 项目的 CodeArts 任务中发送：
@@ -36,6 +56,15 @@ Phase 3 固定使用 `harmonyos-migration-scaffold/assets/arkui-stage-template`�
 
 CodeArts 报告机器 Gate 已生成后，先生成或刷新简明审核包：
 
+每个阶段的专属 Skill 完成并封存产物后，Controller 必须先把该阶段的当前机器 Gate 写到唯一规范路径。Phase 1 已在初始化步骤完成；Phase 2-4 使用同一命令，只替换阶段号：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/validate_gate.py \
+  --run-dir <migration-run> --phase <2|3|4> --write
+```
+
+确认退出码为零且 `<migration-run>/controller/gate-report.json` 中的 `phase` 与当前阶段一致，再生成摘要。`--input` 是可选补充；省略时摘要会直接从当前 Gate 和已有阶段报告生成，补充文件也不能隐藏机器异常：
+
 ```bash
 python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/generate_review_summary.py \
   --run-dir <migration-run> \
@@ -49,7 +78,7 @@ python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/genera
 <migration-run>/controller/review-summaries/phase-0N/review-summary.json
 ```
 
-只在机器 Gate 为 `PASS`、摘要状态为 `WAITING_HUMAN_REVIEW` 且关键异常已经看过后，记录决定：
+只有机器 Gate 为 `PASS`、摘要状态为 `WAITING_HUMAN_REVIEW` 且关键异常已经看过，才可记录 `APPROVED` 或 `APPROVED_DEVIATION`：
 
 ```bash
 python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/record_human_review.py \
@@ -62,7 +91,7 @@ python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/record
   --reason "已核对摘要、关键样本和红黄异常"
 ```
 
-其余决定：
+机器 Gate 失败或人工不接受时可记录：
 
 - `REWORK`：退回当前阶段修复；
 - `APPROVED_DEVIATION --deviation "差异ID: 原因"`：只批准明确、可追踪的偏差，不会删除机器差异；
@@ -75,6 +104,49 @@ python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/record
 ```
 
 Gate 一旦重新写入，旧审批自动过期，需要重新生成摘要和审批。
+
+审批完成后不要再次运行带 `--write` 的 Gate 命令。下一阶段工单签发器会执行一次**不写文件的只读重算**；重算失败会拒绝签发，但不会仅因 `checked_at` 改变而让刚完成的审批过期。签发器随后校验审批是否仍绑定当前 `controller/gate-report.json`。
+
+Controller 实际签发命令如下。`--issued-by` 必须等于 `scope.json` 中冻结的 `migration_controller_id`；其余角色 ID 必须来自真实的 CodeArts 任务分派，并在首次签发工单时冻结，不能用临时字符串冒充：
+
+```bash
+# Gate 1 人工批准后
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/issue_phase2_work_order.py \
+  --run-dir <migration-run> --issued-by <migration_controller_id>
+
+# Gate 2 人工批准后
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/issue_phase3_work_order.py \
+  --run-dir <migration-run> --issued-by <migration_controller_id> \
+  --architecture-lead-id <ID> --toolchain-agent-id <ID> \
+  --navigation-agent-id <ID> --public-ui-agent-id <ID> \
+  --capability-contract-agent-id <ID> --architecture-acceptance-agent-id <ID>
+
+# Gate 3 人工批准后
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/issue_phase4_work_order.py \
+  --run-dir <migration-run> --issued-by <migration_controller_id> \
+  --implementation-lead-id <ID> --visual-asset-agent-id <ID> \
+  --verification-executor-id <ID> --parity-acceptance-agent-id <ID>
+```
+
+每个被真实分派的 CodeArts 工作任务结束后，都要按其工单角色记录一次不可覆盖的执行回执。一个平台任务 ID 不能冒充多个角色：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/record_team_execution.py \
+  --run-dir <migration-run> --work-order <Run内工单JSON相对路径> \
+  --role-key <工单角色字段> --actor-id <冻结Actor-ID> \
+  --platform-task-id <真实CodeArts任务ID> \
+  --started-at <ISO-8601时间> --ended-at <ISO-8601时间> \
+  --terminal-task-state SUCCEEDED \
+  --artifact <Run内真实产物相对路径>
+```
+
+Phase 2 的每个已封存证据包还必须由 Controller 写入证据锚点；遗漏锚点会阻止 Gate 2 或最终审计：
+
+```bash
+python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/anchor_phase2_evidence.py \
+  --run-dir <migration-run> --evidence-id <已封存Evidence-ID> \
+  --anchored-by <migration_controller_id>
+```
 
 ## 4. 四阶段验收重点
 
@@ -105,7 +177,9 @@ python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/audit_
 
 交付包至少包含：迁移后的 HarmonyOS 项目、最终 HAP 和哈希、四个机器 Gate、四个人工审核记录、Phase 2 页面/状态/功能清单、Phase 4 页面计划与工单、UiTest/截图/功能/副作用证据、机器差异、返工记录和仍需人工处理的限制。
 
-只有最终审计退出码为零，且当前 Gate 4 存在有效人工批准，才能标记 Phase 4 已接受。不要使用 `PASS_WITH_GAPS`、`PARTIAL` 或“后续再补”替代真实结果。
+最终审计会只读重算 Gate 1-4，并检查：Gate 1-3 工单中保存的历史 Gate 快照及其人工批准、当前 Gate 4 的人工批准、每阶段恰好一个有效 Controller 工单、真实 CodeArts 执行回执、任务台账 `PASS`、规范产物、哈希和封存状态。它不会重写 Gate，因此不会主动使审批过期。
+
+只有最终审计退出码为零，且四个 Gate 都存在可追踪的有效人工批准，才能标记 Phase 4 已接受。不要使用 `PASS_WITH_GAPS`、`PARTIAL` 或“后续再补”替代真实结果。
 
 ## 6. 无网站模式的信任边界
 
