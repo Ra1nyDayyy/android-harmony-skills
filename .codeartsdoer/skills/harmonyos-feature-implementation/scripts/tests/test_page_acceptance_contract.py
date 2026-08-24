@@ -186,6 +186,32 @@ class PageAcceptanceContractTest(unittest.TestCase):
         schema = read_json(SCRIPTS.parent / "assets" / "page-acceptance-contract.schema.json")
         self.assertFalse(schema["additionalProperties"])
 
+    def test_rejects_malformed_records_in_every_required_composite_structure(self) -> None:
+        original = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]
+        cases = [
+            ("source_geometry", lambda contract: contract.__setitem__("source_geometry", [42])),
+            ("visible_text", lambda contract: contract.__setitem__("visible_text", [42])),
+            ("interaction_bindings", lambda contract: contract.__setitem__("interaction_bindings", [{}])),
+            ("entry_conditions", lambda contract: contract.__setitem__("entry_conditions", [{}])),
+            ("code_map", lambda contract: contract.__setitem__("code_map", [{}])),
+            ("business_rules", lambda contract: contract.__setitem__("business_rules", [{}])),
+            ("data_dependencies", lambda contract: contract.__setitem__("data_dependencies", [{}])),
+            ("side_effects", lambda contract: contract.__setitem__("side_effects", [{}])),
+            ("system_capabilities", lambda contract: contract.__setitem__("system_capabilities", [{}])),
+            ("states", lambda contract: contract.__setitem__("states", [{}])),
+            ("components", lambda contract: contract.__setitem__("components", [{}])),
+            ("transitions", lambda contract: contract.__setitem__("transitions", [{}])),
+            ("assets", lambda contract: contract.__setitem__("assets", [{}])),
+            ("android_evidence_hashes", lambda contract: contract.__setitem__("android_evidence_hashes", [{}])),
+            ("phase3_targets", lambda contract: contract.__setitem__("phase3_targets", [{}])),
+        ]
+        for field, mutate in cases:
+            with self.subTest(field=field):
+                contract = json.loads(json.dumps(original))
+                mutate(contract)
+                with self.assertRaisesRegex(ValueError, field):
+                    publish_page_contracts([contract], self.root / f"malformed-{field}")
+
     def test_publish_rolls_back_the_whole_set_when_registry_replace_fails(self) -> None:
         destination = self.root / "published"
         original = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))

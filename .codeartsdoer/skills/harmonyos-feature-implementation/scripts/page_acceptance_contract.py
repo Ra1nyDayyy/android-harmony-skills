@@ -33,6 +33,24 @@ CONTRACT_KEYS = {
 }
 CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "comparison_policy"}
 PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+RECORD_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "components": ("component_id", "page_id"),
+    "interaction_bindings": ("event_id", "page_id"),
+    "entry_conditions": ("state_id", "entry_condition", "action_summary"),
+    "transitions": ("transition_id", "source_page_id", "target_page_id"),
+    "code_map": ("code_ref", "page_id"),
+    "business_rules": ("business_rule_id",),
+    "data_dependencies": ("data_dependency_id",),
+    "side_effects": ("side_effect_id",),
+    "system_capabilities": ("system_capability_id",),
+    "assets": ("asset_id",),
+    "android_evidence_hashes": (
+        "evidence_id", "relative_path", "screenshot_sha256", "layout_sha256",
+        "metadata_sha256", "source_geometry",
+    ),
+    "phase3_targets": ("state_id", "env_id", "harmony_module_id", "target_kind", "target_id"),
+}
 
 
 def canonical_contract_sha256(contract: dict[str, object]) -> str:
@@ -325,27 +343,97 @@ def _validate_contract(contract: dict[str, object]) -> None:
         value = contract.get(field)
         if not isinstance(value, list):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must be an array")
-    if any(not isinstance(value, str) for value in contract["visible_text"]):
+    if not contract["states"]:
+        raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states must be non-empty")
+    if any(not isinstance(value, str) or not value for value in contract["visible_text"]):
         raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: visible_text must contain strings")
     for field in ("feature_ids", "required_h4env_ids"):
         if any(not isinstance(value, str) or not value for value in contract[field]):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain IDs")
-    object_arrays = CONTRACT_LIST_FIELDS - {
-        "feature_ids", "source_geometry", "visible_text", "required_h4env_ids",
-    }
-    for field in object_arrays:
-        if any(not isinstance(value, dict) for value in contract[field]):
-            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
+    for field, required_fields in RECORD_REQUIREMENTS.items():
+        _validate_record_array(str(contract["page_id"]), field, contract[field], required_fields)
+    _validate_geometry_array(str(contract["page_id"]), contract["source_geometry"])
     for state in contract["states"]:
         if set(state) != {"state_id", "state_name", "records"} or not state.get("state_id"):
-            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state structure differs")
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states structure differs")
         if not isinstance(state["state_name"], str) or not isinstance(state["records"], list):
-            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state record structure differs")
-        if any(not isinstance(record, dict) for record in state["records"]):
-            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state records must contain objects")
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states record structure differs")
+        _validate_state_records(str(contract["page_id"]), state["records"])
     policy = contract.get("comparison_policy")
     if not isinstance(policy, dict) or policy != COMPARISON_POLICY:
         raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: comparison_policy differs")
+
+
+def _validate_record_array(
+    page_id: str,
+    field: str,
+    value: object,
+    required_fields: tuple[str, ...],
+) -> None:
+    if not isinstance(value, list):
+        raise ValueError(f"Invalid page acceptance contract {page_id}: {field} must be an array")
+    for record in value:
+        if not isinstance(record, dict):
+            raise ValueError(f"Invalid page acceptance contract {page_id}: {field} must contain objects")
+        if field in {"android_evidence_hashes", "android_evidence"} and set(record) != set(RECORD_REQUIREMENTS["android_evidence_hashes"]):
+            raise ValueError(f"Invalid page acceptance contract {page_id}: {field} fields differ")
+        if field == "phase3_targets" and set(record) != set(RECORD_REQUIREMENTS[field]):
+            raise ValueError(f"Invalid page acceptance contract {page_id}: {field} fields differ")
+        for required in required_fields:
+            item = record.get(required)
+            if not isinstance(item, str) or not item:
+                if required == "source_geometry":
+                    _validate_geometry_value(page_id, field, item)
+                    continue
+                raise ValueError(
+                    f"Invalid page acceptance contract {page_id}: {field}.{required} must be a non-empty string"
+                )
+        if field == "android_evidence_hashes":
+            for digest_field in ("screenshot_sha256", "layout_sha256", "metadata_sha256"):
+                if not SHA256_RE.fullmatch(str(record[digest_field])):
+                    raise ValueError(
+                        f"Invalid page acceptance contract {page_id}: {field}.{digest_field} must be SHA-256"
+                    )
+
+
+def _validate_geometry_array(page_id: str, value: object) -> None:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"Invalid page acceptance contract {page_id}: source_geometry must be a non-empty array")
+    for geometry in value:
+        _validate_geometry_value(page_id, "source_geometry", geometry)
+
+
+def _validate_geometry_value(page_id: str, field: str, value: object) -> None:
+    if isinstance(value, dict) and value:
+        return
+    if isinstance(value, list) and value and all(isinstance(item, dict) and item for item in value):
+        return
+    raise ValueError(
+        f"Invalid page acceptance contract {page_id}: {field} must contain non-empty layout objects"
+    )
+
+
+def _validate_state_records(page_id: str, records: object) -> None:
+    if not isinstance(records, list) or not records:
+        raise ValueError(f"Invalid page acceptance contract {page_id}: states.records must be non-empty")
+    required = {
+        "inventory_id", "feature_id", "env_id", "entry_condition", "action_summary",
+        "expected_observable", "android_evidence", "business_rule_ids", "data_dependency_ids",
+        "system_capability_ids",
+    }
+    for record in records:
+        if not isinstance(record, dict) or set(record) != required:
+            raise ValueError(f"Invalid page acceptance contract {page_id}: states.records fields differ")
+        for field in ("inventory_id", "feature_id", "env_id"):
+            if not isinstance(record[field], str) or not record[field]:
+                raise ValueError(f"Invalid page acceptance contract {page_id}: states.records.{field} differs")
+        for field in ("entry_condition", "action_summary", "expected_observable"):
+            if not isinstance(record[field], str):
+                raise ValueError(f"Invalid page acceptance contract {page_id}: states.records.{field} differs")
+        for field in ("business_rule_ids", "data_dependency_ids", "system_capability_ids"):
+            if not isinstance(record[field], list) or any(not isinstance(item, str) or not item for item in record[field]):
+                raise ValueError(f"Invalid page acceptance contract {page_id}: states.records.{field} differs")
+        _validate_record_array(page_id, "android_evidence", [record["android_evidence"]], RECORD_REQUIREMENTS["android_evidence_hashes"])
 
 
 def validate_page_id(page_id: str) -> str:
