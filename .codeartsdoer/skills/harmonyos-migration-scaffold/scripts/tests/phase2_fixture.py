@@ -373,6 +373,7 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         },
         "pages.json": {"schema_version": 1, "pages": [{
             "page_id": "PAGE-LOGIN", "symbol": "LoginActivity",
+            "kinds": ["ACTIVITY"],
             "candidate_feature_ids": ["FEATURE-AUTH"],
         }]},
         "components.json": {"schema_version": 1, "components": [{

@@ -17,7 +17,7 @@ class UiTestSkillContractTest(unittest.TestCase):
         joined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
         for token in FORBIDDEN:
             self.assertNotIn(token, joined)
-        self.assertIn("@ohos.UiTest", joined)
+        self.assertIn("@kit.TestKit", joined)
         self.assertIn("ui-test-snapshot-evidence.md", (SKILL / "SKILL.md").read_text(encoding="utf-8"))
         self.assertTrue((SKILL / "references" / "ui-test-snapshot-evidence.md").is_file())
 

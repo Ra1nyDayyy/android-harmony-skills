@@ -4,13 +4,13 @@
 
 **Goal:** Rewrite Phase 4 so every frozen Phase 2 page is migrated by one exclusive page owner, shared capabilities are implemented separately, and only deterministic Android-versus-HarmonyOS evidence comparison can produce `PASS`.
 
-**Architecture:** Phase 4 starts by compiling immutable page acceptance contracts from the Phase 2 inventory and Phase 3 scaffold. The controller issues one real CodeArts task per page plus separate capability tasks, injects a repository-managed ArkUI Inspector test into `ohosTest`, captures all required states from one final HAP, and runs deterministic tree, geometry, screenshot, behavior, side-effect, and navigation comparisons. Agents may implement, diagnose, and repair, but cannot write acceptance results. A page receives one initial validation and at most two automated repairs; unresolved differences become `REVIEW_REQUIRED` and require a narrow, separately signed human exception.
+**Architecture:** Phase 4 starts by compiling immutable page acceptance contracts from the Phase 2 inventory and Phase 3 scaffold. The controller issues one CodeArts work item per page plus separate capability work items, generates page-scoped UiTest probes under `ohosTest`, executes them through frozen external launch/navigation adapters, and binds the test HAP, final HAP, device, command, page plan, generation manifest, component snapshots, operation traces, screenshots, behavior assertions, and side-effect evidence. A local work-item string is never proof of a real CodeArts platform task; platform receipts provide that identity. Agents may implement, diagnose, and repair, but cannot write acceptance results.
 
-**Tech Stack:** Python 3 standard library for contracts, ledgers, hashing, orchestration, and JSON/CSV validation; Pillow for deterministic PNG decoding; ArkTS `@ohos.UiTest`/`UIContext` Inspector bridge in `ohosTest`; Hvigor and HDC through frozen executable contracts; `unittest` for regression tests.
+**Tech Stack:** Python 3 standard library for contracts, ledgers, hashing, orchestration, and JSON/CSV validation; Pillow for deterministic PNG decoding; ArkTS UiTest APIs imported from `@kit.TestKit` under `ohosTest`; Hvigor and HDC through frozen executable contracts; `unittest` for regression tests.
 
 **Spec:** [2026-08-24-phase4-page-owned-deterministic-parity-design.md](../specs/2026-08-24-phase4-page-owned-deterministic-parity-design.md)
 
-> **2026-08-25 binding amendment:** Original Tasks 3-4 are superseded by [Phase 4 UiTest and ArkTS Page-Plan Amendment](../specs/2026-08-25-phase4-uitest-page-plan-amendment.md). Phase 4 must use `@ohos.UiTest`, must compile a conservation-checked `arkts-page-plan.json` before page code, and must not implement the replaced tree-dump bridge design.
+> **2026-08-25 binding amendment:** Original Tasks 3-4 are superseded by [Phase 4 UiTest and ArkTS Page-Plan Amendment](../specs/2026-08-25-phase4-uitest-page-plan-amendment.md). Phase 4 must use the UiTest API re-exported by `@kit.TestKit`, must compile a conservation-checked `arkts-page-plan.json` before page code, and must not implement the replaced tree-dump bridge design.
 
 ## Global Constraints
 
@@ -179,14 +179,16 @@ git add .codeartsdoer/skills/harmonyos-feature-implementation .codeartsdoer/skil
 git commit -m "feat: enforce page-owned Phase 4 work orders"
 ```
 
-## Task 3: Inject a Real ArkUI Inspector Test into `ohosTest`
+## Task 3: Generate UiTest Snapshot Probes in `ohosTest`
+
+This entire legacy Task 3 is replaced by the binding amendment and the current UiTest snapshot implementation. It is retained only as historical plan context and has no implementation authority.
 
 **Files:**
 
-- Create: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/arkui-inspector-test/ArkUIInspectorCapture.test.ets`
-- Create: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/arkui-inspector-test/PageProbeRegistry.ets`
+- Create: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/uitest-snapshot/UiTestSnapshot.test.ets`
+- Create: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/uitest-snapshot/UiTestPageProbeRegistry.ets`
 - Create: `.codeartsdoer/skills/harmonyos-feature-implementation/scripts/prepare_inspector_test.py`
-- Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/arkui-inspector-bridge/ArkUIInspectorBridge.ets`
+- Create: `.codeartsdoer/skills/harmonyos-feature-implementation/assets/uitest-snapshot/UiTestRunBinding.ets`
 - Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/scripts/init_implementation.py`
 - Test: `.codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_inspector_test_injection.py`
 
@@ -196,9 +198,9 @@ git commit -m "feat: enforce page-owned Phase 4 work orders"
 def test_injects_inspector_only_into_ohos_test(self):
     result = prepare_inspector_test(self.workspace)
     test_root = self.workspace / "harmony-project/entry/src/ohosTest/ets/test"
-    self.assertTrue((test_root / "ArkUIInspectorCapture.test.ets").is_file())
-    self.assertTrue((test_root / "ArkUIInspectorBridge.ets").is_file())
-    self.assertFalse(any((self.workspace / "harmony-project/entry/src/main").rglob("ArkUIInspectorBridge.ets")))
+    self.assertTrue((test_root / "UiTestSnapshot.test.ets").is_file())
+    self.assertTrue((test_root / "UiTestPageProbeRegistry.ets").is_file())
+    self.assertFalse(any((self.workspace / "harmony-project/entry/src/main").rglob("*UiTest*")))
     self.assertEqual(result["page_ids"], ["PAGE-CALCULATOR", "PAGE-HISTORY"])
 ```
 
@@ -208,7 +210,7 @@ def test_injects_inspector_only_into_ohos_test(self):
 
 - Generate one ArkTS test case per page state from frozen contracts.
 - Navigate using the Phase 3 route target and execute the exact action sequence from Phase 2.
-- Call `UIContext.getFilteredInspectorTree` or `getFilteredInspectorTreeById` only through the bridge.
+- Query frozen components through UiTest `Driver` and stable `ON.id`/unique `ON.text` locators only.
 - Save raw tree, normalized tree, operation trace, page/state/environment IDs, capture timestamps, and capture errors to the test result directory.
 - Fail the ArkTS test when a required page/state is unreachable, the tree is empty, a required component ID is absent, or any result file cannot be written.
 - Emit a generation manifest with source contract hashes and hashes of every injected ArkTS file.
@@ -224,10 +226,12 @@ python .codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_
 
 ```powershell
 git add .codeartsdoer/skills/harmonyos-feature-implementation
-git commit -m "feat: inject ArkUI Inspector ohosTest probes"
+git commit -m "feat: inject UiTest snapshot ohosTest probes"
 ```
 
-## Task 4: Orchestrate Real Inspector Build, Execution, and Result Pull
+## Task 4: SUPERSEDED — Execute Hash-Bound UiTest Snapshot Evidence
+
+The authoritative Task 4 path uses `UITEST_SNAPSHOT_CAPTURE`, never the legacy instructions below. It builds and seals a test HAP and final HAP, uses a frozen external launch/navigation adapter, runs one frozen State-ID snapshot before any action, isolates actions, rejects transitions without source/action/target/back evidence, and validates `ui-test-snapshot.json`, operation trace, UiTest screenshot, component properties, device identity, command hash, page-plan hash, and generation-manifest hash. The remaining legacy prose in this section is non-authoritative historical context.
 
 **Files:**
 
@@ -259,10 +263,10 @@ def test_runner_requires_all_states_and_one_device_serial(self):
 **Step 3: Implement frozen-tool orchestration.**
 
 - Resolve and hash the Hvigor/HDC executables at environment-freeze time.
-- Build the application and `ohosTest` target in test mode, install both HAPs, run the generated Inspector tests, and pull only the declared result directory.
+- Build the application and `ohosTest` target in test mode, install both HAPs, run the generated UiTest probes, and pull only the declared result directory.
 - Use `shell=False`, fixed working directories, exact device serial, timeouts, and an argv allowlist. Reject undeclared extra arguments.
 - Verify the installed bundle, test bundle, final HAP hash, generation manifest hash, contract hash, and complete page/state result set.
-- Preserve raw stdout/stderr and exit codes. External success text alone is never evidence of an Inspector capture.
+- Preserve raw stdout/stderr and exit codes. External success text alone is never UiTest evidence.
 - Keep fake executables only in unit tests; production validation rejects the test-fixture environment marker.
 
 **Step 4: Run focused tests.**
@@ -276,7 +280,7 @@ python .codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_
 
 ```powershell
 git add .codeartsdoer/skills/harmonyos-feature-implementation
-git commit -m "feat: run and attest real ArkUI Inspector captures"
+git commit -m "feat: run and attest hash-bound UiTest snapshots"
 ```
 
 ## Task 5: Add Deterministic Cross-Platform Comparison Engines
@@ -391,7 +395,7 @@ def test_plan_cannot_change_frozen_expected_value(self):
 
 - Verification plans may declare actions and capture commands but cannot declare expected values or final status.
 - Load expected observables, component requirements, geometry, transitions, and side-effect predicates from the locked page contract.
-- Bind raw screenshot, raw Inspector tree, normalized tree, assertions, operation trace, source snapshot, build artifact, environment, and comparator results into one evidence manifest.
+- Bind the raw state screenshot, UiTest component snapshot, hash-bound operation trace, UiTest screenshot, assertions, test/final HAPs, source snapshot, environment, page plan, generation manifest, and comparator results into one evidence manifest.
 - Set evidence status from comparator aggregation only.
 - Reject evidence if capture actor equals page owner, capability owner, or reviewer.
 - Seal evidence directories after writing and record every file hash in the evidence index.
@@ -456,7 +460,7 @@ def test_human_exception_cannot_erase_machine_difference(self):
 - Route comparator differences into grouped repair tickets: carrier/navigation, missing UI, geometry/visual, behavior/business logic, side effects/capabilities, or infrastructure.
 - Bind each repair to the original page owner and the exact failed comparison IDs.
 - At attempt exhaustion, create `REVIEW_REQUIRED`; never create a synthetic pass.
-- Toolchain, Inspector, or comparator execution faults create `UPSTREAM_BLOCKED` with command evidence; they do not consume a business-code repair attempt until infrastructure is restored.
+- Toolchain, UiTest, frozen navigation-adapter, or comparator execution faults create `UPSTREAM_BLOCKED` with command evidence; they do not consume a business-code repair attempt until infrastructure is restored.
 - Human exceptions require reviewer ID, scope, rationale, waived comparison IDs, expiry or permanent flag, risk statement, signature digest, and controller countersignature.
 - Reject broad exceptions such as `all`, `page`, or an empty comparison list.
 
@@ -533,7 +537,7 @@ git commit -m "feat: close Gate 4 on one final integrated build"
 - Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/feature-workflow.md`
 - Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/roles-and-authority.md`
 - Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/observable-consistency-contract.md`
-- Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/arkui-inspector-evidence.md`
+- Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/ui-test-snapshot-evidence.md`
 - Modify: `.codeartsdoer/skills/harmonyos-feature-implementation/references/review-and-rework.md`
 - Modify: `.codeartsdoer/skills/android-harmony-migration-controller/SKILL.md`
 - Modify: `.codeartsdoer/skills/android-harmony-migration-controller/references/phase-4-handoff.md`
@@ -561,12 +565,12 @@ def test_skill_requires_page_task_per_page(self):
 
 **Step 3: Rewrite documentation and routing.**
 
-- Make page contracts, page work orders, capability work orders, Inspector execution, deterministic comparison, repair budget, final build, and Gate 4 the only documented path.
-- Clearly state Inspector limits: it observes component tree/properties/geometry/state but not application business semantics or event method bodies; behavior and side effects therefore require separate deterministic evidence.
+- Make page contracts, page work orders, capability work orders, UiTest execution, deterministic comparison, repair budget, final build, and Gate 4 the only documented path.
+- Clearly state UiTest limits: component lookup and geometry do not prove business semantics; behavior, navigation, return paths, and side effects require separate deterministic evidence.
 - Explain that “one agent per page” means one exclusive owner/task identity, not guaranteed simultaneous execution.
 - Remove advice permitting visual simplification, carrier substitution, deferred page completion, self-review, or model judgement as acceptance.
 - Update one-shot controller prompts so Phase 4 fans out page/capability tasks and converges them before final validation.
-- Add positive/negative trigger cases for page-level migration, Inspector verification, dialog substitution, model-authored pass, and exhausted repairs.
+- Add positive/negative trigger cases for page-level migration, UiTest verification, dialog substitution, model-authored pass, and exhausted repairs.
 
 **Step 4: Run policy tests and YAO validation.**
 
@@ -660,7 +664,7 @@ git commit -m "test: verify page-owned deterministic Phase 4 end to end"
 - Confirm contract schema field types match Python readers, CSV writers, templates, and controller validators.
 - Confirm no acceptance status is accepted from an LLM response, external command payload, review template, or CLI flag.
 - Confirm all distinct Phase 2 pages have distinct owners and CodeArts task IDs, while shared capabilities have separate orders.
-- Confirm the Inspector bridge is generated into `ohosTest`, executed, and cryptographically bound to pulled evidence.
+- Confirm UiTest probes are generated only into `ohosTest`, executed, isolated per frozen state/action, and cryptographically bound to pulled evidence.
 - Confirm carrier, tree, geometry, screenshot, behavior, side-effect, navigation, and final-build checks all fail closed.
 - Confirm attempt `0`, repair `1`, and repair `2` are the only automatic attempts.
 - Confirm human exceptions are narrow, separately signed, and preserve original machine differences.

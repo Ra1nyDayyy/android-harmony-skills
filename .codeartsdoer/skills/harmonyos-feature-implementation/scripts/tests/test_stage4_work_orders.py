@@ -19,6 +19,7 @@ SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS))
 
 import stage4_work_orders as orders_module  # noqa: E402
+from page_acceptance_contract import canonical_contract_sha256  # noqa: E402
 from stage4_work_orders import (  # noqa: E402
     issue_capability_order,
     issue_page_order,
@@ -120,7 +121,7 @@ class Stage4WorkOrdersTest(unittest.TestCase):
             "page_id": page_id,
             "page_name": str(contract["page_name"]),
             "relative_path": f"page-contracts/{page_id}.json",
-            "contract_sha256": sha256(self._contract_path(page_id)),
+            "contract_sha256": canonical_contract_sha256(contract),
             "state_count": str(len(contract["states"])),
             "feature_ids": "FEATURE-CALC",
             "required_h4env_ids": "H4ENV-001",
@@ -169,7 +170,10 @@ class Stage4WorkOrdersTest(unittest.TestCase):
         self.assertEqual(4, order["phase"])
         self.assertEqual(["STATE-A0", "STATE-A1"], order["state_ids"])
         self.assertEqual(["CAP-CALC"], order["capability_dependencies"])
-        self.assertEqual(sha256(self._contract_path("PAGE-A")), order["page_contract_sha256"])
+        self.assertEqual(
+            canonical_contract_sha256(json.loads(self._contract_path("PAGE-A").read_text(encoding="utf-8"))),
+            order["page_contract_sha256"],
+        )
         self.assertEqual("ui-agent-a", order["ui_understanding_agent_id"])
         self.assertEqual("SEPARATE", order["ui_understanding_role_mode"])
         plan_path = self.ws / order["arkts_page_plan_path"]

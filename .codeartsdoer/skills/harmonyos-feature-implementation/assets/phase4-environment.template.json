@@ -100,11 +100,11 @@
       "success_output_contains": ["SCREENSHOT_OK"],
       "error_output_contains": ["Error:", "Failed:", "Failure:"]
     },
-    "UI_TREE_CAPTURE": {
+    "UITEST_SNAPSHOT_CAPTURE": {
       "resolved_executable": "__FILL_CANONICAL_EXECUTABLE_PATH__",
       "executable_sha256": "__FILL_64_HEX_SHA256__",
-      "required_argv_tokens": ["arkui-inspector-tree", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "{UI_TREE}"],
-      "success_output_contains": ["ARKUI_INSPECTOR_TREE_OK"],
+      "required_argv_tokens": ["uitest-snapshot", "__FILL_EXACT_FROZEN_SERIAL__", "__FILL_FROZEN_BUNDLE_NAME__", "--target", "--test-hap", "{TEST_HAP}", "{UITEST_RESULT}"],
+      "success_output_contains": ["UITEST_SNAPSHOT_OK"],
       "error_output_contains": ["Error:", "Failed:", "Failure:"]
     }
   },

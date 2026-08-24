@@ -118,6 +118,12 @@ def parser() -> argparse.ArgumentParser:
     tree.add_argument("--bundle", required=True)
     tree.add_argument("--target", required=True)
     tree.add_argument("--output", required=True)
+    uitest = sub.add_parser("uitest-snapshot")
+    uitest.add_argument("--serial", required=True)
+    uitest.add_argument("--bundle", required=True)
+    uitest.add_argument("--target", required=True)
+    uitest.add_argument("--test-hap", required=True)
+    uitest.add_argument("--output", required=True)
     smoke = sub.add_parser("smoke")
     smoke.add_argument("--serial", required=True)
     smoke.add_argument("--bundle", required=True)
@@ -286,6 +292,74 @@ def main() -> int:
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
             print(f"UI_TREE_OK serial={args.serial} target={args.target}")
+            return 0
+        if args.action == "uitest-snapshot":
+            require_identity(args.serial, args.bundle)
+            state = load_state()
+            if state.get("smoke_target") != args.target:
+                raise ValueError("UiTest target has no preceding navigation")
+            workspace = Path.cwd().parent
+            manifest = json.loads(
+                (workspace / "ui-test-snapshot-generation-manifest.json").read_text(encoding="utf-8")
+            )
+            probes = [
+                row for row in manifest.get("probes", [])
+                if isinstance(row, dict) and row.get("target_id") == args.target
+            ]
+            if len(probes) != 1:
+                raise ValueError("fixture requires exactly one generated UiTest target probe")
+            probe = probes[0]
+            components = []
+            for index, declaration in enumerate(probe.get("required_components", [])):
+                components.append({
+                    "component_id": declaration["component_id"],
+                    "type": declaration["arkts_type"],
+                    "text": declaration.get("expected_text", ""),
+                    "bounds": {"left": 16, "top": 20 + 48 * index, "right": 304, "bottom": 60 + 48 * index},
+                    "visible": True, "enabled": True, "clickable": True,
+                    "visibility_basis": "UNIQUE_MATCH_AND_VALID_BOUNDS",
+                    "locator_strategy": declaration["locator_strategy"],
+                    "locator_value": declaration["locator_value"], "match_count": 1,
+                })
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps({
+                "probe_id": probe["probe_id"], "components": components,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+            trace = [
+                {"subject_type": "EVENT", "subject_id": action["event_id"],
+                 "action": action["action"], "observable_result": "fixture action observed"}
+                for action in probe.get("declared_actions", [])
+            ]
+            trace.extend(
+                {"subject_type": "TRANSITION", "subject_id": transition["transition_id"],
+                 "action": transition["event_id"], "observable_result": "fixture target and return observed"}
+                for transition in probe.get("declared_transitions", [])
+            )
+            output.with_name("ui-test-snapshot-operation-trace.json").write_text(
+                json.dumps(trace, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            write_png(output.with_name("ui-test-snapshot.png"), 320, 640)
+            test_hap = Path(args.test_hap)
+            artifact = Path(str(state.get("artifact", "")))
+            command_argv = [str(Path(__file__).resolve()), *sys.argv[1:]]
+            metadata = {
+                "probe_id": probe["probe_id"], "page_id": probe["page_id"],
+                "state_id": probe["state_id"],
+                "test_hap_sha256": hashlib.sha256(test_hap.read_bytes()).hexdigest(),
+                "final_hap_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "device_identity_sha256": hashlib.sha256(json.dumps(
+                    {"device_id": "HDEVICE-001", "serial": args.serial},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+                "command_sha256": hashlib.sha256(json.dumps(
+                    command_argv, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")).hexdigest(),
+            }
+            output.with_name("ui-test-snapshot-metadata.json").write_text(
+                json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(f"UITEST_SNAPSHOT_OK serial={args.serial} target={args.target}")
             return 0
         if args.action == "smoke":
             require_identity(args.serial, args.bundle)

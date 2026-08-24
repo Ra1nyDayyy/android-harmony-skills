@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from arkui_inspector import validate_normalized, validate_operation_snapshot
+from uitest_snapshot import validate_uitest_evidence
 
 from _common import (
     PHASE4_CATEGORY_ORDER,
@@ -40,7 +40,7 @@ REQUIRED_ASSERTION_KINDS = {"VISUAL_STATE", "BUSINESS_RESULT", "INTERACTION"}
 SERIAL_CATEGORIES = {
     "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
     "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-    "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 }
 SOURCE_EXTENSIONS = {".ets", ".ts", ".js", ".json", ".json5", ".c", ".cc", ".cpp", ".h", ".hpp"}
 PROJECT_EXCLUDED_PARTS = {
@@ -283,33 +283,6 @@ def validate_source_ref(project: Path, reference: str) -> Path:
     return path
 
 
-def validate_ui_tree(path: Path, environment: dict[str, Any]) -> dict[str, Any]:
-    value = validate_normalized(load_json(path))
-    bundle = str(environment.get("base_application", {}).get("bundle_name", ""))
-    serial = str(environment.get("emulator", {}).get("serial", ""))
-    device_id = str(environment.get("device_id", ""))
-    if not isinstance(value, dict) or value.get("bundle_name") != bundle:
-        raise ValueError("UI tree Bundle identity differs")
-    if not isinstance(value.get("window"), dict) or not value["window"]:
-        raise ValueError("UI tree window is empty")
-    bounds = value.get("bounds")
-    if not isinstance(bounds, dict) or any(
-        not isinstance(bounds.get(field), (int, float))
-        for field in ("x", "y", "width", "height")
-    ) or bounds["width"] <= 0 or bounds["height"] <= 0:
-        raise ValueError("UI tree bounds are invalid")
-    device = value.get("device")
-    if not isinstance(device, dict) or device.get("device_id") != device_id or device.get("serial") != serial:
-        raise ValueError("UI tree emulator identity differs")
-    traces = value.get("operation_trace", [])
-    if not isinstance(traces, list) or any(not isinstance(item, dict) for item in traces):
-        raise ValueError("UI tree operation traces are invalid")
-    for trace in traces:
-        validate_operation_snapshot(trace.get("before_snapshot"))
-        validate_operation_snapshot(trace.get("after_snapshot"))
-    return value
-
-
 def validate_assertions(
     path: Path, bindings: dict[str, str]
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -413,7 +386,7 @@ def validate_command_records(
         if category in {
             "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET",
             "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+            "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
         } and bundle not in argv:
             raise ValueError(f"{label} {command_id} lacks the frozen Bundle")
 
@@ -510,7 +483,71 @@ def validate_hevd(
     screenshot_meta = metadata.get("screenshot", {})
     if screenshot_meta.get("sha256") != sha256_file(screenshot) or screenshot_meta.get("width") != width or screenshot_meta.get("height") != height:
         raise ValueError(f"HEVD screenshot metadata differs: {evidence_id}")
-    validate_ui_tree(directory / "ui-tree.json", environment)
+    workspace = next(
+        (parent for parent in directory.parents if (parent / "stage-04-input-lock.json").is_file()),
+        None,
+    )
+    if workspace is None:
+        raise ValueError(f"HEVD has no canonical Phase 4 workspace: {evidence_id}")
+    input_lock = load_json(workspace / "stage-04-input-lock.json")
+    generation_lock = input_lock.get("ui_test_snapshot_generation")
+    generation_manifest_path = workspace / "ui-test-snapshot-generation-manifest.json"
+    if (
+        not isinstance(generation_lock, dict)
+        or generation_lock.get("sha256") != sha256_file(generation_manifest_path)
+        or generation_lock.get("contract") != "ui-test-snapshot-generation-v1"
+    ):
+        raise ValueError(f"HEVD UiTest generation lock differs: {evidence_id}")
+    generation_manifest = load_json(generation_manifest_path)
+    probe_id = f"{index['page_id']}::{index['state_id']}"
+    probes = [
+        row for row in generation_manifest.get("probes", [])
+        if isinstance(row, dict) and row.get("probe_id") == probe_id
+    ]
+    plans = [
+        row for row in generation_manifest.get("page_plans", [])
+        if isinstance(row, dict) and row.get("page_id") == index["page_id"]
+    ]
+    if len(probes) != 1 or len(plans) != 1:
+        raise ValueError(f"HEVD UiTest probe/page plan is missing: {evidence_id}")
+    page_plan = safe_relative_path(workspace, str(plans[0].get("relative_path", "")), "ArkTS page plan")
+    if not page_plan.is_file() or sha256_file(page_plan) != plans[0].get("sha256"):
+        raise ValueError(f"HEVD UiTest page plan hash differs: {evidence_id}")
+    test_hap = directory / "uitest-test.hap"
+    if not test_hap.is_file():
+        raise ValueError(f"HEVD UiTest HAP is missing: {evidence_id}")
+    validate_hap(test_hap)
+    uitest_commands = [
+        row for row in metadata.get("commands", [])
+        if isinstance(row, dict) and row.get("category") == "UITEST_SNAPSHOT_CAPTURE"
+    ]
+    if len(uitest_commands) != 1:
+        raise ValueError(f"HEVD UiTest command differs: {evidence_id}")
+    command_sha256 = hashlib.sha256(json.dumps(
+        uitest_commands[0].get("argv"), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    device_identity_sha256 = hashlib.sha256(json.dumps(
+        {"device_id": environment["device_id"], "serial": environment["emulator"]["serial"]},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    page_contract = load_json(workspace / "page-contracts" / f"{index['page_id']}.json")
+    validate_uitest_evidence(
+        directory, probes[0], page_id=index["page_id"], state_id=index["state_id"],
+        bundle_name=str(environment["base_application"]["bundle_name"]),
+        carrier=str(page_contract["carrier_type"]), target_id=str(parity["target_id"]),
+        generation_manifest_sha256=sha256_file(generation_manifest_path),
+        page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+        final_hap_sha256=str(primary["sha256"]),
+        device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+        required_event_ids={
+            str(row["event_id"]) for row in page_contract.get("interaction_bindings", [])
+            if isinstance(row, dict) and row.get("event_id")
+        },
+        required_transition_ids={
+            str(row["transition_id"]) for row in page_contract.get("transitions", [])
+            if isinstance(row, dict) and row.get("transition_id")
+        },
+    )
     bindings = {
         "parity_id": parity["parity_id"], "hbuild_id": index["hbuild_id"],
         "h4env_id": index["h4env_id"], "device_id": str(environment["device_id"]),
@@ -520,13 +557,22 @@ def validate_hevd(
     _, assertions = validate_assertions(directory / "assertions.json", bindings)
     if metadata.get("assertions", {}).get("sha256") != sha256_file(directory / "assertions.json"):
         raise ValueError(f"HEVD assertions hash differs: {evidence_id}")
-    if metadata.get("ui_tree", {}).get("sha256") != sha256_file(directory / "ui-tree.json"):
-        raise ValueError(f"HEVD UI tree hash differs: {evidence_id}")
+    uitest_meta = metadata.get("ui_test_snapshot", {})
+    if (
+        not isinstance(uitest_meta, dict)
+        or uitest_meta.get("sha256") != sha256_file(directory / "ui-test-snapshot.json")
+        or uitest_meta.get("metadata_sha256") != sha256_file(directory / "ui-test-snapshot-metadata.json")
+        or uitest_meta.get("operation_trace_sha256") != sha256_file(directory / "ui-test-snapshot-operation-trace.json")
+        or uitest_meta.get("screenshot_sha256") != sha256_file(directory / "ui-test-snapshot.png")
+        or uitest_meta.get("test_hap_sha256") != sha256_file(test_hap)
+        or uitest_meta.get("final_hap_sha256") != primary.get("sha256")
+    ):
+        raise ValueError(f"HEVD UiTest snapshot hashes differ: {evidence_id}")
     validate_command_records(metadata.get("commands"), EVIDENCE_SEQUENCE, environment, directory, evidence_id)
     result_categories = {
         "BUSINESS_ASSERT": ("assertions.json", directory / "assertions.json"),
         "SCREENSHOT_CAPTURE": ("screenshot.png", screenshot),
-        "UI_TREE_CAPTURE": ("ui-tree.json", directory / "ui-tree.json"),
+        "UITEST_SNAPSHOT_CAPTURE": ("ui-test-snapshot.json", directory / "ui-test-snapshot.json"),
     }
     for command in metadata["commands"]:
         expected = result_categories.get(command.get("category"))

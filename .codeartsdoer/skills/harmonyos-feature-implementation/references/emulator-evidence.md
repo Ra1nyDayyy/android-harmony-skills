@@ -13,7 +13,7 @@ Formal evidence is captured only after installing the sealed `HBUILD-ID` artifac
 7. Navigate by the documented user intent.
 8. Run business/data/interaction assertions.
 9. Capture a PNG from the emulator.
-10. Run the generated test-only `@ohos.UiTest` probe and persist its component-query and action results.
+10. Run the generated test-only UiTest probe imported from `@kit.TestKit` and persist its component-query and action results.
 
 Every device-bound command contains the frozen selector tokens. Preview, design canvas, static render, manually resized image, or a screenshot from another device is invalid.
 

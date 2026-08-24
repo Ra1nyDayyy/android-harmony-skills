@@ -27,7 +27,12 @@ FEATURE_SCRIPTS = (
 )
 if str(FEATURE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(FEATURE_SCRIPTS))
-from arkui_inspector import validate_normalized as validate_arkui_inspector_tree  # noqa: E402
+from uitest_snapshot import validate_uitest_evidence  # noqa: E402
+from stage4_work_orders import (  # noqa: E402
+    _page_contracts,
+    _registered_orders,
+    validate_order_coverage,
+)
 
 
 ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{2,79}$")
@@ -1091,12 +1096,12 @@ def validate_phase4_commands(
         serial_categories = {
             "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
             "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+            "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
         }
         bundle_categories = {
             "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET",
             "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+            "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
         }
         selector_present = False
         if isinstance(plan_argv, list) and isinstance(selector, list) and selector:
@@ -2258,7 +2263,7 @@ def validate_phase4(
         "acceptance-ledger.csv", "rework-tickets.csv", "environments/h4env-registry.csv",
         "harmony-project", "builds", "evidence", "reviews", "stage-04-gate-report.json",
         "stage-04-closure-manifest.sha256", "CLOSED",
-        "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
+        "ui-test-snapshot-generation-manifest.json",
     )
     for relative in required:
         candidate = phase_dir / relative
@@ -2292,7 +2297,7 @@ def validate_phase4(
         "page_contract_registry", "page_contracts",
         "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
         "phase3_source_snapshot_sha256",
-        "arkui_inspector_bridge",
+        "ui_test_snapshot_generation",
     }
     expected_phase_manifest_keys = {
         "schema_version", "run_id", "project_id", "phase", "status", "initialized_at",
@@ -2320,20 +2325,22 @@ def validate_phase4(
         or input_lock.get("run_id") != scope.get("run_id")
     ):
         errors.append("Phase 4 manifest/input-lock identity differs from controller scope")
-    inspector_bridge = phase_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
-    bridge_lock = input_lock.get("arkui_inspector_bridge")
+    generation_manifest = phase_dir / "ui-test-snapshot-generation-manifest.json"
+    generation_lock = input_lock.get("ui_test_snapshot_generation")
     if (
-        not isinstance(bridge_lock, dict)
-        or set(bridge_lock) != {"relative_path", "sha256", "contract", "production_packaging"}
-        or bridge_lock.get("relative_path")
-        != "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets"
-        or bridge_lock.get("contract") != "arkui-inspector-bridge-v1"
-        or bridge_lock.get("production_packaging") != "FORBIDDEN"
-        or not inspector_bridge.is_file()
-        or bridge_lock.get("sha256") != sha256_file(inspector_bridge)
-        or inspector_bridge.stat().st_mode & 0o222
+        not isinstance(generation_lock, dict)
+        or set(generation_lock) != {
+            "relative_path", "sha256", "generation_id", "page_ids", "probe_count",
+            "contract", "production_packaging",
+        }
+        or generation_lock.get("relative_path") != "ui-test-snapshot-generation-manifest.json"
+        or generation_lock.get("contract") != "ui-test-snapshot-generation-v1"
+        or generation_lock.get("production_packaging") != "FORBIDDEN"
+        or not generation_manifest.is_file()
+        or generation_lock.get("sha256") != sha256_file(generation_manifest)
+        or generation_manifest.stat().st_mode & 0o222
     ):
-        errors.append("Phase 4 ArkUI Inspector bridge is missing, mutable, or hash-mismatched")
+        errors.append("Phase 4 UiTest generation manifest is missing, mutable, or hash-mismatched")
     for frozen_name in (
         "stage-04-input-lock.json", "phase-manifest.json", "initial-project-snapshot.json",
         "asset-conversion-contracts.json",
@@ -2588,7 +2595,7 @@ def validate_phase4(
     required_categories = {
         "TOOLCHAIN", "CLEAN_BUILD", "BUNDLE_CHECK", "SIGNING_CHECK", "DEVICE_CHECK",
         "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH",
-        "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+        "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
     }
     environments: dict[str, dict[str, Any]] = {}
     scope_environments = {
@@ -2698,12 +2705,12 @@ def validate_phase4(
                         or (category in {
                             "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET",
                             "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE",
-                            "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                            "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
                         } and serial not in required_tokens)
                         or (category in {
                             "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET",
                             "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-                            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                            "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
                         } and bundle not in required_tokens)
                     ):
                         errors.append(f"{h4env_id}: invalid frozen executable contract: {category}")
@@ -3078,6 +3085,24 @@ def validate_phase4(
                 errors.append(f"Phase 3 project conflicts with DIRECT_COPY asset: {asset_id}")
             elif not existing_direct:
                 expected_initial_entries.append(direct_entry)
+        generation_manifest_value = load_json(
+            phase_dir / "ui-test-snapshot-generation-manifest.json"
+        )
+        for generated in generation_manifest_value.get("generated_files", []):
+            if not isinstance(generated, dict):
+                errors.append("UiTest generation manifest contains a non-object file record")
+                continue
+            generated_path = safe_relative_path(
+                project, str(generated.get("relative_path", "")),
+                "generated UiTest source", errors,
+            )
+            if not generated_path or not generated_path.is_file():
+                continue
+            expected_initial_entries.append({
+                "path": generated_path.relative_to(project).as_posix(),
+                "sha256": sha256_file(generated_path),
+                "size": generated_path.stat().st_size,
+            })
         expected_initial_entries.sort(key=lambda item: str(item.get("path", "")))
         initial_snapshot = load_json(phase_dir / "initial-project-snapshot.json")
         initial_canonical = json.dumps(
@@ -3334,7 +3359,11 @@ def validate_phase4(
         read_csv_rows(phase3_dir / "capability-contracts.csv"),
         "capability_requirement_id", "Phase 3 capability contracts", errors,
     )
-    feature_registry_rows = read_csv_rows(phase_dir / "feature-work-order-registry.csv")
+    page_order_mode = (phase_dir / "page-work-order-registry.csv").is_file()
+    feature_registry_rows = (
+        [] if page_order_mode
+        else read_csv_rows(phase_dir / "feature-work-order-registry.csv")
+    )
     feature_registry = index_unique_rows(
         feature_registry_rows, "work_order_id", "Phase 4 feature work-order registry", errors,
     )
@@ -3342,9 +3371,9 @@ def validate_phase4(
     for row in feature_registry_rows:
         if row.get("status") == "ISSUED":
             registry_by_feature.setdefault(row.get("feature_id", ""), []).append(row)
-    if set(registry_by_feature) != included_features or any(
+    if not page_order_mode and (set(registry_by_feature) != included_features or any(
         len(rows) != 1 for rows in registry_by_feature.values()
-    ):
+    )):
         errors.append("Phase 4 must have exactly one active feature work order per included feature")
     feature_order_keys = {
         "schema_version", "work_order_id", "run_id", "phase", "feature_id", "status",
@@ -3362,8 +3391,132 @@ def validate_phase4(
     feature_actor_ids: dict[str, set[str]] = {}
     feature_exclusive_paths: dict[str, list[Path]] = {}
     all_exclusive_paths: list[tuple[Path, str]] = []
+    capability_order_owners: dict[str, str] = {}
     phase4_manifest_sha256 = sha256_file(phase_dir / "phase-manifest.json")
-    for feature_id in sorted(included_features):
+    if page_order_mode:
+        try:
+            validate_order_coverage(phase_dir)
+            page_contracts = _page_contracts(phase_dir)
+            governed_orders = _registered_orders(phase_dir, page_contracts)
+            page_orders = {
+                str(order["page_id"]): order
+                for order in governed_orders if order.get("page_id")
+            }
+            capability_order_owners = {
+                str(order["capability_id"]): str(order["owner_id"])
+                for order in governed_orders if order.get("capability_id")
+            }
+            page_ledger = index_unique_rows(
+                read_csv_rows(phase_dir / "page-implementation-ledger.csv"),
+                "page_id", "Phase 4 page implementation ledger", errors,
+            )
+            if set(page_ledger) != set(page_contracts) or set(page_orders) != set(page_contracts):
+                errors.append("Phase 4 page work-order/ledger/contract coverage differs")
+            seen_page_owners: set[str] = set()
+            seen_ui_agents: set[str] = set()
+            seen_task_ids: set[str] = set()
+            for page_id, (contract, _, contract_sha256) in page_contracts.items():
+                order = page_orders.get(page_id, {})
+                row = page_ledger.get(page_id, {})
+                owner_id = str(order.get("owner_id", ""))
+                ui_agent_id = str(order.get("ui_understanding_agent_id", ""))
+                task_id = str(order.get("codearts_task_id", ""))
+                expected_states = sorted(str(item["state_id"]) for item in contract.get("states", []))
+                expected_paths = order.get("exclusive_code_paths")
+                try:
+                    ledger_states = json.loads(row.get("state_ids", ""))
+                    ledger_paths = json.loads(row.get("exclusive_code_paths", ""))
+                except (TypeError, json.JSONDecodeError):
+                    ledger_states = ledger_paths = None
+                if (
+                    row.get("work_order_id") != order.get("work_order_id")
+                    or row.get("owner_id") != owner_id
+                    or row.get("ui_understanding_agent_id") != ui_agent_id
+                    or row.get("codearts_task_id") != task_id
+                    or row.get("contract_sha256") != contract_sha256
+                    or ledger_states != expected_states
+                    or ledger_paths != expected_paths
+                    or row.get("status") != "ACCEPTED"
+                    or not row.get("updated_at")
+                ):
+                    errors.append(f"Page implementation ledger differs from frozen page order: {page_id}")
+                if owner_id in seen_page_owners:
+                    errors.append(f"Page owner is reused across pages: {owner_id}")
+                if ui_agent_id in seen_ui_agents:
+                    errors.append(f"UI-understanding agent is reused across pages: {ui_agent_id}")
+                if task_id in seen_task_ids:
+                    errors.append(f"CodeArts task ID is reused: {task_id}")
+                seen_page_owners.add(owner_id)
+                seen_ui_agents.add(ui_agent_id)
+                seen_task_ids.add(task_id)
+                actors = {owner_id, ui_agent_id}
+                feature_ids = {
+                    str(value) for value in contract.get("feature_ids", [])
+                    if isinstance(value, str) and value
+                }
+                for feature_id in feature_ids:
+                    feature_actor_ids.setdefault(feature_id, set()).update(actors)
+                    feature_exclusive_paths.setdefault(feature_id, [])
+                for code_relative in expected_paths if isinstance(expected_paths, list) else []:
+                    code_path = safe_relative_path(
+                        project, str(code_relative), f"exclusive page code path for {page_id}", errors
+                    )
+                    if not code_path:
+                        continue
+                    for existing, existing_owner in all_exclusive_paths:
+                        try:
+                            code_path.relative_to(existing)
+                            overlaps = True
+                        except ValueError:
+                            try:
+                                existing.relative_to(code_path)
+                                overlaps = True
+                            except ValueError:
+                                overlaps = False
+                        if overlaps:
+                            errors.append(
+                                f"Page/capability exclusive code ownership overlaps: {page_id}/{existing_owner}"
+                            )
+                    all_exclusive_paths.append((code_path, page_id))
+                    for feature_id in feature_ids:
+                        feature_exclusive_paths[feature_id].append(code_path)
+            for order in governed_orders:
+                capability_id = str(order.get("capability_id", ""))
+                if not capability_id:
+                    continue
+                task_id = str(order.get("codearts_task_id", ""))
+                if task_id in seen_task_ids:
+                    errors.append(f"CodeArts task ID is reused: {task_id}")
+                seen_task_ids.add(task_id)
+                for code_relative in order.get("exclusive_code_paths", []):
+                    code_path = safe_relative_path(
+                        project, str(code_relative),
+                        f"exclusive capability code path for {capability_id}", errors,
+                    )
+                    if not code_path:
+                        continue
+                    for existing, existing_owner in all_exclusive_paths:
+                        try:
+                            code_path.relative_to(existing)
+                            overlaps = True
+                        except ValueError:
+                            try:
+                                existing.relative_to(code_path)
+                                overlaps = True
+                            except ValueError:
+                                overlaps = False
+                        if overlaps:
+                            errors.append(
+                                "Page/capability exclusive code ownership overlaps: "
+                                f"{capability_id}/{existing_owner}"
+                            )
+                    all_exclusive_paths.append((code_path, capability_id))
+            if set(feature_actor_ids) != included_features:
+                errors.append("Page contracts do not exactly cover included feature ownership")
+        except (OSError, TypeError, ValueError) as exc:
+            errors.append(f"Cannot validate Phase 4 page/capability orders: {exc}")
+
+    for feature_id in sorted(set() if page_order_mode else included_features):
         rows = registry_by_feature.get(feature_id, [])
         if len(rows) != 1:
             continue
@@ -3786,7 +3939,7 @@ def validate_phase4(
             width, height = validate_complete_png(screenshot)
             screenshot_digest = sha256_file(screenshot)
             screenshot_record = metadata.get("screenshot") if isinstance(metadata.get("screenshot"), dict) else {}
-            ui_tree_record = metadata.get("ui_tree") if isinstance(metadata.get("ui_tree"), dict) else {}
+            uitest_record = metadata.get("ui_test_snapshot") if isinstance(metadata.get("ui_test_snapshot"), dict) else {}
             assertion_record = metadata.get("assertions") if isinstance(metadata.get("assertions"), dict) else {}
             comparison = environment.get("comparison") if isinstance(environment.get("comparison"), dict) else {}
             if (
@@ -3798,35 +3951,71 @@ def validate_phase4(
                 != (comparison.get("screenshot_width"), comparison.get("screenshot_height"))
             ):
                 errors.append(f"{evidence_id}: screenshot bytes, metadata, or dimensions differ")
-            ui_tree = load_json(evidence_dir / "ui-tree.json")
-            try:
-                ui_tree = validate_arkui_inspector_tree(ui_tree)
-            except ValueError as exc:
-                errors.append(f"{evidence_id}: {exc}")
-            ui_device = ui_tree.get("device") if isinstance(ui_tree.get("device"), dict) else {}
-            ui_bounds = ui_tree.get("bounds") if isinstance(ui_tree.get("bounds"), dict) else {}
-            if (
-                not ui_tree
-                or ui_tree.get("bundle_name") != environment.get("base_application", {}).get("bundle_name")
-                or not isinstance(ui_tree.get("window"), dict)
-                or not ui_tree.get("window")
-                or not isinstance(ui_tree.get("root"), dict)
-                or not ui_tree.get("root")
-                or not isinstance(ui_tree.get("nodes"), list)
-                or not ui_tree.get("nodes")
-                or ui_device.get("device_id") != environment.get("device_id")
-                or ui_device.get("serial") != environment.get("emulator", {}).get("serial")
-                or any(
-                    not isinstance(ui_bounds.get(field), (int, float))
-                    for field in ("x", "y", "width", "height")
+            generation = load_json(generation_manifest)
+            probe_id = f"{row.get('page_id', '')}::{row.get('state_id', '')}"
+            probes = [
+                item for item in generation.get("probes", [])
+                if isinstance(item, dict) and item.get("probe_id") == probe_id
+            ]
+            plans = [
+                item for item in generation.get("page_plans", [])
+                if isinstance(item, dict) and item.get("page_id") == row.get("page_id")
+            ]
+            page_contract = load_json(phase_dir / "page-contracts" / f"{row.get('page_id', '')}.json")
+            test_hap = evidence_dir / "uitest-test.hap"
+            uitest_commands = [
+                item for item in metadata.get("commands", [])
+                if isinstance(item, dict) and item.get("category") == "UITEST_SNAPSHOT_CAPTURE"
+            ]
+            if len(probes) != 1 or len(plans) != 1 or len(uitest_commands) != 1 or not test_hap.is_file():
+                errors.append(f"{evidence_id}: UiTest probe, plan, command, or test HAP is missing")
+            else:
+                page_plan = safe_relative_path(
+                    phase_dir, str(plans[0].get("relative_path", "")),
+                    f"{evidence_id} ArkTS page plan", errors,
                 )
-                or not isinstance(ui_bounds.get("width"), (int, float))
-                or ui_bounds.get("width", 0) <= 0
-                or ui_bounds.get("height", 0) <= 0
-                or ui_tree_record.get("path") != "ui-tree.json"
-                or ui_tree_record.get("sha256") != sha256_file(evidence_dir / "ui-tree.json")
+                if not page_plan or not page_plan.is_file() or sha256_file(page_plan) != plans[0].get("sha256"):
+                    errors.append(f"{evidence_id}: UiTest page plan hash differs")
+                else:
+                    command_sha256 = hashlib.sha256(json.dumps(
+                        uitest_commands[0].get("argv"), ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8")).hexdigest()
+                    device_identity_sha256 = hashlib.sha256(json.dumps(
+                        {"device_id": environment.get("device_id"), "serial": environment.get("emulator", {}).get("serial")},
+                        sort_keys=True, separators=(",", ":"),
+                    ).encode("utf-8")).hexdigest()
+                    try:
+                        validate_uitest_evidence(
+                            evidence_dir, probes[0], page_id=str(row.get("page_id", "")),
+                            state_id=str(row.get("state_id", "")),
+                            bundle_name=str(environment.get("base_application", {}).get("bundle_name", "")),
+                            carrier=str(page_contract.get("carrier_type", "")),
+                            target_id=str(parity.get(str(row.get("parity_id", "")), {}).get("target_id", "")),
+                            generation_manifest_sha256=sha256_file(generation_manifest),
+                            page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+                            final_hap_sha256=str(primary.get("sha256", "")),
+                            device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+                            required_event_ids={
+                                str(item["event_id"]) for item in page_contract.get("interaction_bindings", [])
+                                if isinstance(item, dict) and item.get("event_id")
+                            },
+                            required_transition_ids={
+                                str(item["transition_id"]) for item in page_contract.get("transitions", [])
+                                if isinstance(item, dict) and item.get("transition_id")
+                            },
+                        )
+                    except ValueError as exc:
+                        errors.append(f"{evidence_id}: {exc}")
+            if (
+                uitest_record.get("path") != "ui-test-snapshot.json"
+                or uitest_record.get("sha256") != sha256_file(evidence_dir / "ui-test-snapshot.json")
+                or uitest_record.get("metadata_sha256") != sha256_file(evidence_dir / "ui-test-snapshot-metadata.json")
+                or uitest_record.get("operation_trace_sha256") != sha256_file(evidence_dir / "ui-test-snapshot-operation-trace.json")
+                or uitest_record.get("screenshot_sha256") != sha256_file(evidence_dir / "ui-test-snapshot.png")
+                or uitest_record.get("test_hap_sha256") != sha256_file(test_hap)
+                or uitest_record.get("final_hap_sha256") != primary.get("sha256")
             ):
-                errors.append(f"{evidence_id}: UI tree is empty")
+                errors.append(f"{evidence_id}: UiTest snapshot metadata hashes differ")
             assertions = load_json(evidence_dir / "assertions.json")
             assertion_rows = assertions.get("assertions") if isinstance(assertions.get("assertions"), list) else []
             assertion_kinds = {
@@ -3863,7 +4052,7 @@ def validate_phase4(
                 [
                     "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
                     "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-                    "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+                    "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
                 ],
                 f"HEVD {evidence_id}",
                 errors,
@@ -3871,7 +4060,7 @@ def validate_phase4(
             result_bindings = {
                 "BUSINESS_ASSERT": ("assertions.json", evidence_dir / "assertions.json"),
                 "SCREENSHOT_CAPTURE": ("screenshot.png", screenshot),
-                "UI_TREE_CAPTURE": ("ui-tree.json", evidence_dir / "ui-tree.json"),
+                "UITEST_SNAPSHOT_CAPTURE": ("ui-test-snapshot.json", evidence_dir / "ui-test-snapshot.json"),
             }
             for command in metadata.get("commands", []):
                 if not isinstance(command, dict):
@@ -3904,7 +4093,7 @@ def validate_phase4(
         "reviewed_visual_element_ids", "differences", "notes", "review_id",
         "inventory_id", "android_evidence_id", "harmony_evidence_id",
         "android_manifest_sha256", "android_screenshot_sha256", "android_layout_sha256",
-        "harmony_manifest_sha256", "harmony_screenshot_sha256", "harmony_ui_tree_sha256",
+        "harmony_manifest_sha256", "harmony_screenshot_sha256", "harmony_ui_test_snapshot_sha256",
         "harmony_assertions_sha256", "reviewer_id", "reviewed_at", "decision",
         "attestations",
     }
@@ -3941,7 +4130,7 @@ def validate_phase4(
                 "android_layout_sha256": sha256_file(android_dir / "layout.json"),
                 "harmony_manifest_sha256": sha256_file(harmony_dir / "manifest.sha256"),
                 "harmony_screenshot_sha256": sha256_file(harmony_dir / "screenshot.png"),
-                "harmony_ui_tree_sha256": sha256_file(harmony_dir / "ui-tree.json"),
+                "harmony_ui_test_snapshot_sha256": sha256_file(harmony_dir / "ui-test-snapshot.json"),
                 "harmony_assertions_sha256": sha256_file(harmony_dir / "assertions.json"),
                 "comparison_sha256": sha256_file(review_path),
             }
@@ -4047,11 +4236,13 @@ def validate_phase4(
     if expected_review_ids != actual_review_ids:
         errors.append("Phase 4 review files do not exactly match the acceptance ledger")
 
-    implementation_rows = read_csv_rows(phase_dir / "implementation-ledger.csv")
+    implementation_rows = (
+        [] if page_order_mode else read_csv_rows(phase_dir / "implementation-ledger.csv")
+    )
     implementation = index_unique_rows(
         implementation_rows, "feature_id", "Phase 4 implementation ledger", errors
     )
-    if set(implementation) != included_features:
+    if not page_order_mode and set(implementation) != included_features:
         errors.append("Phase 4 implementation ledger differs from included feature scope")
     forbidden_implementers = {
         phase4_ownership.get("verification_executor_id"),
@@ -4588,7 +4779,11 @@ def validate_phase4(
             or row.get("harmony_module_id") != source_contract.get("harmony_module_id")
             or row.get("contract_file") != source_contract.get("contract_file")
             or row.get("contract_symbol") != source_contract.get("contract_symbol")
-            or row.get("implemented_by") != feature_ownership.get("native_capability_agent_id")
+            or row.get("implemented_by") != (
+                capability_order_owners.get(requirement_id)
+                if page_order_mode
+                else feature_ownership.get("native_capability_agent_id")
+            )
             or row.get("implemented_by") in forbidden_implementers
             or not isinstance(evidence_ids, list)
             or not evidence_ids
@@ -4660,7 +4855,7 @@ def validate_phase4(
     # The final independent report is itself bound by CLOSED; verify its reviewer and summaries.
     report_counts = stage_report.get("counts") if isinstance(stage_report.get("counts"), dict) else {}
     expected_counts = {
-        "features": len(implementation),
+        "features": len(included_features) if page_order_mode else len(implementation),
         "parity_rows": len(parity),
         "active_evidence": len(used_evidence_ids),
         "assets": len(migrated_assets),

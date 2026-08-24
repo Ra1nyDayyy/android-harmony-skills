@@ -8,7 +8,7 @@
 
 ## Claim boundary
 
-Build/install/launch is necessary but insufficient. Model judgment, a PASS string, a visually pleasant redesign, a page-to-dialog substitution, omitted controls, fake data, or native optimization without observable parity cannot close Phase 4. Package-governance reports do not substitute for Android/Harmony screenshots, `@ohos.UiTest` component and action results, assertions, side-effect probes, and independent acceptance.
+Build/install/launch is necessary but insufficient. Model judgment, a PASS string, a visually pleasant redesign, a page-to-dialog substitution, omitted controls, fake data, or native optimization without observable parity cannot close Phase 4. Package-governance reports do not substitute for Android/Harmony screenshots, UiTest component and action results, assertions, side-effect probes, and independent acceptance.
 
 ## Routing boundary
 

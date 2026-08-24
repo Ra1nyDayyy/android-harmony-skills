@@ -225,7 +225,7 @@ class ReviewFixture:
         self.harmony.mkdir(parents=True)
         (self.harmony / "screenshot.png").write_bytes(valid_png())
         write_json(
-            self.harmony / "ui-tree.json",
+            self.harmony / "ui-test-snapshot.json",
             {
                 "window": {"id": "window-1"},
                 "root": "node-1",
@@ -523,7 +523,7 @@ class ReviewParityTests(unittest.TestCase):
                     "android_layout_sha256": sha256_file(fixture.android / "layout.json"),
                     "harmony_manifest_sha256": sha256_file(fixture.harmony / "manifest.sha256"),
                     "harmony_screenshot_sha256": sha256_file(fixture.harmony / "screenshot.png"),
-                    "harmony_ui_tree_sha256": sha256_file(fixture.harmony / "ui-tree.json"),
+                    "harmony_ui_test_snapshot_sha256": sha256_file(fixture.harmony / "ui-test-snapshot.json"),
                     "harmony_assertions_sha256": sha256_file(fixture.harmony / "assertions.json"),
                 }
                 for field, expected in expected_hashes.items():

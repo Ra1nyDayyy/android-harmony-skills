@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate conservation-bound @ohos.UiTest page probes under ohosTest only."""
+"""Generate conservation-bound UiTest page probes under ohosTest only."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any
 
 from _common import load_json, sha256_file, validate_id
 from arkts_page_plan import compile_arkts_page_plan, validate_arkts_page_plan
+from page_acceptance_contract import canonical_contract_sha256
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -72,17 +73,29 @@ def _contracts(workspace: Path) -> list[tuple[dict[str, Any], str, str]]:
         path = workspace / Path(*PurePosixPath(relative).parts)
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"{page_id} page contract is missing")
-        digest = sha256_file(path)
-        if digest != row.get("contract_sha256"):
-            raise ValueError(f"{page_id} page contract hash differs")
         contract = load_json(path)
         if not isinstance(contract, dict) or contract.get("page_id") != page_id:
             raise ValueError(f"{page_id} page contract identity differs")
+        digest = canonical_contract_sha256(contract)
+        if digest != row.get("contract_sha256"):
+            raise ValueError(f"{page_id} page contract hash differs")
         result.append((contract, relative, digest))
     return sorted(result, key=lambda item: str(item[0]["page_id"]))
 
 
-def _probes(plan: dict[str, Any]) -> list[dict[str, Any]]:
+def _component_locators(plan: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "component_id": str(component["component_id"]),
+            "locator_strategy": str(component["locator"]["strategy"]),
+            "locator_value": str(component["locator"]["value"]),
+        }
+        for component in plan.get("components", [])
+        if isinstance(component, dict)
+    ]
+
+
+def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     page_id = str(plan["page_id"])
     components = plan.get("components")
     states = plan.get("states")
@@ -99,6 +112,33 @@ def _probes(plan: dict[str, Any]) -> list[dict[str, Any]]:
         for row in plan.get("events_actions", [])
         if isinstance(row, dict)
     ]
+    if len(actions) > 1:
+        raise ValueError(
+            f"{page_id} requires isolated action probes; multiple actions may not share one frozen State-ID run"
+        )
+    transitions = []
+    action_event_ids = {row["event_id"] for row in actions if row["event_id"] and row["component_id"]}
+    for row in plan.get("transitions", []):
+        if not isinstance(row, dict) or not row.get("transition_id"):
+            continue
+        event_id = str(row.get("event_id", ""))
+        target_page_id = str(row.get("target_page_id", ""))
+        target_plan = plans_by_page.get(target_page_id)
+        if not event_id or event_id not in action_event_ids or not target_plan:
+            raise ValueError(
+                f"{page_id} transition {row.get('transition_id')} lacks a frozen event/action/target probe"
+            )
+        target_locators = _component_locators(target_plan)
+        if not target_locators:
+            raise ValueError(f"{page_id} transition {row.get('transition_id')} has no target locator")
+        transitions.append({
+            "transition_id": str(row["transition_id"]),
+            "event_id": event_id,
+            "source_page_id": str(row.get("source_page_id", "")),
+            "target_page_id": target_page_id,
+            "target_components": target_locators,
+            "return_action": "PRESS_BACK",
+        })
     result = []
     state_targets = plan["carrier"]["state_targets"]
     for state in sorted(states, key=lambda row: str(row["state_id"])):
@@ -135,6 +175,7 @@ def _probes(plan: dict[str, Any]) -> list[dict[str, Any]]:
             "action_summary": str(first.get("action_summary", "")),
             "required_components": required_components,
             "declared_actions": actions,
+            "declared_transitions": transitions,
             "result_directory": f"ui-test-snapshot/{page_id}/{state_id}",
         })
     return result
@@ -183,10 +224,12 @@ def prepare_uitest_probe(workspace: Path) -> dict[str, Any]:
         staged = Path(temp_name)
         plan_records: list[dict[str, str]] = []
         probes: list[dict[str, Any]] = []
+        plans_by_page: dict[str, dict[str, Any]] = {}
         for contract, contract_relative, contract_digest in contracts:
             plan = compile_arkts_page_plan(contract, contract_digest)
             validate_arkts_page_plan(plan, contract, contract_digest)
             page_id = str(contract["page_id"])
+            plans_by_page[page_id] = plan
             plan_relative = PurePosixPath(f"arkts-page-plans/{page_id}/arkts-page-plan.json")
             plan_path = staged / Path(*plan_relative.parts)
             _write_text(plan_path, json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
@@ -197,7 +240,8 @@ def prepare_uitest_probe(workspace: Path) -> dict[str, Any]:
                 "source_contract_relative_path": contract_relative,
                 "source_contract_sha256": contract_digest,
             })
-            probes.extend(_probes(plan))
+        for page_id in sorted(plans_by_page):
+            probes.extend(_probes(plans_by_page[page_id], plans_by_page))
         probes.sort(key=lambda row: row["probe_id"])
         if len({row["probe_id"] for row in probes}) != len(probes):
             raise ValueError("UiTest probe IDs are not unique")

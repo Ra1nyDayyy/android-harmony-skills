@@ -156,7 +156,50 @@ def verify_sealed_package(
 def load_feature_order(
     workspace: Path,
     feature_id: str,
+    page_id: str = "",
 ) -> tuple[dict[str, str], dict[str, Any]]:
+    if (workspace / "page-work-order-registry.csv").is_file():
+        if not page_id:
+            raise ValueError("Page-ID is required to route page-owned Phase 4 rework")
+        ledger = indexed(
+            read_csv(workspace / "page-implementation-ledger.csv"), "page_id", "page ledger"
+        )
+        row = ledger.get(page_id)
+        if not row or not row.get("work_order_id"):
+            raise ValueError(f"Page has no issued implementation work order: {page_id}")
+        work_order_id = validate_id(row["work_order_id"], "Page Work-Order-ID")
+        registry = [
+            item for item in read_csv(workspace / "page-work-order-registry.csv")
+            if item.get("work_order_id") == work_order_id and item.get("status") == "ISSUED"
+        ]
+        relative = f"page-work-orders/{work_order_id}.json"
+        if len(registry) != 1 or registry[0].get("relative_path") != relative:
+            raise ValueError(f"Page work order is not uniquely registered: {work_order_id}")
+        path = safe_relative_path(workspace, relative, f"page work order {work_order_id}")
+        if (
+            not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o222
+            or registry[0].get("work_order_sha256") != sha256_file(path)
+        ):
+            raise ValueError(f"Page work order is changed/writable: {work_order_id}")
+        order = load_json(path)
+        if (
+            not isinstance(order, dict) or order.get("page_id") != page_id
+            or feature_id not in order.get("feature_ids", []) or order.get("status") != "ISSUED"
+            or row.get("owner_id") != order.get("owner_id")
+            or row.get("ui_understanding_agent_id") != order.get("ui_understanding_agent_id")
+            or row.get("codearts_task_id") != order.get("codearts_task_id")
+        ):
+            raise ValueError(f"Page work-order identity differs: {work_order_id}")
+        page_owner = str(order["owner_id"])
+        ui_owner = str(order["ui_understanding_agent_id"])
+        order = dict(order)
+        order["ownership"] = {
+            "feature_owner_id": page_owner,
+            "ui_agent_id": ui_owner,
+            "business_data_agent_id": page_owner,
+            "native_capability_agent_id": page_owner,
+        }
+        return row, order
     ledger = indexed(read_csv(workspace / "implementation-ledger.csv"), "feature_id", "feature ledger")
     row = ledger.get(feature_id)
     if not row or not row.get("work_order_id") or row.get("status") == "NOT_STARTED":
@@ -457,17 +500,17 @@ def main() -> int:
                     raise ValueError("Ticket-ID already exists; overwrite is prohibited")
                 feature_id = validate_id(str(args.feature_id), "Feature-ID")
                 record_id = validate_id(str(args.parity_or_record_id), "parity/record ID")
-                _feature_row, feature_order = load_feature_order(workspace, feature_id)
                 problem_type = str(args.problem_type).upper()
+                derived_page, derived_state, derived_h4env = record_belongs_to_feature(
+                    workspace, record_id, feature_id
+                )
+                page_id = str(args.page_id or derived_page)
+                _feature_row, feature_order = load_feature_order(workspace, feature_id, page_id)
                 responsible_role, responsible_agent = route(problem_type, ownership, feature_order)
                 if args.responsible_agent and args.responsible_agent != responsible_agent:
                     raise ValueError(
                         f"--responsible-agent differs from frozen routing; expected {responsible_agent}"
                     )
-                derived_page, derived_state, derived_h4env = record_belongs_to_feature(
-                    workspace, record_id, feature_id
-                )
-                page_id = str(args.page_id or derived_page)
                 state_id = str(args.state_id or derived_state)
                 h4env_id = str(args.h4env_id or derived_h4env)
                 for supplied, derived, label in (
@@ -540,7 +583,9 @@ def main() -> int:
                 if local.get("status") != "OPEN" or controller.get("status") != "REWORK":
                     raise ValueError("Only an OPEN/REWORK ticket may be closed")
                 feature_id = local["feature_id"]
-                _feature_row, feature_order = load_feature_order(workspace, feature_id)
+                _feature_row, feature_order = load_feature_order(
+                    workspace, feature_id, local.get("page_id", "")
+                )
                 responsible_role, responsible_agent = route(
                     local["problem_type"], ownership, feature_order
                 )

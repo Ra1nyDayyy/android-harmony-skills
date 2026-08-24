@@ -7,6 +7,21 @@ export interface UiTestRequiredComponent {
   expected_text: string;
 }
 
+export interface UiTestLocator {
+  component_id: string;
+  locator_strategy: string;
+  locator_value: string;
+}
+
+export interface UiTestTransition {
+  transition_id: string;
+  event_id: string;
+  source_page_id: string;
+  target_page_id: string;
+  target_components: Array<UiTestLocator>;
+  return_action: string;
+}
+
 export interface UiTestPageProbe {
   probe_id: string;
   page_id: string;
@@ -16,6 +31,7 @@ export interface UiTestPageProbe {
   action_summary: string;
   required_components: Array<UiTestRequiredComponent>;
   declared_actions: Array<Record<string, string>>;
+  declared_transitions: Array<UiTestTransition>;
   result_directory: string;
 }
 

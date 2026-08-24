@@ -32,7 +32,7 @@ Issue separate `SHARED_CAPABILITY_WORK_ORDER` records for reusable calculations,
 
 Use `scripts/convert_asset.py` only for a frozen conversion contract. Seal the exact final source/HAP per environment with `scripts/run_build.py`.
 
-For every required Page-ID, State-ID, transition, assertion, side effect, and environment, execute the generated `@ohos.UiTest` probes against the installed final HAP. Formal evidence includes command logs, test-HAP and final-HAP hashes, source/build hashes, stable locator queries, component type/text/bounds/visible/enabled/clickable values, action traces, deterministic functional and side-effect assertions, PNG, result path, device identity, metadata, hashes, and `COMMITTED`. Preview images, model summaries, and hand-written component records do not count.
+For every required Page-ID, State-ID, transition, assertion, side effect, and environment, execute the generated UiTest probes imported from `@kit.TestKit` against the installed final HAP. Formal evidence includes command logs, test-HAP and final-HAP hashes, source/build hashes, stable locator queries, component type/text/bounds/visible/enabled/clickable values, action traces, deterministic functional and side-effect assertions, PNG, result path, device identity, metadata, hashes, and `COMMITTED`. Preview images, model summaries, and hand-written component records do not count.
 
 ## Machine comparison and repair
 

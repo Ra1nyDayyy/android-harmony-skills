@@ -2,6 +2,8 @@
 
 本流程不依赖 Web 管理页面。一次 CodeArts 任务保存全流程上下文，但每个 Phase 的机器 Gate 后必须暂停，由操作者在终端完成审核记录，再让原任务继续。
 
+这里的“一次启动”是指启动同一个 Controller 状态机，不是声称 Spec 模式能凭一条提示词创建多个智能体。若 CodeArts 当前入口支持团队任务分派，由 Controller 按工单分派；若只支持 Spec 单任务，则总任务负责冻结合同和验收，操作者按它生成的工单另建 CodeArts 任务。两种模式消费相同文件、写相同回执、通过相同 Gate，不允许让一个 Spec 任务冒充多个独立执行者。
+
 ## 1. 开工前准备
 
 必须准备：
@@ -139,6 +141,17 @@ python3 .codeartsdoer/skills/android-harmony-migration-controller/scripts/record
   --terminal-task-state SUCCEEDED \
   --artifact <Run内真实产物相对路径>
 ```
+
+### Spec 模式的页面任务提示词
+
+当 CodeArts 不能自动创建子 Agent 时，Phase 4 每个 `PAGE_WORK_ORDER` 单独新建一个 CodeArts 任务，并发送下面这段话。不要把多个页面合并进同一任务：
+
+```text
+使用 $harmonyos-feature-implementation 执行这个 PAGE_WORK_ORDER：<Run内PAGE_WORK_ORDER相对路径>。
+只处理工单绑定的 Page-ID 和允许写入的文件。Phase 2 冻结的页面合同是 UI、状态、功能、跳转和副作用的唯一来源；先生成并校验 arkts-page-plan.json，再转换为 ArkTS。不得删减组件、状态或事件，不得改变 PAGE/DIALOG/SHEET/WIDGET 载体，不得跨页修改共享能力。完成后返回真实 CodeArts task ID、开始/结束时间、终态和产物路径；不要自行写 PASS、MATCH 或人工批准。
+```
+
+共享能力使用同样方式，但把工单换成 `SHARED_CAPABILITY_WORK_ORDER`，并明确禁止修改页面所有者的 ArkTS 路径。Controller 收齐全部页面与共享能力回执后才能进入 Phase 4 验证。
 
 Phase 2 的每个已封存证据包还必须由 Controller 写入证据锚点；遗漏锚点会阻止 Gate 2 或最终审计：
 

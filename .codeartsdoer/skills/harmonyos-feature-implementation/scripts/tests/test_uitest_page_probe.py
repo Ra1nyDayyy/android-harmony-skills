@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from arkts_page_plan import compile_arkts_page_plan, validate_arkts_page_plan  # noqa: E402
 from prepare_uitest_probe import prepare_uitest_probe  # noqa: E402
+from page_acceptance_contract import canonical_contract_sha256  # noqa: E402
 
 
 FORBIDDEN = ("Inspector", "getFilteredInspectorTree", "getFilteredInspectorTreeById")
@@ -56,7 +57,7 @@ class UiTestPageProbeTest(unittest.TestCase):
                 "page_id": page_id,
                 "page_name": str(contract["page_name"]),
                 "relative_path": f"page-contracts/{page_id}.json",
-                "contract_sha256": sha256(path),
+                "contract_sha256": canonical_contract_sha256(contract),
                 "state_count": str(len(contract["states"])),
                 "feature_ids": "FEATURE-CALC",
                 "required_h4env_ids": "H4ENV-001",
@@ -119,9 +120,17 @@ class UiTestPageProbeTest(unittest.TestCase):
         self.assertTrue((test_root / "UiTestRunBinding.ets").is_file())
         self.assertFalse(any((self.workspace / "harmony-project" / "entry" / "src" / "main").rglob("*UiTest*")))
         generated = "\n".join(path.read_text(encoding="utf-8") for path in test_root.glob("*.ets"))
-        self.assertIn("@ohos.UiTest", generated)
+        self.assertIn("from '@kit.TestKit'", generated)
+        self.assertNotIn("@ohos.UiTest", generated)
+        self.assertNotIn("router.pushUrl", generated)
+        self.assertNotIn("component.isVisible", generated)
+        self.assertIn("UNIQUE_MATCH_AND_VALID_BOUNDS", generated)
+        self.assertIn("UiTest screenshot capture failed", generated)
+        self.assertIn("Transition target locator is not unique", generated)
+        self.assertIn("driver.pressBack", generated)
+        self.assertNotIn("EXTERNAL_NAVIGATION_PRECONDITION", generated)
+        self.assertLess(generated.index("driver.screenCap"), generated.index("await executeDeclaredActions"))
         self.assertIn("getBounds", generated)
-        self.assertIn("isVisible", generated)
         self.assertIn("isEnabled", generated)
         self.assertIn("isClickable", generated)
         self.assertIn("ui-test-snapshot.json", generated)
@@ -180,6 +189,21 @@ class UiTestPageProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "PAGE-CALCULATOR.*component"):
             prepare_uitest_probe(self.workspace)
 
+    def test_transition_without_frozen_event_action_target_probe_is_blocked(self) -> None:
+        self.contracts[0]["transitions"][0].pop("event_id")
+        self._publish()
+        with self.assertRaisesRegex(ValueError, "transition.*lacks a frozen event/action/target probe"):
+            prepare_uitest_probe(self.workspace)
+
+    def test_multiple_actions_in_one_state_are_blocked_until_isolated(self) -> None:
+        self.contracts[0]["interaction_bindings"].append({
+            "event_id": "EVENT-SECOND", "page_id": "PAGE-CALCULATOR",
+            "component_id": "COMP-PAGE-CALCULATOR-ACTION", "action": "CLICK",
+        })
+        self._publish()
+        with self.assertRaisesRegex(ValueError, "isolated action probes"):
+            prepare_uitest_probe(self.workspace)
+
 
 def page_contract(page_id: str, state_ids: tuple[str, ...]) -> dict[str, object]:
     page_name = page_id.removeprefix("PAGE-").title()
@@ -211,7 +235,7 @@ def page_contract(page_id: str, state_ids: tuple[str, ...]) -> dict[str, object]
         "visible_text": ["Open"],
         "interaction_bindings": [{"event_id": "EVENT-OPEN", "page_id": page_id, "component_id": button_id, "action": "CLICK"}],
         "entry_conditions": [{"state_id": state_id, "entry_condition": "Launch frozen entry", "action_summary": f"Reach {state_id}"} for state_id in state_ids],
-        "transitions": [{"transition_id": "TRANS-STAY", "source_page_id": page_id, "target_page_id": page_id}],
+        "transitions": [{"transition_id": "TRANS-STAY", "source_page_id": page_id, "target_page_id": page_id, "event_id": "EVENT-OPEN"}],
         "code_map": [{"code_ref": "Calculator.kt:1", "page_id": page_id}],
         "business_rules": [{"business_rule_id": "BR-CALC"}],
         "data_dependencies": [{"data_dependency_id": "DATA-CALC"}],

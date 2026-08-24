@@ -87,18 +87,28 @@ def active_orders(run_dir: Path, phase: int) -> list[Path]:
 
 
 def feature_orders(run_dir: Path) -> list[Path]:
-    registry = run_dir / "phase-04-harmony-implementation" / "feature-work-order-registry.csv"
-    if not registry.is_file():
-        return []
-    with registry.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
     result: list[Path] = []
-    for row in rows:
-        if row.get("status", "").upper() not in {"SUPERSEDED", "CANCELLED"}:
-            try:
-                result.append(safe_file(run_dir, f"phase-04-harmony-implementation/{row.get('relative_path', '')}", "feature work order"))
-            except ValueError:
-                pass
+    phase_dir = run_dir / "phase-04-harmony-implementation"
+    registry_names = (
+        ("page-work-order-registry.csv", "page work order"),
+        ("capability-work-order-registry.csv", "capability work order"),
+    ) if (phase_dir / "page-work-order-registry.csv").is_file() else (
+        ("feature-work-order-registry.csv", "feature work order"),
+    )
+    for registry_name, label in registry_names:
+        registry = phase_dir / registry_name
+        if not registry.is_file():
+            continue
+        with registry.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        for row in rows:
+            if row.get("status", "").upper() not in {"SUPERSEDED", "CANCELLED"}:
+                try:
+                    result.append(safe_file(
+                        run_dir, f"phase-04-harmony-implementation/{row.get('relative_path', '')}", label
+                    ))
+                except ValueError:
+                    pass
     return result
 
 
@@ -249,7 +259,7 @@ def main() -> int:
     if args.through_phase >= 4:
         feature_paths = feature_orders(run_dir)
         if not feature_paths:
-            errors.append("Phase 4 has no active feature work orders")
+            errors.append("Phase 4 has no active page/capability work orders")
         for order_path in feature_paths:
             errors.extend(validate_order_receipts(run_dir, order_path))
         source_root = run_dir / "phase-04-harmony-implementation" / "harmony-project"

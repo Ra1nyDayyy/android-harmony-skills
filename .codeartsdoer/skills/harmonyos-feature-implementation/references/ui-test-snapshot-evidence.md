@@ -1,6 +1,6 @@
 # UiTest 页面证据规约
 
-Phase 4 的 UI 运行证据必须由生成在 `ohosTest` 中的 `@ohos.UiTest` 探针采集。探针只读取冻结的 `arkts-page-plan.json`，不允许模型自由补写页面、状态、组件或定位规则，也不允许测试代码进入 `entry/src/main`。
+Phase 4 的 UI 运行证据必须由生成在 `ohosTest` 中、从 `@kit.TestKit` 导入的 UiTest 探针采集。探针只读取冻结的 `arkts-page-plan.json`，不允许模型自由补写页面、状态、组件或定位规则，也不允许测试代码进入 `entry/src/main`。
 
 ## 生成与执行
 

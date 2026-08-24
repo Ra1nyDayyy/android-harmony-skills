@@ -11,9 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from arkui_inspector import (
-    bind_required_components, validate_and_normalize, validate_operation_snapshot,
-)
+from uitest_snapshot import validate_uitest_evidence
 
 from _common import (
     assert_no_secrets,
@@ -48,19 +46,19 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = SKILL_ROOT / "assets"
 REQUIRED_SEQUENCE = [
     "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE", "PERMISSION_PROFILE",
-    "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 ]
 REQUIRED_ASSERTIONS = {"VISUAL_STATE", "BUSINESS_RESULT", "INTERACTION"}
 BUNDLE_CATEGORIES = {
     "CLEAN_INSTALL", "SEED_RESET", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-    "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 }
-TARGET_CATEGORIES = {"NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE"}
-OUTPUT_PLACEHOLDERS = {
-    "CLEAN_INSTALL": "{ARTIFACT}",
-    "BUSINESS_ASSERT": "{ASSERTIONS}",
-    "SCREENSHOT_CAPTURE": "{SCREENSHOT}",
-    "UI_TREE_CAPTURE": "{UI_TREE}",
+TARGET_CATEGORIES = {"NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE"}
+COMMAND_PLACEHOLDERS = {
+    "CLEAN_INSTALL": {"{ARTIFACT}"},
+    "BUSINESS_ASSERT": {"{ASSERTIONS}"},
+    "SCREENSHOT_CAPTURE": {"{SCREENSHOT}"},
+    "UITEST_SNAPSHOT_CAPTURE": {"{TEST_HAP}", "{UITEST_RESULT}"},
 }
 
 
@@ -217,84 +215,6 @@ def validate_assertion_result(
             "Generated assertions do not cover every advanced obligation: "
             f"{sorted(required_obligation_ids - covered_obligations)}"
         )
-    atomic_json(path, value)
-    return value
-
-
-def validate_ui_tree(
-    path: Path,
-    bundle_name: str,
-    device_id: str,
-    serial: str,
-    contract: dict[str, Any],
-) -> dict[str, Any]:
-    value = validate_and_normalize(load_json(path))
-    if value.get("bundle_name") != bundle_name:
-        raise ValueError("UI tree Bundle differs from the frozen application")
-    if not isinstance(value.get("window"), dict) or not value["window"]:
-        raise ValueError("UI tree window object is empty")
-    if value.get("carrier") != contract.get("expected_carrier"):
-        raise ValueError(
-            f"Runtime carrier differs: expected {contract.get('expected_carrier')}, "
-            f"got {value.get('carrier')}"
-        )
-    if value.get("target_id") != contract.get("target_id"):
-        raise ValueError("Runtime route/surface target differs from the frozen migration unit")
-    locators = contract.get("component_locators", {})
-    nodes = value["nodes"]
-    value["component_bindings"] = bind_required_components(
-        nodes, contract.get("required_component_ids", []), locators
-    )
-    traces = value.get("operation_trace", [])
-    if not isinstance(traces, list) or any(not isinstance(item, dict) for item in traces):
-        raise ValueError("UI tree operation_trace must be an object array")
-    traced: dict[tuple[str, str], dict[str, Any]] = {}
-    for trace in traces:
-        subject_type = str(trace.get("subject_type", ""))
-        subject_id = str(trace.get("subject_id", ""))
-        key = (subject_type, subject_id)
-        if subject_type not in {"EVENT", "TRANSITION"} or not subject_id or key in traced:
-            raise ValueError("Operation trace has an invalid or duplicate subject identity")
-        before = trace.get("before_snapshot")
-        after = trace.get("after_snapshot")
-        if not isinstance(before, dict) or not before or not isinstance(after, dict) or not after:
-            raise ValueError(f"Operation trace lacks raw before/after snapshots: {subject_id}")
-        try:
-            validate_operation_snapshot(before)
-            validate_operation_snapshot(after)
-        except ValueError as exc:
-            raise ValueError(
-                f"Operation trace is not backed by ArkUI Inspector snapshots: {subject_id}: {exc}"
-            ) from exc
-        if not str(trace.get("action", "")).strip():
-            raise ValueError(f"Operation trace lacks the executed action: {subject_id}")
-        changed = json.dumps(before, sort_keys=True, ensure_ascii=False) != json.dumps(
-            after, sort_keys=True, ensure_ascii=False
-        )
-        if not changed and not str(trace.get("observable_result", "")).strip():
-            raise ValueError(f"Operation trace proves no state or observable change: {subject_id}")
-        traced[key] = trace
-    for subject_type, required_field in (
-        ("EVENT", "required_event_ids"), ("TRANSITION", "required_transition_ids")
-    ):
-        required = set(contract.get(required_field, []))
-        observed = {subject_id for trace_type, subject_id in traced if trace_type == subject_type}
-        if required != observed:
-            raise ValueError(
-                f"Runtime operation trace differs from {required_field}: "
-                f"missing={sorted(required - observed)}, extra={sorted(observed - required)}"
-            )
-    bounds = value.get("bounds")
-    if not isinstance(bounds, dict) or any(
-        not isinstance(bounds.get(field), (int, float))
-        for field in ("x", "y", "width", "height")
-    ) or bounds["width"] <= 0 or bounds["height"] <= 0:
-        raise ValueError("UI tree bounds are missing or invalid")
-    device = value.get("device")
-    if not isinstance(device, dict) or device.get("device_id") != device_id or device.get(
-        "serial"
-    ) != serial:
-        raise ValueError("UI tree device identity differs from the frozen emulator")
     atomic_json(path, value)
     return value
 
@@ -458,6 +378,50 @@ def main() -> int:
             raise ValueError("HBUILD primary artifact has changed")
         validate_hap(artifact)
 
+        generation_lock = input_lock.get("ui_test_snapshot_generation")
+        generation_manifest_path = workspace / "ui-test-snapshot-generation-manifest.json"
+        if (
+            not isinstance(generation_lock, dict)
+            or generation_lock.get("relative_path") != "ui-test-snapshot-generation-manifest.json"
+            or generation_lock.get("contract") != "ui-test-snapshot-generation-v1"
+            or generation_lock.get("sha256") != sha256_file(generation_manifest_path)
+        ):
+            raise ValueError("UiTest generation manifest is missing or hash-mismatched")
+        generation_manifest = load_json(generation_manifest_path)
+        probe_id = f"{parity['page_id']}::{parity['state_id']}"
+        probe_matches = [
+            row for row in generation_manifest.get("probes", [])
+            if isinstance(row, dict) and row.get("probe_id") == probe_id
+        ]
+        plan_matches = [
+            row for row in generation_manifest.get("page_plans", [])
+            if isinstance(row, dict) and row.get("page_id") == parity["page_id"]
+        ]
+        if len(probe_matches) != 1 or len(plan_matches) != 1:
+            raise ValueError("UiTest generation manifest lacks the exact Page-ID/State-ID probe")
+        probe = probe_matches[0]
+        plan_record = plan_matches[0]
+        page_plan = safe_relative_path(
+            workspace, str(plan_record.get("relative_path", "")), "ArkTS page plan"
+        )
+        if not page_plan.is_file() or sha256_file(page_plan) != plan_record.get("sha256"):
+            raise ValueError("UiTest page plan is missing or hash-mismatched")
+        test_hap_value = str(plan.get("test_hap_path", ""))
+        test_hap_candidate = Path(test_hap_value).expanduser()
+        test_hap = (
+            test_hap_candidate.resolve() if test_hap_candidate.is_absolute()
+            else safe_relative_path(workspace, test_hap_value, "UiTest HAP")
+        )
+        if not test_hap.is_file():
+            raise ValueError("State plan test_hap_path is missing")
+        validate_hap(test_hap)
+        test_hap_sha256 = sha256_file(test_hap)
+        final_hap_sha256 = sha256_file(artifact)
+        device_identity_sha256 = hashlib.sha256(json.dumps(
+            {"device_id": device_id, "serial": serial},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
         steps_value = str(plan.get("steps_file", ""))
         if not steps_value or steps_value.lower().endswith(".mp4"):
             raise ValueError("steps_file must be a non-MP4 text file")
@@ -557,7 +521,10 @@ def main() -> int:
         normalized: list[dict[str, Any]] = []
         command_ids: set[str] = set()
         categories: list[str] = []
-        all_placeholders = set(OUTPUT_PLACEHOLDERS.values())
+        all_placeholders = {
+            placeholder for placeholders in COMMAND_PLACEHOLDERS.values()
+            for placeholder in placeholders
+        }
         for index, command in enumerate(commands):
             if not isinstance(command, dict):
                 raise ValueError(f"commands[{index}] must be an object")
@@ -577,14 +544,13 @@ def main() -> int:
                 raise ValueError(f"{command_id}: command lacks the exact frozen Bundle")
             if category in TARGET_CATEGORIES and parity["target_id"] not in argv:
                 raise ValueError(f"{command_id}: command lacks the exact Phase 3 target ID")
-            required_placeholder = OUTPUT_PLACEHOLDERS.get(category)
+            required_placeholders = COMMAND_PLACEHOLDERS.get(category, set())
             present_placeholders = {item for item in argv if item in all_placeholders}
-            if required_placeholder and present_placeholders != {required_placeholder}:
+            if present_placeholders != required_placeholders:
                 raise ValueError(
-                    f"{command_id}: {category} must contain only its exact {required_placeholder} placeholder"
+                    f"{command_id}: {category} must contain exactly these placeholders: "
+                    f"{sorted(required_placeholders)}"
                 )
-            if not required_placeholder and present_placeholders:
-                raise ValueError(f"{command_id}: unexpected output/artifact placeholder")
             normalized.append(
                 {
                     "command_id": command_id,
@@ -624,14 +590,19 @@ def main() -> int:
         logs = staging / "logs"
         logs.mkdir()
         screenshot = staging / "screenshot.png"
-        ui_tree = staging / "ui-tree.json"
+        uitest_result = staging / "ui-test-snapshot.json"
+        uitest_metadata = staging / "ui-test-snapshot-metadata.json"
+        uitest_trace = staging / "ui-test-snapshot-operation-trace.json"
+        uitest_screenshot = staging / "ui-test-snapshot.png"
         assertions_path = staging / "assertions.json"
         shutil.copyfile(steps, staging / "steps.md")
+        shutil.copyfile(test_hap, staging / "uitest-test.hap")
         replacements = {
             "{ARTIFACT}": str(artifact),
             "{ASSERTIONS}": str(assertions_path),
             "{SCREENSHOT}": str(screenshot),
-            "{UI_TREE}": str(ui_tree),
+            "{UITEST_RESULT}": str(uitest_result),
+            "{TEST_HAP}": str(test_hap),
         }
         bindings = {
             "parity_id": parity_id,
@@ -653,7 +624,7 @@ def main() -> int:
                     output_path = {
                         "BUSINESS_ASSERT": assertions_path,
                         "SCREENSHOT_CAPTURE": screenshot,
-                        "UI_TREE_CAPTURE": ui_tree,
+                        "UITEST_SNAPSHOT_CAPTURE": uitest_result,
                     }.get(command["category"])
                     if output_path is not None and output_path.exists():
                         errors.append(
@@ -720,12 +691,66 @@ def main() -> int:
                                 )
                             record["result_path"] = "screenshot.png"
                             record["result_sha256"] = sha256_file(screenshot)
-                        elif command["category"] == "UI_TREE_CAPTURE":
-                            validate_ui_tree(
-                                ui_tree, bundle_name, device_id, serial, migration_contract
+                        elif command["category"] == "UITEST_SNAPSHOT_CAPTURE":
+                            command_sha256 = hashlib.sha256(json.dumps(
+                                argv, ensure_ascii=False, separators=(",", ":")
+                            ).encode("utf-8")).hexdigest()
+                            raw_uitest_metadata = load_json(uitest_metadata)
+                            required_raw = {
+                                "probe_id": probe_id, "page_id": parity["page_id"],
+                                "state_id": parity["state_id"],
+                                "test_hap_sha256": test_hap_sha256,
+                                "final_hap_sha256": final_hap_sha256,
+                                "device_identity_sha256": device_identity_sha256,
+                                "command_sha256": command_sha256,
+                            }
+                            if not isinstance(raw_uitest_metadata, dict) or any(
+                                raw_uitest_metadata.get(field) != expected
+                                for field, expected in required_raw.items()
+                            ):
+                                raise ValueError("UiTest runtime metadata differs from frozen run binding")
+                            atomic_json(uitest_metadata, {
+                                "schema_version": "ui-test-snapshot-evidence-v1",
+                                "probe_id": probe_id, "page_id": parity["page_id"],
+                                "state_id": parity["state_id"], "bundle_name": bundle_name,
+                                "carrier": migration_contract["expected_carrier"],
+                                "target_id": parity["target_id"],
+                                "result_path": "ui-test-snapshot.json",
+                                "result_sha256": sha256_file(uitest_result),
+                                "operation_trace_path": "ui-test-snapshot-operation-trace.json",
+                                "operation_trace_sha256": sha256_file(uitest_trace),
+                                "screenshot_path": "ui-test-snapshot.png",
+                                "screenshot_sha256": sha256_file(uitest_screenshot),
+                                "generation_manifest_sha256": sha256_file(generation_manifest_path),
+                                "page_plan_sha256": sha256_file(page_plan),
+                                "test_hap_sha256": test_hap_sha256,
+                                "final_hap_sha256": final_hap_sha256,
+                                "device_identity_sha256": device_identity_sha256,
+                                "command_sha256": command_sha256,
+                            })
+                            validate_uitest_evidence(
+                                staging, probe,
+                                page_id=parity["page_id"], state_id=parity["state_id"],
+                                bundle_name=bundle_name,
+                                carrier=str(migration_contract["expected_carrier"]),
+                                target_id=parity["target_id"],
+                                generation_manifest_sha256=sha256_file(generation_manifest_path),
+                                page_plan_sha256=sha256_file(page_plan),
+                                test_hap_sha256=test_hap_sha256,
+                                final_hap_sha256=final_hap_sha256,
+                                device_identity_sha256=device_identity_sha256,
+                                command_sha256=command_sha256,
+                                required_event_ids=set(migration_contract.get("required_event_ids", [])),
+                                required_transition_ids=set(migration_contract.get("required_transition_ids", [])),
                             )
-                            record["result_path"] = "ui-tree.json"
-                            record["result_sha256"] = sha256_file(ui_tree)
+                            uitest_width, uitest_height = png_dimensions(uitest_screenshot)
+                            if (uitest_width, uitest_height) != (
+                                environment["comparison"]["screenshot_width"],
+                                environment["comparison"]["screenshot_height"],
+                            ):
+                                raise ValueError("UiTest screenshot dimensions differ from frozen environment")
+                            record["result_path"] = "ui-test-snapshot.json"
+                            record["result_sha256"] = sha256_file(uitest_result)
                     except (ValueError, OSError, KeyError) as exc:
                         errors.append(str(exc))
                         break
@@ -807,12 +832,21 @@ def main() -> int:
                     if item["category"] == "SCREENSHOT_CAPTURE"
                 ),
             },
-            "ui_tree": {
-                "path": "ui-tree.json",
-                "sha256": sha256_file(ui_tree),
+            "ui_test_snapshot": {
+                "path": "ui-test-snapshot.json",
+                "sha256": sha256_file(uitest_result),
+                "metadata_sha256": sha256_file(uitest_metadata),
+                "operation_trace_sha256": sha256_file(uitest_trace),
+                "screenshot_sha256": sha256_file(uitest_screenshot),
+                "generation_manifest_sha256": sha256_file(generation_manifest_path),
+                "page_plan_sha256": sha256_file(page_plan),
+                "test_hap_sha256": test_hap_sha256,
+                "test_hap_path": "uitest-test.hap",
+                "final_hap_sha256": final_hap_sha256,
+                "device_identity_sha256": device_identity_sha256,
                 "command_id": next(
                     item["command_id"] for item in command_records
-                    if item["category"] == "UI_TREE_CAPTURE"
+                    if item["category"] == "UITEST_SNAPSHOT_CAPTURE"
                 ),
             },
             "commands": command_records,

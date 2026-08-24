@@ -21,6 +21,7 @@ from _common import (
     write_csv,
 )
 from arkts_page_plan import compile_arkts_page_plan, validate_arkts_page_plan
+from page_acceptance_contract import canonical_contract_sha256
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -90,11 +91,13 @@ def _page_contracts(workspace: Path) -> dict[str, tuple[dict[str, Any], str, str
         if relative != expected:
             raise ValueError(f"Page contract path differs for {page_id}")
         path = workspace / PurePosixPath(relative)
-        if not path.is_file() or path.is_symlink() or sha256_file(path) != row.get("contract_sha256"):
+        if not path.is_file() or path.is_symlink():
             raise ValueError(f"Page contract hash differs for {page_id}")
         contract = load_json(path)
         if not isinstance(contract, dict) or contract.get("page_id") != page_id:
             raise ValueError(f"Page contract identity differs for {page_id}")
+        if canonical_contract_sha256(contract) != row.get("contract_sha256"):
+            raise ValueError(f"Page contract hash differs for {page_id}")
         states = contract.get("states")
         if not isinstance(states, list) or not states:
             raise ValueError(f"Page contract has no states: {page_id}")

@@ -119,12 +119,12 @@ BASE_CATEGORY_MAP = {
 SERIAL_CATEGORIES = {
     "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET",
     "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE",
-    "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 }
 BUNDLE_CATEGORIES = {
     "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET", "PERMISSION_PROFILE",
     "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE",
-    "UI_TREE_CAPTURE",
+    "UITEST_SNAPSHOT_CAPTURE",
 }
 BUSINESS_PROFILE_FIELDS = (
     "account_id", "account_role", "seed_data_id", "seed_reset_ref",
@@ -1671,7 +1671,8 @@ def main() -> int:
 
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
-            make_tree_read_only(temp_dir / "tools")
+            if (temp_dir / "tools").is_dir():
+                make_tree_read_only(temp_dir / "tools")
             make_tree_read_only(temp_dir / "page-contracts")
             make_tree_read_only(temp_dir / "arkts-page-plans")
             (temp_dir / "page-contract-registry.csv").chmod(0o444)
