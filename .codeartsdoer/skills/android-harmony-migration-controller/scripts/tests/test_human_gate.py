@@ -158,6 +158,76 @@ class HumanGateTest(unittest.TestCase):
             self.assertEqual(2, summary["warning_count"])
             self.assertEqual("REWORK", summary["recommended_action"])
 
+    def test_review_summary_can_be_generated_without_optional_input(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-no-input-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp), verdict="FAIL", phase=1)
+            result = self.run_script(
+                "generate_review_summary.py",
+                "--run-dir", str(run_dir), "--phase", "1",
+                "--gate-report", str(gate_report),
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            summary_path = (
+                run_dir / "controller" / "review-summaries" / "phase-01" / "review-summary.json"
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual("MACHINE_GATE_FAILED", summary["status"])
+            self.assertEqual("CRITICAL", summary["exceptions"][0]["severity"])
+            self.assertEqual("coverage incomplete", summary["exceptions"][0]["title"])
+            self.assertTrue(summary_path.with_suffix(".json.gate.sha256").is_file())
+
+    def test_review_input_cannot_hide_or_downgrade_machine_anomalies(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-machine-anomaly-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp), verdict="PASS")
+            gate = json.loads(gate_report.read_text(encoding="utf-8"))
+            gate["errors"] = ["missing required page"]
+            gate["warnings"] = ["one state has weak evidence"]
+            write_json(gate_report, gate)
+            source = run_dir / "review-input.json"
+            write_json(source, {
+                "exceptions": [],
+                "top_risks": [{"id": "GATE-ERROR-001", "severity": "LOW", "title": "harmless"}],
+            })
+            result = self.run_script(
+                "generate_review_summary.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(gate_report), "--input", str(source),
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            summary = json.loads(
+                (run_dir / "controller" / "review-summaries" / "phase-02" / "review-summary.json")
+                .read_text(encoding="utf-8")
+            )
+            machine_exceptions = {item["id"]: item for item in summary["exceptions"] if item.get("source") == "machine_gate"}
+            machine_risks = {item["id"]: item for item in summary["top_risks"] if item.get("source") == "machine_gate"}
+            self.assertEqual("CRITICAL", machine_exceptions["GATE-ERROR-001"]["severity"])
+            self.assertEqual("missing required page", machine_exceptions["GATE-ERROR-001"]["title"])
+            self.assertEqual("MEDIUM", machine_exceptions["GATE-WARNING-001"]["severity"])
+            self.assertEqual(set(machine_exceptions), set(machine_risks))
+
+    def test_review_summary_key_samples_are_deterministic_and_capped(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-sample-cap-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp))
+            source = run_dir / "review-input.json"
+            write_json(source, {
+                "key_samples": [{"page_id": f"PAGE-{number:03d}"} for number in range(12, 0, -1)],
+            })
+            result = self.run_script(
+                "generate_review_summary.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(gate_report), "--input", str(source),
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            summary = json.loads(
+                (run_dir / "controller" / "review-summaries" / "phase-02" / "review-summary.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertEqual(5, len(summary["key_samples"]))
+            self.assertEqual(
+                [f"PAGE-{number:03d}" for number in range(1, 6)],
+                [item["page_id"] for item in summary["key_samples"]],
+            )
+
     def test_review_summary_does_not_wait_for_approval_when_pass_has_blockers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="human-gate-summary-blocked-") as temp:
             run_dir, gate_report = self.make_run(Path(temp))

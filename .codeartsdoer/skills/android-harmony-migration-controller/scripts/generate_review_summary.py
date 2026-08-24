@@ -14,6 +14,25 @@ from _human_gate import gate_is_clear_pass, load_json_object, resolve_run_file, 
 
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+KEY_SAMPLE_LIMIT = 5
+
+PHASE_REPORTS = {
+    1: ("controller/scope.json",),
+    2: (
+        "phase-02-android-inventory/closure-report.json",
+        "phase-02-android-inventory/page-gate-report.json",
+        "phase-02-android-inventory/advanced-gate-report.json",
+        "phase-02-android-inventory/evidence-index.csv",
+    ),
+    3: (
+        "phase-03-harmony-scaffold/stage-03-gate-report.json",
+        "phase-03-harmony-scaffold/build-report.json",
+    ),
+    4: (
+        "phase-04-harmony-implementation/stage-04-gate-report.json",
+        "phase-04-harmony-implementation/evidence-index.csv",
+    ),
+}
 
 
 def severity_key(value: Any) -> tuple[int, str]:
@@ -22,6 +41,99 @@ def severity_key(value: Any) -> tuple[int, str]:
     severity = str(value.get("severity", "")).upper()
     identity = str(value.get("id", value.get("title", "")))
     return (SEVERITY_ORDER.get(severity, 99), identity)
+
+
+def object_list(value: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in value] if isinstance(value, list) and all(isinstance(item, dict) for item in value) else []
+
+
+def canonical_key(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def unique_sorted(values: list[Any], *, limit: int | None = None) -> list[Any]:
+    indexed = {canonical_key(value): value for value in values}
+    result = [indexed[key] for key in sorted(indexed)]
+    return result if limit is None else result[:limit]
+
+
+def anomaly_title(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("message", "title", "error", "warning", "detail"):
+            if str(value.get(key, "")).strip():
+                return str(value[key]).strip()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return canonical_key(value)
+
+
+def machine_anomalies(gate_report: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for field, severity, prefix in (
+        ("errors", "CRITICAL", "GATE-ERROR"),
+        ("warnings", "MEDIUM", "GATE-WARNING"),
+    ):
+        values = gate_report.get(field, [])
+        if not isinstance(values, list):
+            values = [values] if values not in (None, "") else []
+        for index, value in enumerate(values, 1):
+            items.append({
+                "id": f"{prefix}-{index:03d}",
+                "severity": severity,
+                "title": anomaly_title(value),
+                "source": "machine_gate",
+            })
+    return items
+
+
+def phase_context(run_dir: Path, phase: int, gate_path: Path, gate_report: dict[str, Any]) -> dict[str, Any]:
+    coverage: dict[str, Any] = {}
+    included = gate_report.get("included_features")
+    if isinstance(included, list):
+        coverage["included_features"] = len(included)
+
+    evidence_links = [gate_path.relative_to(run_dir).as_posix()]
+    for relative in PHASE_REPORTS[phase]:
+        path = run_dir / relative
+        if not path.is_file():
+            continue
+        evidence_links.append(relative)
+        if path.suffix != ".json":
+            continue
+        try:
+            report = load_json_object(path, f"Phase {phase} report")
+        except ValueError:
+            continue
+        direct_coverage = report.get("coverage")
+        if isinstance(direct_coverage, dict):
+            for key, value in sorted(direct_coverage.items()):
+                coverage.setdefault(str(key), value)
+        counts = report.get("counts")
+        if isinstance(counts, dict):
+            coverage.setdefault("counts", {str(key): value for key, value in sorted(counts.items())})
+        if phase == 2:
+            for key in (
+                "inventory_rows", "archived_assets", "indexed_evidence",
+                "open_rechecks", "open_critical_rechecks", "pending_confirmations",
+                "advanced_gate_required_observations", "advanced_gate_received_observations",
+            ):
+                if key in report:
+                    coverage.setdefault(key, report[key])
+
+    samples: list[dict[str, str]] = []
+    for field, kind in (
+        ("included_features", "feature"),
+        ("harmony_build_ids", "build"),
+        ("harmony_evidence_ids", "evidence"),
+    ):
+        values = gate_report.get(field)
+        if isinstance(values, list):
+            samples.extend({"kind": kind, "id": str(value)} for value in values if str(value).strip())
+    return {
+        "coverage": coverage,
+        "evidence_links": sorted(set(evidence_links)),
+        "key_samples": unique_sorted(samples, limit=KEY_SAMPLE_LIMIT),
+    }
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -53,9 +165,15 @@ def atomic_text(path: Path, value: str) -> None:
             os.unlink(temp_name)
 
 
-def build_summary(phase: int, gate_report: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
-    exceptions = sorted(list(source.get("exceptions", [])), key=severity_key)
-    top_risks = sorted(list(source.get("top_risks", [])), key=severity_key)
+def build_summary(
+    phase: int,
+    gate_report: dict[str, Any],
+    source: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    machine = machine_anomalies(gate_report)
+    exceptions = sorted(machine + object_list(source.get("exceptions")), key=severity_key)
+    top_risks = sorted(machine + object_list(source.get("top_risks")), key=severity_key)
     critical_count = sum(
         1 for item in exceptions
         if isinstance(item, dict) and str(item.get("severity", "")).upper() == "CRITICAL"
@@ -63,16 +181,28 @@ def build_summary(phase: int, gate_report: dict[str, Any], source: dict[str, Any
     warning_count = len(exceptions) - critical_count
     machine_pass = gate_is_clear_pass(gate_report)
     recommended_action = "REWORK" if not machine_pass or critical_count else "REVIEW"
+    coverage = dict(context.get("coverage", {}))
+    source_coverage = source.get("coverage")
+    if isinstance(source_coverage, dict):
+        for key, value in sorted(source_coverage.items()):
+            coverage.setdefault(str(key), value)
+    source_links = source.get("evidence_links")
+    links = list(context.get("evidence_links", []))
+    if isinstance(source_links, list):
+        links.extend(str(item) for item in source_links if str(item).strip())
+    samples = list(context.get("key_samples", []))
+    if isinstance(source.get("key_samples"), list):
+        samples.extend(source["key_samples"])
     return {
         "phase": phase,
         "status": "WAITING_HUMAN_REVIEW" if machine_pass else "MACHINE_GATE_FAILED",
-        "coverage": source.get("coverage", {}),
+        "coverage": coverage,
         "critical_count": critical_count,
         "warning_count": warning_count,
         "top_risks": top_risks,
         "exceptions": exceptions,
-        "key_samples": list(source.get("key_samples", [])),
-        "evidence_links": list(source.get("evidence_links", [])),
+        "key_samples": unique_sorted(samples, limit=KEY_SAMPLE_LIMIT),
+        "evidence_links": sorted(set(links)),
         "recommended_action": recommended_action,
     }
 
@@ -82,18 +212,20 @@ def main() -> int:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--phase", required=True, type=int, choices=(1, 2, 3, 4))
     parser.add_argument("--gate-report", required=True)
-    parser.add_argument("--input", required=True)
+    parser.add_argument("--input", help="Optional supplemental review details; machine findings remain authoritative")
     parser.add_argument("--output")
     args = parser.parse_args()
 
     try:
         run_dir = Path(args.run_dir).resolve()
         gate_path = resolve_run_file(run_dir, Path(args.gate_report), "controller gate report")
-        source_path = resolve_run_file(run_dir, Path(args.input), "review summary input")
         gate_report = load_json_object(gate_path, "controller gate report")
         if gate_report.get("phase") != args.phase:
             raise ValueError("Controller gate report phase differs from requested summary phase")
-        source = load_json_object(source_path, "review summary input")
+        source = {}
+        if args.input:
+            source_path = resolve_run_file(run_dir, Path(args.input), "review summary input")
+            source = load_json_object(source_path, "review summary input")
         output = (
             Path(args.output)
             if args.output
@@ -106,7 +238,8 @@ def main() -> int:
             output.relative_to(run_dir)
         except ValueError as exc:
             raise ValueError("Review summary output must stay inside the migration run") from exc
-        atomic_json(output, build_summary(args.phase, gate_report, source))
+        context = phase_context(run_dir, args.phase, gate_path, gate_report)
+        atomic_json(output, build_summary(args.phase, gate_report, source, context))
         sidecar = output.with_suffix(output.suffix + ".gate.sha256").resolve()
         try:
             sidecar.relative_to(run_dir)
