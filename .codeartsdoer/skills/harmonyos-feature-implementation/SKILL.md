@@ -24,7 +24,7 @@ Missing or contradictory Android facts return to Phase 2. Wrong module, route, c
 
 ## Page-owned implementation
 
-Issue one immutable `PAGE_WORK_ORDER` for every Page-ID. Each page has one exclusive owner, one real CodeArts task ID, exclusive code paths, all states, transitions, visual rules, side effects, capability dependencies, and its contract hash. One owner keeps the page through its bounded repairs, preventing context loss and inconsistent partial edits.
+Issue one immutable `PAGE_WORK_ORDER` for every Page-ID. Each page has one exclusive owner, one real CodeArts task ID, one page-scoped UI understanding/conversion agent, exclusive code paths, all states, transitions, visual rules, side effects, capability dependencies, and its contract hash. The UI agent may be the page owner but cannot serve another page. Before writing ArkTS, it must consume only the frozen Phase 2 page contract and pass the generated `arkts-page-plan.json` conservation check; missing, simplified, carrier-changed, or unmapped facts fail closed.
 
 Issue separate `SHARED_CAPABILITY_WORK_ORDER` records for reusable calculations, persistence, network, clipboard, files, background work, permissions, and other native capabilities. Page and capability code paths may not overlap. Shared specialists serve pages; they do not redesign them.
 
@@ -32,7 +32,7 @@ Issue separate `SHARED_CAPABILITY_WORK_ORDER` records for reusable calculations,
 
 Use `scripts/convert_asset.py` only for a frozen conversion contract. Seal the exact final source/HAP per environment with `scripts/run_build.py`.
 
-For every required Page-ID, State-ID, transition, assertion, side effect, and environment, run `scripts/capture_state.py` against the installed final HAP. Formal evidence includes command logs, source/build hashes, action trace, deterministic assertions, raw and normalized ArkUI Inspector trees, event/transition snapshots, PNG, device identity, metadata, hashes, and `COMMITTED`. Preview images and hand-written trees do not count.
+For every required Page-ID, State-ID, transition, assertion, side effect, and environment, execute the generated `@ohos.UiTest` probes against the installed final HAP. Formal evidence includes command logs, test-HAP and final-HAP hashes, source/build hashes, stable locator queries, component type/text/bounds/visible/enabled/clickable values, action traces, deterministic functional and side-effect assertions, PNG, result path, device identity, metadata, hashes, and `COMMITTED`. Preview images, model summaries, and hand-written component records do not count.
 
 ## Machine comparison and repair
 
@@ -49,5 +49,5 @@ Return the sealed workspace to the controller. It recomputes Gate 4 and shows An
 - [input-contract.md](references/input-contract.md): frozen inputs and initialization.
 - [observable-consistency-contract.md](references/observable-consistency-contract.md): required semantics and carrier fidelity.
 - [asset-and-visual-parity.md](references/asset-and-visual-parity.md): source-first assets and visual thresholds.
-- [arkui-inspector-evidence.md](references/arkui-inspector-evidence.md) and [emulator-evidence.md](references/emulator-evidence.md): formal execution evidence.
+- [ui-test-snapshot-evidence.md](references/ui-test-snapshot-evidence.md) and [emulator-evidence.md](references/emulator-evidence.md): formal execution evidence.
 - [review-and-rework.md](references/review-and-rework.md): difference routing and bounded repair.
