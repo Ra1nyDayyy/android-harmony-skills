@@ -21,7 +21,12 @@ CONTROLLER = BUNDLE / "android-harmony-migration-controller"
 STAGE3_TESTS = BUNDLE / "harmonyos-migration-scaffold" / "scripts" / "tests"
 sys.path.insert(0, str(STAGE3_TESTS))
 
-from phase2_fixture import build_closed_phase2, record_team_receipt, write_csv  # noqa: E402
+from phase2_fixture import (  # noqa: E402
+    build_closed_phase2,
+    record_human_approval,
+    record_team_receipt,
+    write_csv,
+)
 from test_stage3_workflow import (  # noqa: E402
     create_project_and_registries,
     freeze_environment,
@@ -81,6 +86,7 @@ def close_stage3(root: Path) -> Path:
         sys.executable, str(CONTROLLER / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "3", "--write",
     )
+    record_human_approval(run_dir, 3, "HREV-PHASE-03-FEATURE")
     phase3_receipts = [
         ("architecture_lead_id", "architecture-lead-1", "TASK-P3-ARCH", workspace / "architecture-map.csv"),
         ("toolchain_agent_id", "toolchain-agent-1", "TASK-P3-TOOL", workspace / "verification" / "HVER-001" / "COMMITTED"),

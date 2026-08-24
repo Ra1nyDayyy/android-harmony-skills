@@ -18,6 +18,7 @@ from _human_gate import (
     resolve_run_file,
     review_directory,
     sha256_file,
+    validate_current_review_summary,
 )
 
 
@@ -65,6 +66,12 @@ def main() -> int:
             raise ValueError("Controller gate report phase differs from requested human review phase")
         if args.decision in APPROVAL_DECISIONS and not gate_is_clear_pass(report):
             raise ValueError("Human approval requires a clear PASS machine gate with no blockers")
+        validate_current_review_summary(
+            run_dir,
+            args.phase,
+            gate_path,
+            require_waiting=args.decision in APPROVAL_DECISIONS,
+        )
         if args.decision == "APPROVED_DEVIATION" and not args.deviation:
             raise ValueError("APPROVED_DEVIATION requires at least one --deviation")
         if not args.review_id.strip() or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for char in args.review_id):
@@ -72,7 +79,12 @@ def main() -> int:
         if not args.reviewer.strip():
             raise ValueError("reviewer must be nonempty")
 
-        record_path = review_directory(run_dir, args.phase) / f"{args.review_id}.json"
+        directory = review_directory(run_dir, args.phase).resolve()
+        try:
+            directory.relative_to(run_dir)
+        except ValueError as exc:
+            raise ValueError("Human review output must stay inside the migration run") from exc
+        record_path = directory / f"{args.review_id}.json"
         seal_path = record_path.with_suffix(record_path.suffix + ".sha256")
         if record_path.exists() or seal_path.exists():
             raise ValueError(f"Human review already exists: {record_path}")

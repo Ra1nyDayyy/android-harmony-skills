@@ -56,6 +56,17 @@ class HumanGateWiringTest(unittest.TestCase):
             "scope_sha256": hashlib.sha256(scope_path.read_bytes()).hexdigest(),
             "errors": [],
         })
+        summary_input = run_dir / "review-input.json"
+        write_json(summary_input, {"coverage": {}, "exceptions": [], "top_risks": []})
+        generated = subprocess.run(
+            [
+                sys.executable, str(SCRIPTS / "generate_review_summary.py"),
+                "--run-dir", str(run_dir), "--phase", str(phase),
+                "--gate-report", str(gate_path), "--input", str(summary_input),
+            ],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(0, generated.returncode, generated.stderr)
         return run_dir, gate_path
 
     def record(self, run_dir: Path, gate_path: Path, phase: int, review_id: str, decision: str) -> None:

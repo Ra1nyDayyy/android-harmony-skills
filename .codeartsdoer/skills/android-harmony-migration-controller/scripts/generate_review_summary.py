@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from _human_gate import gate_verdict, load_json_object, resolve_run_file
+from _human_gate import gate_is_clear_pass, load_json_object, resolve_run_file, sha256_file
 
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -39,6 +39,20 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temp_name)
 
 
+def atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def build_summary(phase: int, gate_report: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
     exceptions = sorted(list(source.get("exceptions", [])), key=severity_key)
     top_risks = sorted(list(source.get("top_risks", [])), key=severity_key)
@@ -47,7 +61,7 @@ def build_summary(phase: int, gate_report: dict[str, Any], source: dict[str, Any
         if isinstance(item, dict) and str(item.get("severity", "")).upper() == "CRITICAL"
     )
     warning_count = len(exceptions) - critical_count
-    machine_pass = gate_verdict(gate_report) == "PASS"
+    machine_pass = gate_is_clear_pass(gate_report)
     recommended_action = "REWORK" if not machine_pass or critical_count else "REVIEW"
     return {
         "phase": phase,
@@ -93,6 +107,12 @@ def main() -> int:
         except ValueError as exc:
             raise ValueError("Review summary output must stay inside the migration run") from exc
         atomic_json(output, build_summary(args.phase, gate_report, source))
+        sidecar = output.with_suffix(output.suffix + ".gate.sha256").resolve()
+        try:
+            sidecar.relative_to(run_dir)
+        except ValueError as exc:
+            raise ValueError("Review summary output must stay inside the migration run") from exc
+        atomic_text(sidecar, f"{sha256_file(gate_path)}\n")
         print(output)
         return 0
     except (OSError, ValueError) as exc:

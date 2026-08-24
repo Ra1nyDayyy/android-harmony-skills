@@ -44,6 +44,28 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def record_human_approval(run_dir: Path, phase: int, review_id: str) -> None:
+    review_input = run_dir / "controller" / f"phase-{phase:02d}-review-input.json"
+    review_input.write_text(
+        json.dumps({"coverage": {}, "exceptions": [], "top_risks": []}) + "\n",
+        encoding="utf-8",
+    )
+    run(
+        sys.executable, str(CONTROLLER_SKILL / "scripts" / "generate_review_summary.py"),
+        "--run-dir", str(run_dir), "--phase", str(phase),
+        "--gate-report", str(run_dir / "controller" / "gate-report.json"),
+        "--input", str(review_input),
+    )
+    run(
+        sys.executable, str(CONTROLLER_SKILL / "scripts" / "record_human_review.py"),
+        "--run-dir", str(run_dir), "--phase", str(phase),
+        "--gate-report", str(run_dir / "controller" / "gate-report.json"),
+        "--review-id", review_id,
+        "--reviewer", "fixture-human-reviewer",
+        "--decision", "APPROVED",
+    )
+
+
 def record_team_receipt(
     run_dir: Path,
     work_order: Path,
@@ -161,6 +183,7 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "1", "--write",
     )
+    record_human_approval(run_dir, 1, "HREV-PHASE-01-SCAFFOLD")
     issued = run(
         sys.executable, str(CONTROLLER_SKILL / "scripts" / "issue_phase2_work_order.py"),
         "--run-dir", str(run_dir), "--issued-by", "migration-controller-1",
@@ -410,6 +433,7 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "2", "--write",
     )
+    record_human_approval(run_dir, 2, "HREV-PHASE-02-SCAFFOLD")
     phase2_receipts = [
         ("inventory_lead_id", "inventory-lead-1", "TASK-P2-LEAD", workspace / "phase-manifest.json"),
         ("code_map_agent_id", "code-map-agent-1", "TASK-P2-CODE", workspace / "static-analysis" / "COMMITTED"),

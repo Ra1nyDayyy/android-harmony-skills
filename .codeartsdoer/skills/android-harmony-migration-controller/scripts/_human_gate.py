@@ -62,6 +62,10 @@ def review_directory(run_dir: Path, phase: int) -> Path:
     return run_dir / "controller" / "human-reviews" / f"phase-{phase:02d}"
 
 
+def review_summary_path(run_dir: Path, phase: int) -> Path:
+    return run_dir / "controller" / "review-summaries" / f"phase-{phase:02d}" / "review-summary.json"
+
+
 def _seal_path(record_path: Path) -> Path:
     return record_path.with_suffix(record_path.suffix + ".sha256")
 
@@ -91,11 +95,40 @@ def validate_human_review_record(
         raise ValueError(f"Human review phase differs: {record_path}")
     if record.get("decision") not in DECISIONS:
         raise ValueError(f"Human review decision is invalid: {record_path}")
-    if record.get("decision") == "APPROVED_DEVIATION" and not record.get("deviations"):
-        raise ValueError(f"Approved deviation review has no deviations: {record_path}")
+    if record.get("decision") == "APPROVED_DEVIATION":
+        deviations = record.get("deviations")
+        if (
+            not isinstance(deviations, list)
+            or not deviations
+            or any(not isinstance(item, str) or not item.strip() for item in deviations)
+        ):
+            raise ValueError(f"Approved deviation review has invalid deviations: {record_path}")
     if not str(record.get("reviewer", "")).strip():
         raise ValueError(f"Human review reviewer is empty: {record_path}")
     return record
+
+
+def validate_current_review_summary(
+    run_dir: Path,
+    phase: int,
+    gate_report_path: Path,
+    require_waiting: bool = False,
+) -> dict[str, Any]:
+    summary_path = resolve_run_file(run_dir, review_summary_path(run_dir, phase), "review summary")
+    sidecar_path = resolve_run_file(
+        run_dir,
+        summary_path.with_suffix(summary_path.suffix + ".gate.sha256"),
+        "review summary gate binding",
+    )
+    bound_sha256 = sidecar_path.read_text(encoding="utf-8").strip().split()[0]
+    if bound_sha256 != sha256_file(gate_report_path):
+        raise ValueError("Review summary is not bound to the current gate report")
+    summary = load_json_object(summary_path, "review summary")
+    if summary.get("phase") != phase:
+        raise ValueError("Review summary phase differs from the current gate")
+    if require_waiting and summary.get("status") != "WAITING_HUMAN_REVIEW":
+        raise ValueError("Approval requires a WAITING_HUMAN_REVIEW review summary")
+    return summary
 
 
 def read_current_human_review(
