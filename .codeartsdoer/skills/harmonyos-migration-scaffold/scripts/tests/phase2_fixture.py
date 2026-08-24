@@ -355,7 +355,9 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
         }]},
         "events.json": {"schema_version": 1, "events": []},
         "transitions.json": {"schema_version": 1, "transitions": []},
-        "state-candidates.json": {"schema_version": 1, "states": []},
+        "state-candidates.json": {"schema_version": 1, "states": [{
+            "state_id": "STATE-DEFAULT", "page_id": "PAGE-LOGIN",
+        }]},
         "runtime-tasks.json": {"schema_version": 1, "tasks": [{
             "task_id": "RTASK-PAGE-LOGIN", "task_type": "VERIFY_PAGE_DEFAULT_STATE",
             "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN",
@@ -378,6 +380,12 @@ def build_closed_phase2(root: Path) -> tuple[Path, Path]:
             {
                 "observation_id": "OBS-PAGE-LOGIN", "subject_type": "PAGE",
                 "subject_id": "PAGE-LOGIN", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
+                "before_evidence_id": "", "after_evidence_id": evidence_id,
+                "locator_field": "", "locator_value": "", "locator_occurrence": 0,
+            },
+            {
+                "observation_id": "OBS-STATE-LOGIN-DEFAULT", "subject_type": "STATE",
+                "subject_id": "STATE-DEFAULT", "page_id": "PAGE-LOGIN", "env_id": "ENV-001",
                 "before_evidence_id": "", "after_evidence_id": evidence_id,
                 "locator_field": "", "locator_value": "", "locator_occurrence": 0,
             },

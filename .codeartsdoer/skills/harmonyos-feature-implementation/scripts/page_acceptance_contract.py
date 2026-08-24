@@ -7,6 +7,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,6 +24,15 @@ REGISTRY_FIELDS = [
     "page_id", "page_name", "relative_path", "contract_sha256", "state_count",
     "feature_ids", "required_h4env_ids", "status",
 ]
+CONTRACT_KEYS = {
+    "schema_version", "page_id", "page_name", "feature_ids", "states", "components",
+    "source_geometry", "assets", "visible_text", "interaction_bindings", "entry_conditions",
+    "transitions", "code_map", "business_rules", "data_dependencies", "side_effects",
+    "system_capabilities", "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
+    "comparison_policy",
+}
+CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "comparison_policy"}
+PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
 
 
 def canonical_contract_sha256(contract: dict[str, object]) -> str:
@@ -58,10 +68,12 @@ def compile_page_contracts(
         page_id = str(page.get("page_id", ""))
         if not page_id:
             raise ValueError("Phase 2 static analysis has empty Page-ID")
+        validate_page_id(page_id)
         if page_id in pages_by_id:
             raise ValueError(f"Phase 2 static analysis has duplicate Page-ID: {page_id}")
         pages_by_id[page_id] = page
     for row in inventory:
+        validate_page_id(row["page_id"])
         if row["page_id"] not in pages_by_id:
             raise ValueError(f"{row['page_id']}: inventory page is absent from Phase 2 pages")
 
@@ -82,6 +94,11 @@ def compile_page_contracts(
         component_id = str(event.get("component_id", ""))
         if component_id and component_id not in components_by_id:
             raise ValueError(f"event {event['event_id']} references orphan component {component_id}")
+        if component_id and components_by_id[component_id].get("page_id") != event["page_id"]:
+            raise ValueError(
+                f"event {event['event_id']} references component {component_id} from "
+                f"{components_by_id[component_id].get('page_id', '')}"
+            )
     for transition in transitions:
         _require(transition, ("transition_id", "source_page_id", "target_page_id"), "Phase 2 transition")
         _validate_page_ref(transition["source_page_id"], pages_by_id, "transition source")
@@ -89,12 +106,21 @@ def compile_page_contracts(
         event_id = str(transition.get("event_id", ""))
         if event_id and event_id not in events_by_id:
             raise ValueError(f"transition {transition['transition_id']} references orphan event {event_id}")
+        if event_id and events_by_id[event_id].get("page_id") != transition["source_page_id"]:
+            raise ValueError(
+                f"transition {transition['transition_id']} references event {event_id} from "
+                f"{events_by_id[event_id].get('page_id', '')}"
+            )
     inventory_state_keys = {(row["page_id"], row["state_id"]) for row in inventory}
+    static_state_keys: set[tuple[str, str]] = set()
     for state in state_candidates:
         _require(state, ("state_id", "page_id"), "Phase 2 state")
         _validate_page_ref(state["page_id"], pages_by_id, "state")
+        static_state_keys.add((state["page_id"], state["state_id"]))
         if (state["page_id"], state["state_id"]) not in inventory_state_keys:
             raise ValueError(f"{state['page_id']} {state['state_id']}: static state lacks inventory evidence")
+    for page_id, state_id in sorted(inventory_state_keys - static_state_keys):
+        raise ValueError(f"{page_id} {state_id}: inventory state lacks static state fact")
 
     evidence_rows = _index(_read_csv(phase2_workspace / "evidence-index.csv"), "evidence_id", "Phase 2 evidence")
     evidence_by_id: dict[str, dict[str, object]] = {}
@@ -124,20 +150,28 @@ def compile_page_contracts(
         }
 
     observations = _object_rows(phase2_workspace / "runtime-observations.json", "observations", "Phase 2 runtime observations")
-    observed_state_keys = {
-        (str(row.get("page_id", "")), str(row.get("state_id", "")), str(row.get("env_id", "")))
-        for row in observations
-        if row.get("subject_type") == "PAGE" and str(row.get("after_evidence_id", "")) in evidence_by_id
-    }
-    observed_evidence_keys = {
-        (str(row.get("page_id", "")), str(row.get("env_id", "")), str(row.get("after_evidence_id", "")))
-        for row in observations
-        if row.get("subject_type") == "PAGE" and str(row.get("after_evidence_id", "")) in evidence_by_id
-    }
+    inventory_by_evidence = _index(inventory, "evidence_id", "active Phase 2 inventory evidence")
+    observed_inventory_ids: set[str] = set()
+    for observation in observations:
+        if observation.get("subject_type") != "PAGE":
+            continue
+        evidence_id = str(observation.get("after_evidence_id", ""))
+        source = inventory_by_evidence.get(evidence_id)
+        if source is None:
+            raise ValueError(f"runtime observation references unknown evidence {evidence_id}")
+        observed_state_id = str(observation.get("state_id", ""))
+        if (
+            observation.get("page_id") != source["page_id"]
+            or observation.get("env_id") != source["env_id"]
+            or (observed_state_id and observed_state_id != source["state_id"])
+        ):
+            raise ValueError(
+                f"{observation.get('page_id') or source['page_id']} "
+                f"{observed_state_id or source['state_id']}: runtime observation/evidence binding differs"
+            )
+        observed_inventory_ids.add(source["inventory_id"])
     for row in inventory:
-        key = (row["page_id"], row["state_id"], row["env_id"])
-        evidence_key = (row["page_id"], row["env_id"], row["evidence_id"])
-        if key not in observed_state_keys and evidence_key not in observed_evidence_keys:
+        if row["inventory_id"] not in observed_inventory_ids:
             raise ValueError(f"{row['page_id']} {row['state_id']}: runtime state is uncovered")
 
     assets = _index(_read_csv(phase2_workspace / "asset-inventory.csv"), "asset_id", "Phase 2 asset")
@@ -217,7 +251,7 @@ def publish_page_contracts(contracts: list[dict[str, object]], destination: Path
         for contract in sorted(contracts, key=lambda item: str(item["page_id"])):
             _validate_contract(contract)
             page_id = str(contract["page_id"])
-            target = contract_dir / f"{page_id}.json"
+            target = _contract_path(contract_dir, page_id)
             _write_json(target, contract)
             registry.append({
                 "page_id": page_id,
@@ -232,14 +266,7 @@ def publish_page_contracts(contracts: list[dict[str, object]], destination: Path
         _write_csv(staged / "page-contract-registry.csv", registry)
         if len(registry) != len({row["page_id"] for row in registry}):
             raise ValueError("Page contract registry contains duplicate Page-ID")
-        for name in ("page-contracts", "page-contract-registry.csv"):
-            source, target = staged / name, destination / name
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-            os.replace(source, target)
+        _publish_staged_set(staged, destination)
         return registry
 
 
@@ -273,14 +300,100 @@ def _records_for_page(rows: list[dict[str, object]], page_id: str, page_field: s
 
 
 def _side_effects_for_page(rows: list[dict[str, object]], page_id: str, feature_ids: list[str]) -> list[dict[str, object]]:
-    return sorted((row for row in rows if not row.get("page_id") or str(row.get("page_id")) == page_id or str(row.get("feature_id", "")) in feature_ids), key=lambda row: str(row["side_effect_id"]))
+    return sorted(
+        (
+            row for row in rows
+            if str(row.get("page_id", "")) == page_id
+            or (not row.get("page_id") and str(row.get("feature_id", "")) in feature_ids)
+        ),
+        key=lambda row: str(row["side_effect_id"]),
+    )
 
 
 def _validate_contract(contract: dict[str, object]) -> None:
-    required = {"page_id", "page_name", "states", "components", "assets", "transitions", "android_evidence_hashes", "phase3_targets", "required_h4env_ids", "comparison_policy"}
-    missing = sorted(required - set(contract))
-    if missing or not contract.get("page_id") or not isinstance(contract.get("states"), list):
-        raise ValueError(f"Invalid page acceptance contract {contract.get('page_id', '')}: missing={missing}")
+    missing = sorted(CONTRACT_KEYS - set(contract))
+    extras = sorted(set(contract) - CONTRACT_KEYS)
+    if missing or extras:
+        raise ValueError(
+            f"Invalid page acceptance contract {contract.get('page_id', '')}: "
+            f"missing={missing}, undeclared={extras}"
+        )
+    validate_page_id(str(contract.get("page_id", "")))
+    if contract.get("schema_version") != "page-acceptance-contract-v1" or not isinstance(contract.get("page_name"), str):
+        raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: identity structure differs")
+    for field in CONTRACT_LIST_FIELDS:
+        value = contract.get(field)
+        if not isinstance(value, list):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must be an array")
+    if any(not isinstance(value, str) for value in contract["visible_text"]):
+        raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: visible_text must contain strings")
+    for field in ("feature_ids", "required_h4env_ids"):
+        if any(not isinstance(value, str) or not value for value in contract[field]):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain IDs")
+    object_arrays = CONTRACT_LIST_FIELDS - {
+        "feature_ids", "source_geometry", "visible_text", "required_h4env_ids",
+    }
+    for field in object_arrays:
+        if any(not isinstance(value, dict) for value in contract[field]):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
+    for state in contract["states"]:
+        if set(state) != {"state_id", "state_name", "records"} or not state.get("state_id"):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state structure differs")
+        if not isinstance(state["state_name"], str) or not isinstance(state["records"], list):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state record structure differs")
+        if any(not isinstance(record, dict) for record in state["records"]):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: state records must contain objects")
+    policy = contract.get("comparison_policy")
+    if not isinstance(policy, dict) or policy != COMPARISON_POLICY:
+        raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: comparison_policy differs")
+
+
+def validate_page_id(page_id: str) -> str:
+    """Return a canonical Page-ID or fail before it can influence a path."""
+    if not PAGE_ID_RE.fullmatch(page_id):
+        raise ValueError(f"unsafe Page-ID: {page_id}")
+    return page_id
+
+
+def _contract_path(contract_dir: Path, page_id: str) -> Path:
+    canonical_id = validate_page_id(page_id)
+    target = (contract_dir / f"{canonical_id}.json").resolve()
+    try:
+        target.relative_to(contract_dir.resolve())
+    except ValueError as exc:
+        raise ValueError(f"unsafe Page-ID output path: {page_id}") from exc
+    return target
+
+
+def _publish_staged_set(staged: Path, destination: Path) -> None:
+    names = ("page-contracts", "page-contract-registry.csv")
+    backup = Path(tempfile.mkdtemp(prefix=".page-contracts-backup-", dir=destination))
+    moved_old: list[str] = []
+    published: list[str] = []
+    try:
+        for name in names:
+            target = destination / name
+            if target.exists():
+                os.replace(target, backup / name)
+                moved_old.append(name)
+        for name in names:
+            os.replace(staged / name, destination / name)
+            published.append(name)
+    except OSError:
+        for name in reversed(published):
+            _remove_path(destination / name)
+        for name in moved_old:
+            os.replace(backup / name, destination / name)
+        raise
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

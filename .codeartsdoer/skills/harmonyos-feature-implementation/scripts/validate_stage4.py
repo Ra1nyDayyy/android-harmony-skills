@@ -44,7 +44,7 @@ from _stage4_audit import (
     verify_sealed_package,
     verify_upstream_closure,
 )
-from page_acceptance_contract import REGISTRY_FIELDS, canonical_contract_sha256
+from page_acceptance_contract import REGISTRY_FIELDS, canonical_contract_sha256, validate_page_id
 
 
 PHASE_NAME = "phase-04-harmony-implementation"
@@ -500,9 +500,14 @@ def validate_upstream_and_work_order(
                 "Phase 4 page-contract lock record differs")
         page_id = str(raw.get("page_id", ""))
         relative = str(raw.get("relative_path", ""))
-        require(page_id and page_id not in contract_locks and relative == f"page-contracts/{page_id}.json",
+        try:
+            validate_page_id(page_id)
+            path = (workspace / relative).resolve()
+            path.relative_to((workspace / "page-contracts").resolve())
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid page-contract lock path: {page_id}") from exc
+        require(page_id not in contract_locks and relative == f"page-contracts/{page_id}.json",
                 f"Invalid or duplicate page-contract lock: {page_id}")
-        path = workspace / relative
         require(path.is_file() and not path.stat().st_mode & 0o222,
                 f"Phase 4 page contract is missing or mutable: {page_id}")
         contract = object_json(path, f"page acceptance contract {page_id}")

@@ -10,13 +10,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from page_acceptance_contract import canonical_contract_sha256, compile_page_contracts  # noqa: E402
+import page_acceptance_contract as contract_module  # noqa: E402
+from page_acceptance_contract import (  # noqa: E402
+    canonical_contract_sha256,
+    compile_page_contracts,
+    publish_page_contracts,
+)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -121,6 +127,93 @@ class PageAcceptanceContractTest(unittest.TestCase):
         self.assertEqual(["STATE-EMPTY", "STATE-ERROR", "STATE-RESULT"], [
             state["state_id"] for state in first[0]["states"]
         ])
+
+    def test_rejects_unsafe_page_ids_before_contract_path_construction(self) -> None:
+        pages = read_json(self.phase2 / "static-analysis" / "pages.json")
+        pages["pages"][0]["page_id"] = "../escape"
+        write_json(self.phase2 / "static-analysis" / "pages.json", pages)
+        with self.assertRaisesRegex(ValueError, "unsafe Page-ID.*escape"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        build_fixture(self.phase2, self.phase3)
+        contract = json.loads(json.dumps(compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]))
+        contract["page_id"] = "../escape"
+        with self.assertRaisesRegex(ValueError, "unsafe Page-ID.*escape"):
+            publish_page_contracts([contract], self.root / "published")
+
+    def test_keeps_page_scoped_side_effects_on_their_declared_page(self) -> None:
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        history = next(contract for contract in contracts if contract["page_id"] == "PAGE-HISTORY")
+        self.assertNotIn("SIDE-CLIPBOARD", {row["side_effect_id"] for row in history["side_effects"]})
+
+    def test_rejects_runtime_observation_bound_to_another_state_evidence(self) -> None:
+        observations = read_json(self.phase2 / "runtime-observations.json")
+        error = next(row for row in observations["observations"] if row["state_id"] == "STATE-ERROR")
+        error["after_evidence_id"] = "EVID-RESULT"
+        write_json(self.phase2 / "runtime-observations.json", observations)
+        with self.assertRaisesRegex(ValueError, "PAGE-CALCULATOR.*STATE-ERROR.*runtime"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+
+    def test_rejects_inventory_state_missing_from_static_state_candidates(self) -> None:
+        states = read_json(self.phase2 / "static-analysis" / "state-candidates.json")
+        states["states"] = [row for row in states["states"] if row["state_id"] != "STATE-ERROR"]
+        write_json(self.phase2 / "static-analysis" / "state-candidates.json", states)
+        with self.assertRaisesRegex(ValueError, "PAGE-CALCULATOR.*STATE-ERROR.*static"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+
+    def test_rejects_cross_page_event_component_and_transition_bindings(self) -> None:
+        events = read_json(self.phase2 / "static-analysis" / "events.json")
+        events["events"][0]["component_id"] = "COMP-HISTORY-LIST"
+        write_json(self.phase2 / "static-analysis" / "events.json", events)
+        with self.assertRaisesRegex(ValueError, "EVENT-OPEN-HISTORY.*component.*PAGE-HISTORY"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        build_fixture(self.phase2, self.phase3)
+        transitions = read_json(self.phase2 / "static-analysis" / "transitions.json")
+        transitions["transitions"][0]["source_page_id"] = "PAGE-HISTORY"
+        transitions["transitions"][0]["target_page_id"] = "PAGE-CALCULATOR"
+        write_json(self.phase2 / "static-analysis" / "transitions.json", transitions)
+        with self.assertRaisesRegex(ValueError, "TRANS-CALC-HISTORY.*event.*PAGE-CALCULATOR"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+
+    def test_rejects_incomplete_or_undeclared_contract_structure(self) -> None:
+        contract = json.loads(json.dumps(compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]))
+        del contract["visible_text"]
+        with self.assertRaisesRegex(ValueError, "visible_text"):
+            publish_page_contracts([contract], self.root / "published")
+        contract = json.loads(json.dumps(compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))[0]))
+        contract["undeclared"] = "must not be silently accepted"
+        with self.assertRaisesRegex(ValueError, "undeclared"):
+            publish_page_contracts([contract], self.root / "published")
+        schema = read_json(SCRIPTS.parent / "assets" / "page-acceptance-contract.schema.json")
+        self.assertFalse(schema["additionalProperties"])
+
+    def test_publish_rolls_back_the_whole_set_when_registry_replace_fails(self) -> None:
+        destination = self.root / "published"
+        original = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        publish_page_contracts(original, destination)
+        registry_before = (destination / "page-contract-registry.csv").read_bytes()
+        contracts_before = {
+            path.name: path.read_bytes() for path in (destination / "page-contracts").glob("*.json")
+        }
+        changed = json.loads(json.dumps(original))
+        changed[0]["page_name"] = "Changed after initial publication"
+        real_replace = contract_module.os.replace
+        failed = False
+
+        def fail_registry_replace(source: object, target: object) -> None:
+            nonlocal failed
+            if not failed and Path(target).name == "page-contract-registry.csv":
+                failed = True
+                raise OSError("injected registry publish failure")
+            real_replace(source, target)
+
+        with patch.object(contract_module.os, "replace", side_effect=fail_registry_replace):
+            with self.assertRaisesRegex(OSError, "injected registry"):
+                publish_page_contracts(changed, destination)
+        self.assertEqual(registry_before, (destination / "page-contract-registry.csv").read_bytes())
+        self.assertEqual(
+            contracts_before,
+            {path.name: path.read_bytes() for path in (destination / "page-contracts").glob("*.json")},
+        )
 
 
 def remove_android_evidence(phase2: Path, evidence_id: str) -> None:

@@ -5,21 +5,55 @@
   "required": [
     "schema_version", "page_id", "page_name", "feature_ids", "states",
     "components", "source_geometry", "assets", "visible_text",
-    "interaction_bindings", "entry_conditions", "transitions", "code_map", "business_rules",
-    "data_dependencies", "side_effects", "system_capabilities",
+    "interaction_bindings", "entry_conditions", "transitions", "code_map",
+    "business_rules", "data_dependencies", "side_effects", "system_capabilities",
     "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
     "comparison_policy"
   ],
   "properties": {
     "schema_version": {"const": "page-acceptance-contract-v1"},
-    "page_id": {"type": "string", "minLength": 1},
+    "page_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"},
     "page_name": {"type": "string"},
     "feature_ids": {"type": "array", "items": {"type": "string"}},
-    "states": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "states": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["state_id", "state_name", "records"],
+        "properties": {
+          "state_id": {"type": "string"},
+          "state_name": {"type": "string"},
+          "records": {"type": "array", "items": {"type": "object"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "components": {"type": "array", "items": {"type": "object"}},
+    "source_geometry": {"type": "array"},
+    "assets": {"type": "array", "items": {"type": "object"}},
+    "visible_text": {"type": "array", "items": {"type": "string"}},
+    "interaction_bindings": {"type": "array", "items": {"type": "object"}},
+    "entry_conditions": {"type": "array", "items": {"type": "object"}},
+    "transitions": {"type": "array", "items": {"type": "object"}},
+    "code_map": {"type": "array", "items": {"type": "object"}},
+    "business_rules": {"type": "array", "items": {"type": "object"}},
+    "data_dependencies": {"type": "array", "items": {"type": "object"}},
+    "side_effects": {"type": "array", "items": {"type": "object"}},
+    "system_capabilities": {"type": "array", "items": {"type": "object"}},
+    "android_evidence_hashes": {"type": "array", "items": {"type": "object"}},
+    "phase3_targets": {"type": "array", "items": {"type": "object"}},
+    "required_h4env_ids": {"type": "array", "items": {"type": "string"}},
     "comparison_policy": {
       "type": "object",
-      "required": ["geometry_tolerance", "application_region_ssim", "changed_pixel_ratio", "required_element_masks"]
+      "required": ["geometry_tolerance", "application_region_ssim", "changed_pixel_ratio", "required_element_masks"],
+      "properties": {
+        "geometry_tolerance": {"const": "max(2dp, 0.5%)"},
+        "application_region_ssim": {"const": 0.98},
+        "changed_pixel_ratio": {"const": 0.02},
+        "required_element_masks": {"const": "STRICTER_REQUIRED_ELEMENT_MASKS"}
+      },
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }
