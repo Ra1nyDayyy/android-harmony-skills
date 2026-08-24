@@ -1,187 +1,58 @@
 ---
 name: android-migration-inventory
-description: Automatically build a migration-grade semantic inventory of an existing Android app using frozen-source page/UI/event/navigation discovery, Android CLI runtime traversal, source-runtime binding, state-level records, and an immutable evidence chain. Use before Android-to-HarmonyOS migration when every page, component, state, function, and transition must be discovered with minimal later manual repair; do not use it to implement HarmonyOS code.
+description: Automatically build a migration-grade semantic inventory of a frozen Android app using source discovery, Android CLI traversal, source-runtime binding, state evidence, dynamic-risk probes, and deterministic coverage gates. Use before Android-to-HarmonyOS implementation; do not write HarmonyOS code.
 ---
 
 # Android Migration Inventory
 
-Produce a complete, reproducible description of the Android app before migration work begins. Treat observable states, not pages alone, as the inventory unit.
+Describe what the Android app actually contains and does. The unit of truth is `Feature-ID + Page-ID + State-ID + ENV-ID + Evidence-ID`, not a screenshot or page name alone.
 
-Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Skill quality evidence cannot grant Android coverage; only the deterministic Phase 2 scripts may do so.
+## Non-negotiable contract
 
-## Hard rules
+- Models never approve, create `PAGE_PASS`, or declare Phase 2 complete.
+- No manual page enumeration or annotation occurs inside Phase 2.
+- Every factual claim cites a frozen file/line, sealed runtime evidence, or both; otherwise it is `PENDING_CONFIRMATION`.
+- Static discovery gaps, skipped source, parse errors, unsupported UI surfaces, unresolved runtime tasks, and unprobed side effects are blocking.
+- Evidence and assets are immutable; recapture or supersede with new IDs.
+- MP4 and Android Layout Inspector are not formal evidence.
 
-- Runtime inspection uses Android CLI. Layout Inspector is prohibited for formal evidence.
-- Do not create, accept, or reference MP4 files.
-- One inventory row equals one feature, one page, one state, one environment, and one evidence ID.
-- Every inventory row explicitly lists real `Asset-ID` values or exactly `["NONE_FOUND"]`.
-- Every conclusion cites a file/line, a formal evidence ID, or both. Mark unsupported facts `PENDING_CONFIRMATION`.
-- Evidence is immutable. Recapture with a new evidence ID; never overwrite a sealed package.
-- The evidence administrator issues and seals evidence. The coverage checker is the only final reviewer.
-- A given emulator or device is controlled by only one runtime-state agent at a time.
-- Phase 2 performs no human annotation or manual page enumeration. Unresolved facts become automatic runtime tasks with explicit confidence; they are never guessed or silently omitted.
-- No agent may grant `PASS`. Agents only bind static subjects to evidence; deterministic scripts compute every `PAGE_PASS` and the final verdict.
-- The inventory lead must dispatch the code-map, every runtime-state, business-rule, data-dependency, evidence-administrator, and coverage-checker assignment as distinct real worker tasks. Actor-ID strings without controller team-execution receipts do not satisfy the assignment.
+Phase 2 automation ends at its machine Gate. The human review happens only after the machine Gate, when the controller enters `WAITING_HUMAN_REVIEW`.
 
-## Initialize Phase 2
+## Inputs and initialization
 
-Read [references/roles-and-authority.md](references/roles-and-authority.md) and [references/environment-contract.md](references/environment-contract.md). Phase 1 must already be `PASS`.
+Consume the controller run, frozen `scope.json`, and Phase 2 work order. Initialize with `scripts/init_inventory.py`; then attest frozen accounts, seed, network, permissions, APK, Git revision, Android CLI, device, and emulator using `scripts/attest_environment.py`.
 
-```bash
-python3 scripts/init_inventory.py \
-  --run-dir <migration-run> \
-  --scope <migration-run>/controller/scope.json \
-  --work-order <migration-run>/controller/work-orders/<work-order>.json \
-  --frozen-by <inventory-lead-id>
-```
+Read [static-page-analysis.md](references/static-page-analysis.md), then run `scripts/analyze_static_pages.py` followed by `scripts/validate_static_analysis.py`. Do not traverse runtime until static validation succeeds.
 
-Initialization verifies the current scope/work-order digests, clean Git revision, APK hash, Android CLI version and help output, runs `android describe`, copies the frozen environments, and creates the coverage, catalog, evidence, and inventory registries. If preflight cannot complete, stop Phase 2 as `BLOCKED`; do not fall back to Layout Inspector.
+## Automatic understanding
 
-Environment credentials, seed data, and permissions must already be provisioned by the controller. Phase 2 automation records their readiness before capture; it must not pause for human page analysis:
+The source lens inventories all eligible source files and layouts, records parsed and skipped counts, and discovers:
 
-```bash
-python3 scripts/attest_environment.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --env-id <ENV-ID> \
-  --inventory-lead-id <inventory-lead-id> \
-  --account-ready --seed-ready --network-ready --permissions-ready
-```
+- Activities, Fragments, Dialogs, Sheets, Compose functions regardless of naming convention, navigation resources, widgets, and custom surfaces.
+- Components, hierarchy, text, geometry hints, visibility, enablement, events, states, entry conditions, and transitions.
+- Assets, business rules, data dependencies, permissions, SDKs, system capabilities, reflection, dynamic loading, WebView/server-driven UI, background work, persistence, clipboard, files, and network effects.
+- Special accounts, denied permissions, offline/error data, empty/loading/error states, orientation, theme, locale, and other required scenarios.
 
-## Discover the source graph first
+The runtime lens consumes every machine-generated task, autonomously navigates the frozen app with Android CLI, captures UI tree, screenshot, foreground package, assertions, before/after effects, and transition diffs, then binds each result back to source IDs. Missing or contradictory bindings remain explicit blockers; never infer them.
 
-Read [references/static-page-analysis.md](references/static-page-analysis.md), then run the deterministic scanner against the frozen source:
+## Work separation
 
-```bash
-python3 scripts/analyze_static_pages.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --analyzed-by <code-map-agent-id>
+Use focused logical lenses for code map, runtime state, business rules, data/capabilities, evidence administration, and coverage. They may use the same approved model service, but outputs remain role-owned and independently recomputed. Record the real CodeArts task and artifact receipt required by the controller.
 
-python3 scripts/validate_static_analysis.py \
-  --workspace <migration-run>/phase-02-android-inventory
-```
+Archive real Android assets with `scripts/archive_assets.py`. Capture state evidence with `scripts/capture_state.py`; every package must be controller-anchored. Build normalized rows with `scripts/build_inventory.py`, bind runtime subjects with `scripts/record_runtime_observation.py`, and capture advanced probes with `scripts/capture_advanced_probe.py`.
 
-The scanner creates stable page and component candidates, expands XML layouts and resource values, detects Activity/Fragment/Compose surfaces, extracts event/state/navigation candidates, and emits a machine-consumable runtime backlog. It also inventories reflection, dynamic code, WebView/server-driven UI, non-UI side effects, permissions, abnormal data, and extreme-state scenarios in `advanced-analysis.json`. Do not begin runtime traversal unless validation passes.
+## Machine Gate and rework
 
-Static analysis locates what should exist; it does not claim final pixels or behavior. Runtime automation must confirm every page's default state, resolve open relationships, and promote only source/runtime-correlated candidates from `DISCOVERED` to the formal `VERIFIED` catalogs.
+Run the deterministic page, advanced, evidence, asset, and coverage validators described in [deterministic-page-gates.md](references/deterministic-page-gates.md). The coverage reviewer may diagnose and open rework but cannot convert its opinion into `PASS`. A claim is complete only when every frozen denominator item is accounted for and every applicable environment has reproducible evidence.
 
-## Run independent automated lenses
+Route source/runtime disagreement, missing pages, weak locator binding, dynamic surfaces, special scenarios, and side-effect probe failures through [review-and-rework.md](references/review-and-rework.md). Do not delete a blocker to improve coverage.
 
-The inventory lead dispatches four independent automated lenses:
+Return the closed workspace to the controller. The controller independently recomputes Gate 2, generates the exception-first review summary, and pauses at `WAITING_HUMAN_REVIEW`.
 
-- Code-map agent: consumes the committed static package and resolves modules, entries, routes, pages, component trees, state candidates, resources, and file/line references.
-- Runtime-state agent: consumes `runtime-tasks.json`, autonomously navigates user journeys, and captures observable states on the frozen environment.
-- Business-rule agent: entry conditions, validations, roles, feature flags, and transitions.
-- Data-dependency agent: APIs, local data, permissions, SDKs, system capabilities, and native libraries.
+## Reference map
 
-Do not collapse these lenses into one general worker. Each worker receives only its frozen role and returns role-owned artifacts. After closure, return the real CodeArts task ID and artifact paths to the controller so it can run `record_team_execution.py` for every Phase 2 assignment. Missing receipts prevent issuance of Phase 3 even when the content gate otherwise passes.
-
-Read [references/inventory-contract.md](references/inventory-contract.md) before creating claim records.
-Complete `coverage-ledger.csv` and the five files under `catalogs/` from machine findings. A final `PASS` requires every included Feature-ID and applicable ENV-ID to be marked `COMPLETE`, every in-scope code state candidate to be linked to a formal state row, and every static runtime task to be resolved or retained as an explicit blocking risk.
-
-The code-map agent also generates `asset-mapping.template.json` content from the frozen Android source and archives the real bytes before building the inventory:
-
-```bash
-python3 scripts/archive_assets.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --mapping <asset-mapping.json> \
-  --archived-by <code-map-agent-id>
-```
-
-This creates `asset-inventory.csv` and the committed `asset-package/`. Use `{"schema_version":1,"assets":[]}` when the audit finds no migratable assets; claim rows then use only the `NONE_FOUND` sentinel. Never create an asset row or file for that sentinel.
-
-## Capture formal evidence
-
-Read [references/android-cli-procedure.md](references/android-cli-procedure.md) and [references/evidence-contract.md](references/evidence-contract.md). The runtime-state agent positions the app at the target state; the evidence administrator performs the formal capture:
-
-```bash
-python3 scripts/capture_state.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --inventory-id <Inventory-ID> \
-  --feature-id <Feature-ID> \
-  --page-id <Page-ID> \
-  --state-id <State-ID> \
-  --env-id <ENV-ID> \
-  --steps <steps.md> \
-  --issued-by <evidence-administrator-id> \
-  --captured-by <runtime-state-agent-id> \
-  --launch
-```
-
-Use `--previous-evidence` and `--include-diff` for a state transition. A failed capture creates no valid evidence ID.
-Use `--supersedes-evidence` for recapture. The old package remains immutable and its index lifecycle becomes `SUPERSEDED`.
-After capture, return every new Evidence-ID to the migration controller for an independent controller-owned digest anchor. Unanchored or later changed evidence cannot pass final review.
-
-## Build and review automatically
-
-Build the normalized inventory from JSON or JSONL claim files:
-
-```bash
-python3 scripts/build_inventory.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --claims <claims-file-or-directory>
-```
-
-Read [references/review-and-rework.md](references/review-and-rework.md) and [references/deterministic-page-gates.md](references/deterministic-page-gates.md). The runtime-state agent records evidence bindings without a status or decision field. Record one observation for every required page, component, event, transition, state candidate, and applicable environment:
-
-```bash
-python3 scripts/record_runtime_observation.py \
-  --workspace <workspace> \
-  --subject-type <PAGE|COMPONENT|EVENT|TRANSITION|STATE> \
-  --subject-id <stable-subject-id> \
-  --page-id <Page-ID> \
-  --env-id <ENV-ID> \
-  --after-evidence <Evidence-ID> \
-  [--before-evidence <Evidence-ID>] \
-  [--locator-field <text|type|content_description|test_tag> \
-   --locator-value <source-derived-value> --locator-occurrence <n>]
-```
-
-Run the deterministic page gate before final closure. Missing evidence and ambiguous component bindings are blocking, including on dialogs, menus, widgets, and other small surfaces:
-
-```bash
-python3 scripts/evaluate_page_gates.py --workspace <workspace>
-```
-
-Read [references/advanced-runtime-analysis.md](references/advanced-runtime-analysis.md). For every dynamic risk, side effect, and generated scenario, bind runtime UI evidence without a verdict. Side effects and scenarios additionally require a sealed before/after probe produced by the frozen adapter:
-
-```bash
-python3 scripts/seal_side_effect_probe.py \
-  --workspace <workspace> \
-  --probe-evidence-id <Probe-Evidence-ID> \
-  --candidate-id <Side-Effect-ID-or-Scenario-ID> \
-  --page-id <Page-ID> --env-id <ENV-ID> \
-  --before <before.json> --after <after.json> \
-  --adapter-record <adapter-record.json> \
-  --comparator <CHANGED|UNCHANGED|EQUALS_EXPECTED> \
-  --produced-by <data-dependency-agent-id> \
-  --sealed-by <evidence-administrator-id>
-
-python3 scripts/record_advanced_observation.py \
-  --workspace <workspace> \
-  --subject-type <DYNAMIC_RISK|SIDE_EFFECT|SCENARIO> \
-  --subject-id <Subject-ID> --page-id <Page-ID> --env-id <ENV-ID> \
-  --evidence-id <Evidence-ID> [--probe-evidence-id <Probe-Evidence-ID>]
-
-python3 scripts/evaluate_advanced_gates.py --workspace <workspace>
-```
-
-The advanced gate recomputes JSON differences and comparator results, verifies the frozen adapter hash and evidence bindings, and blocks closure if any generated candidate/environment pair is absent. Do not add `status`, `confidence`, or model verdict fields to advanced observations.
-
-The coverage-checker agent may inspect screenshots, cross-check findings, and open rework, but cannot turn its own assessment into `PASS`. The later project-wide human audit remains outside Phase 2.
-
-```bash
-python3 scripts/manage_recheck.py --workspace <workspace> --action open \
-  --reviewer <coverage-checker-id> --rework-id <Rework-ID> ...
-```
-
-```bash
-python3 scripts/validate_evidence.py \
-  --workspace <migration-run>/phase-02-android-inventory \
-  --reviewer <coverage-checker-id> \
-  --decision AUTO
-```
-
-`--decision PASS` is accepted only as a legacy alias for `AUTO` and is ignored as an authority signal. `INCOMPLETE` and `BLOCKED` may stop closure; only the deterministic gates can produce `PASS`.
-
-Return the Phase 2 package to `$android-harmony-migration-controller`. Do not begin HarmonyOS architecture or implementation from this skill.
-On `PASS`, inventory and asset rows become `REVIEWED`, active evidence becomes `ACCEPTED`, and `CLOSED` makes capture/build/recheck/archive operations read-only. Later changes invalidate the controller gate through the closure snapshot.
+- [inventory-contract.md](references/inventory-contract.md): IDs, rows, and catalogs.
+- [static-page-analysis.md](references/static-page-analysis.md): source denominator and runtime backlog.
+- [android-cli-procedure.md](references/android-cli-procedure.md) and [evidence-contract.md](references/evidence-contract.md): formal runtime capture.
+- [advanced-coverage-contract.md](references/advanced-coverage-contract.md): dynamic risks, side effects, and scenarios.
+- [deterministic-page-gates.md](references/deterministic-page-gates.md) and [review-and-rework.md](references/review-and-rework.md): closure and failure routing.

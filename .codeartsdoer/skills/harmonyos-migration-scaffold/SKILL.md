@@ -1,143 +1,52 @@
 ---
 name: harmonyos-migration-scaffold
-description: Build and verify a non-business HarmonyOS NEXT project scaffold from a frozen Android migration inventory, with immutable inputs and environments, real module and route landing points, interface-only capability contracts, frozen-emulator PNG evidence, command-line build proof, and an independent Phase 3 gate. Use after the Android inventory phase passes; do not use it to implement business behavior or alter Phase 2 artifacts.
+description: Build and verify a non-business HarmonyOS NEXT scaffold from an approved Android inventory using the bundled ArkUI Stage template, real routes or surfaces, public UI foundations, interface-only capability contracts, command-line build evidence, and a mandatory human checkpoint. Use after approved Gate 2; do not implement business behavior.
 ---
 
 # HarmonyOS Migration Scaffold
 
-Create a HarmonyOS NEXT project that builds, installs, launches, and contains a real architectural landing point for every frozen Phase 2 record. Stop before business implementation.
+Create a runnable landing place for every frozen Android page without prematurely implementing the app.
 
-Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Skill governance evidence never substitutes for a real toolchain, emulator, screenshot, Stage 3 report, or controller Gate 3.
+## Non-negotiable contract
 
-## Hard boundaries
+- Models never approve, accept deviations, or declare Phase 3 complete.
+- Start only from machine-passing and human-approved Gates 1-2 with hash-locked Phase 2 inputs.
+- Use the bundled `assets/arkui-stage-template`; do not substitute a sample project.
+- Preserve each Android surface carrier: page, Dialog, Sheet, overlay, widget, or external surface. Do not invent a route for a non-routable surface.
+- Create modules, routes/surface shells, public tokens/containers, and interface-only capability contracts. No ViewModels, business state, requests, persistence, fake data, real adapters, or business buttons.
+- Build/install/launch/smoke evidence must come from frozen command-line tools and the emulator, not previews or claims.
 
-- Phase 1 and Phase 2 must both be `PASS`; Phase 2 inputs are read-only and hash-locked.
-- A page shell may contain only identity metadata, an originally existing page-level navigation bar, blank content, and the minimum route/back wiring needed for smoke tests.
-- Do not add ViewModels, domain behavior, requests, persistence, fake data, state transitions, timers, business buttons, or real capability adapters.
-- A visual surface that was not independently navigable on Android receives a surface shell, not a fabricated route.
-- Capability files define types and interfaces only. Real adapters belong to a later phase.
-- Formal build, install, launch, and smoke evidence comes from command-line tools. GUI-only claims do not pass.
-- Every real route or visual-surface shell must be opened on a frozen HarmonyOS emulator and bound to immutable PNG screenshot evidence. Desktop crops and manually supplied screenshots do not pass.
-- Never store passwords, tokens, private keys, passphrases, or signing secrets in the workspace.
-- Environments and verification packages are immutable. Issue a new `HENV-ID` or `HVER-ID` instead of overwriting one. Manage rework only through the governed rework script; never delete or reuse a ticket ID.
-- The architecture acceptance agent is the only final reviewer and must not be a creator or verification executor.
-- All six frozen Phase 3 roles must be six separately dispatched CodeArts worker tasks. Writing six actor IDs while one worker performs the phase is invalid.
+## Inputs and initialization
 
-## Initialize Phase 3
+Consume the controller-issued Phase 3 work order and immutable Phase 2 closure. Run `scripts/init_scaffold.py`; it copies the accepted inputs, creates the template project, seeds architecture, page/surface, asset-landing, capability, and migration-status registries, and rejects input drift.
 
-Read [references/input-mapping-contract.md](references/input-mapping-contract.md) and initialize the read-only Phase 2 handoff:
+Freeze the real toolchain and emulator with `scripts/freeze_environment.py`. Credentials and signing secrets remain outside the workspace.
 
-```bash
-python3 scripts/init_scaffold.py \
-  --run-dir <migration-run> \
-  --work-order <controller-issued-phase-3-work-order.json> \
-  --architecture-lead <agent-id>
-```
+## Build responsibilities
 
-Initialization first reruns controller Gate 2 without writing controller state. It verifies the registered work order, all six frozen Phase 3 actors, the complete Phase 2 closure, reviewed inventory, accepted evidence, controller evidence anchors, the committed real-asset package, the three dependency/capability catalogs, and the deterministic advanced-analysis/probe gate. It copies and hashes the small input records, locks every archived asset file by canonical path and hash, seeds one architecture/migration-status row per active inventory record and one `asset-registry.csv` row per real asset, and extracts real capability requirements while ignoring explicit `NONE_FOUND` sentinels. Any input drift blocks the phase.
+- Architecture: module placement, carrier mapping, dependency policy, asset landing, and ownership boundaries.
+- Toolchain: dependency lock, clean build, install, and launch.
+- Navigation/surfaces: one real landing shell per frozen Page-ID or non-page surface.
+- Public UI: generic tokens, responsive containers, and common state shells only.
+- Capability contracts: types and interfaces only.
+- Machine verification: deterministic source, artifact, route/surface, screenshot, and boundary checks.
 
-Initialization also creates `harmony-project/` from the bundled `assets/arkui-stage-template`. It replaces the bundle name and application identity from frozen scope, rejects unresolved template tokens and unsafe links, and records `template-generation.json` plus the source-template manifest. Do not replace this project with a different sample project. Install dependencies to create the dependency lockfile, then read [references/environment-toolchain.md](references/environment-toolchain.md), complete `assets/harmony-environment.template.json`, and freeze it:
+These are logical responsibilities, not proof that six unrelated models ran. Bind actual CodeArts tasks and owned artifacts to controller receipts; a creator cannot perform the external human approval.
 
-```bash
-python3 scripts/freeze_environment.py \
-  --workspace <migration-run>/phase-03-harmony-scaffold \
-  --config <completed-harmony-environment.json> \
-  --frozen-by <architecture-lead-id>
-```
+## Verification and rework
 
-Use the same script with a new ID when any environment field changes. Never edit an existing environment directory.
+Populate registries with real project-relative files. Preserve Phase 2 assets and advanced obligations; Phase 3 may plan their landing but cannot erase or implement them.
 
-## Divide and build
+Run `scripts/run_verification.py` with the frozen verification plan. It must produce immutable build, install, launch, route/surface smoke, and PNG evidence for the declared emulator. Then run `scripts/validate_stage3.py`; external labels or hand-written smoke results have no authority.
 
-Read [references/roles-and-authority.md](references/roles-and-authority.md) and [references/scaffold-boundaries.md](references/scaffold-boundaries.md).
+Route build/toolchain, route/carrier, public-boundary, interface-contract, asset-landing, and dependency failures through `scripts/manage_stage3_rework.py`. Open tickets block machine closure.
 
-- Architecture lead: freezes module placement and dependency policy, registers the safe target module/path/symbol and migration decision for every real Phase 2 asset, arbitrates conflicts, and confirms the manager's deterministic rework owner.
-- Toolchain agent: creates the project/modules and makes the frozen target build, install, and launch.
-- Navigation agent: creates real route or visual-surface shells and smoke coverage.
-- Public UI agent: creates only generic tokens, containers, common state shells, and responsive rules.
-- Capability-contract agent: creates interface-only contracts for the seeded requirements.
-- Architecture acceptance agent: independently verifies the exact snapshot and alone issues the gate verdict.
+Return the sealed workspace to the controller. The controller recomputes Gate 3, presents build/startup status, Page-ID landing coverage, carrier differences, and exceptions, then stops at `WAITING_HUMAN_REVIEW`.
 
-The architecture lead must not implement the other five assignments. Each role returns a real platform task ID and at least one role-owned artifact to the controller. Record all six receipts after the canonical Stage 3 report is sealed; Phase 4 issuance rejects an incomplete, reused, fabricated, or hash-stale receipt set.
+## Reference map
 
-Populate the registries with paths to real files inside `harmony-project/`. Documentation-only mappings are invalid. Asset rows are landing plans, not permission to copy or recreate business assets during Phase 3. Keep `migration-status.csv` separate from Phase 2.
-
-`advanced-obligations.json` is generated, not hand-authored. Every Phase 2 side effect creates an `ADVANCED_SIDE_EFFECT` capability requirement. Dynamic surfaces and special scenarios are preserved as mandatory Phase 4 implementation/test obligations; Phase 3 must not erase them merely because the scaffold contains no business behavior.
-
-## Capture formal verification
-
-Read [references/verification-and-rework.md](references/verification-and-rework.md). Complete `assets/verification-plan.template.json`, including command arrays for toolchain, device, bundle, signing, clean build, install, launch, route smoke, and emulator screenshot capture. Then run:
-
-```bash
-python3 scripts/run_verification.py \
-  --workspace <migration-run>/phase-03-harmony-scaffold \
-  --plan <verification-plan.json>
-```
-
-The runner uses argument arrays without a shell, records exit codes and sanitized logs, hashes the source snapshot and built artifact, and seals one `HVER-ID` package. Each screenshot receives an `HSCREEN-ID`, PNG, metadata, file hashes, emulator identity, target route/surface identity, and capture-command reference. A failed command does not create passing evidence.
-
-The HENV freezes a separate executable contract for each of the nine command categories. The HVER—not the HENV directory—contains the executed toolchain/device/bundle/signing preflight report. Every route/surface smoke command must create a new direct JSON result at its declared output path; pre-existing or hand-written result input is rejected. Clean build must create or change a structurally valid HAP, and screenshot capture must create a complete PNG whose CRC, decompressed data, and frozen-emulator dimensions validate. PASS and FAIL HVER packages are both sealed read-only and are never edited.
-
-## Route rework
-
-Only the frozen architecture acceptance agent may open or close Phase 3 rework. The architecture lead confirms the fixed owner, and the manager mirrors the ticket into the controller ledger:
-
-```bash
-python3 scripts/manage_stage3_rework.py \
-  --workspace <migration-run>/phase-03-harmony-scaffold \
-  --action open \
-  --reviewer <architecture-acceptance-agent-id> \
-  --ticket-id <new-ticket-id> \
-  --problem-type <fixed-problem-type> \
-  --source-or-mapping-id <record-id> \
-  --failed-verification-id <failed-HVER-ID> \
-  --severity <CRITICAL|HIGH|MEDIUM|LOW> \
-  --reason <reason> \
-  --completion-condition <condition> \
-  --confirmed-by <architecture-lead-id>
-```
-
-Close it only with a newer sealed PASS HVER produced by the frozen toolchain agent:
-
-```bash
-python3 scripts/manage_stage3_rework.py \
-  --workspace <migration-run>/phase-03-harmony-scaffold \
-  --action close \
-  --reviewer <architecture-acceptance-agent-id> \
-  --ticket-id <ticket-id> \
-  --correction-verification-id <new-passing-HVER-ID>
-```
-
-Every open ticket blocks PASS, regardless of severity.
-
-## Close Phase 3
-
-The architecture acceptance agent reviews the real module files, one-to-one asset landing registry, route and surface smoke results, public-UI boundary, interface-only contracts, dependency graph, and all open rework tickets. It then runs:
-
-```bash
-python3 scripts/validate_stage3.py \
-  --workspace <migration-run>/phase-03-harmony-scaffold \
-  --henv-id <HENV-ID> \
-  --verification-id <HVER-ID> \
-  --reviewer <architecture-acceptance-agent-id> \
-  --decision PASS \
-  --attest-real-file-review \
-  --attest-placeholder-boundaries \
-  --attest-contract-only \
-  --attest-dependency-review \
-  --attest-runtime-smoke \
-  --attest-screenshot-review
-```
-
-On PASS, the validator writes the Phase 3 closure manifest and `CLOSED`, then makes the complete workspace read-only. Return it to `$android-harmony-migration-controller` and run the independent controller gate:
-
-```bash
-python3 ../android-harmony-migration-controller/scripts/validate_gate.py \
-  --run-dir <migration-run> \
-  --phase 3 \
-  --write
-```
-
-The controller recomputes the registered work order, role separation, locked Phase 2 snapshots, HENV/HVER evidence, current scaffold/artifact/screenshot hashes, mirrored rework state, and complete Phase 3 closure. Enter business implementation only under a later separately approved work order; Gate 3 PASS closes the scaffold phase but does not itself authorize feature work.
-
-Only `stage-03-gate-report.json` with exact `verdict: PASS` is valid. `PASS_WITH_GAPS`, a syntax error, a missing registry, or any `PENDING` scaffold obligation is blocking and may not be renamed a design decision.
+- [input-mapping-contract.md](references/input-mapping-contract.md): immutable Phase 2 handoff.
+- [scaffold-boundaries.md](references/scaffold-boundaries.md): permitted and forbidden code.
+- [environment-toolchain.md](references/environment-toolchain.md): frozen commands and emulator.
+- [verification-and-rework.md](references/verification-and-rework.md): evidence, tickets, and closure.
+- [roles-and-authority.md](references/roles-and-authority.md): responsibility and receipt rules.

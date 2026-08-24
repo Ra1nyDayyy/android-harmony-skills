@@ -1,139 +1,53 @@
 ---
 name: harmonyos-feature-implementation
-description: Implement and verify real HarmonyOS NEXT business features from frozen Android inventory and an accepted HarmonyOS scaffold, with source-first visual assets, state-level emulator evidence, native-capability adapters, and independent parity acceptance. Use only after migration Phases 1–3 pass; do not use it for scaffold creation, Android discovery, or release-store submission.
+description: Implement and verify HarmonyOS NEXT pages from frozen Android page contracts and an approved scaffold, using page-owned work orders, shared capability orders, final-HAP emulator evidence, ArkUI Inspector trees, deterministic parity comparison, bounded repair, and human review. Use only after approved Gate 3.
 ---
 
 # HarmonyOS Feature Implementation
 
-Implement real business behavior in a writable copy of the accepted Phase 3 project. Work by `Feature-ID`; accept by Android `Inventory-ID` and `State-ID`.
+Translate the frozen Android semantics into ArkUI. Phase 2 page contracts are the only UI and functional design source; Phase 4 may implement them but may not reinterpret or simplify them.
 
-Before execution, read [references/governed-execution-contract.md](references/governed-execution-contract.md). Treat `manifest.json` and `reports/skill-ir.json` as the package contract. Governance scorecards cannot grant functional or visual parity; only canonical build, emulator, Inspector, assertion, review, and Gate 4 evidence may do so.
+## Non-negotiable contract
 
-## Hard boundaries
+- Models never approve, accept differences, write `MATCH`, or declare Phase 4 complete.
+- Start only from machine-passing and human-approved Gates 1-3. Inputs remain immutable.
+- Carrier, components, geometry, visible text, states, actions, outputs, transitions, assets, data effects, and system effects are non-waivable.
+- A page cannot become a Dialog, Sheet, merged page, or simplified substitute unless Phase 2 recorded that carrier or a person approves a named deviation after machine comparison.
+- Reuse frozen Android assets. Do not redraw, screenshot-crop, silently replace, or regenerate them.
+- No fake data, no-op adapters, placeholder branches, invented APIs, or build-only completion.
 
-- Controller Gates 1–3 and the Phase 3 acceptance report must be `PASS` before initialization.
-- Phase 1–3 artifacts are immutable inputs. Copy the Phase 3 project; never develop inside it.
-- Every active Android inventory row maps to one HarmonyOS parity row on every required `H4ENV-ID`.
-- Phase 4 is a constrained translation, not a redesign. Carrier, components, functions, transitions, data effects, and system effects are non-waivable; an agent may not simplify, merge, omit, or substitute them.
-- Formal screenshots come from the frozen HarmonyOS emulator after install, launch, navigation, and assertions. Preview or design-tool images do not count.
-- Reuse existing Android SVG, PNG, WebP, JPG, icon, and illustration files. Do not redraw, regenerate, crop from screenshots, or silently substitute a glyph or system symbol.
-- Format conversion and native-system substitution require traceable records; observable behavior changes require controller approval.
-- No fake data, no-op adapters, placeholder business behavior, or unimplemented production branches may pass.
-- The emulator verification executor and parity acceptance agent are distinct from implementers. Only the parity acceptance agent closes Phase 4.
-- MP4 is neither required nor accepted as formal evidence.
-- The four global governance roles and the four roles in every feature work order must be separately dispatched CodeArts worker tasks. A single worker may not implement UI, business/data, native capability, execute verification, and accept its own result under different IDs.
+## Inputs and initialization
 
-## Initialize Phase 4
+Consume the controller Phase 4 order, frozen Phase 2 page acceptance contracts, accepted Phase 3 project, asset package/landing map, and required `H4ENV-ID` configurations. Run `scripts/init_implementation.py`; it copies the scaffold, locks every input hash, creates one canonical contract per Page-ID, and seeds parity/evidence registries.
 
-Read [references/input-contract.md](references/input-contract.md), [references/roles-and-authority.md](references/roles-and-authority.md), [references/asset-and-visual-parity.md](references/asset-and-visual-parity.md), and [references/observable-consistency-contract.md](references/observable-consistency-contract.md). Phase 2 must provide a frozen asset inventory/package and Phase 3 must provide its accepted project snapshot and asset landing registry. The controller issues the Phase 4 work order and freezes all four governance roles.
+Missing or contradictory Android facts return to Phase 2. Wrong module, route, carrier, shell, contract, or asset landing returns to Phase 3. Do not guess around upstream defects.
 
-```bash
-python3 scripts/init_implementation.py \
-  --run-dir <migration-run> \
-  --work-order <migration-run>/controller/work-orders/<phase4-work-order>.json \
-  --environment-config <completed-phase4-environment.json> \
-  --implementation-lead <frozen-implementation-lead-id>
-```
+## Page-owned implementation
 
-Repeat `--environment-config` once for every required source-environment/emulator mapping. When Phase 3 contains `FORMAT_CONVERSION` assets, repeat `--asset-conversion-config <contracts.json>` for every contract file. Initialization reruns Gates 1–3 read-only, verifies both closure manifests and `CLOSED` markers, copies every referenced Android evidence package, every Phase 2 asset byte, the Phase 3 work order, all controller-listed inputs, and only the accepted Phase 3 project snapshot. It freezes exact `H4ENV-ID` command contracts, seeds one parity record per active Android state and mapped environment, and byte-copies every `DIRECT_COPY` asset from the local frozen asset copy.
+Issue one immutable `PAGE_WORK_ORDER` for every Page-ID. Each page has one exclusive owner, one real CodeArts task ID, exclusive code paths, all states, transitions, visual rules, side effects, capability dependencies, and its contract hash. One owner keeps the page through its bounded repairs, preventing context loss and inconsistent partial edits.
 
-## Implement one feature
+Issue separate `SHARED_CAPABILITY_WORK_ORDER` records for reusable calculations, persistence, network, clipboard, files, background work, permissions, and other native capabilities. Page and capability code paths may not overlap. Shared specialists serve pages; they do not redesign them.
 
-Read [references/feature-workflow.md](references/feature-workflow.md). The implementation lead issues one immutable work order per `Feature-ID`:
+## Build and evidence
 
-```bash
-python3 scripts/issue_feature_work_order.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --feature-id <Feature-ID> \
-  --issued-by <implementation-lead-id> \
-  --feature-owner <agent-id> \
-  --ui-agent <agent-id> \
-  --business-data-agent <agent-id> \
-  --native-capability-agent <agent-id> \
-  --exclusive-code-path <existing-project-relative-path>
-```
+Use `scripts/convert_asset.py` only for a frozen conversion contract. Seal the exact final source/HAP per environment with `scripts/run_build.py`.
 
-Issue exactly one active work order for every included `Feature-ID`; repeat `--exclusive-code-path` when one feature owns multiple existing directories. The feature owner integrates UI, business/data logic, native-capability adapters, and assets. Specialists may work in parallel only after exclusive code ownership is recorded. Every accepted implementation row must bind this work order, and every parity/visual/capability row must cite real `path:line` source references below its exclusive paths.
+For every required Page-ID, State-ID, transition, assertion, side effect, and environment, run `scripts/capture_state.py` against the installed final HAP. Formal evidence includes command logs, source/build hashes, action trace, deterministic assertions, raw and normalized ArkUI Inspector trees, event/transition snapshots, PNG, device identity, metadata, hashes, and `COMMITTED`. Preview images and hand-written trees do not count.
 
-Actually dispatch the feature owner, UI agent, business/data agent, and native-capability agent. Record each completed task's real platform task ID and role-owned artifact hashes through the controller. Do the same for the implementation lead, visual-asset agent, verification executor, and parity acceptance agent. The final delivery audit rejects absent or reused receipts.
+## Machine comparison and repair
 
-Implement each immutable `migration-unit-contracts.json` record without changing its observable dimensions. Populate the implementation, parity, visual-element, asset, capability, nativeization, and rework registries. A missing or conflicting Android fact blocks the current Phase 4 and returns through the controller to Phase 2; a wrong module, route, surface, contract, or resource landing similarly returns to Phase 3. Do not disguise an upstream contradiction as local implementation rework.
+The machine comparison binds Android and Harmony evidence hashes and computes carrier, component/type/text, state, transition, assertion/output, side-effect, geometry, and screenshot differences. Model-authored `MATCH` or an acceptance agent's confidence has no authority and cannot override a measured difference.
 
-For a Phase 3 `FORMAT_CONVERSION` asset, execute only the frozen conversion contract:
+Agents may diagnose and repair. Each page or capability gets attempt 0 plus at most two automatic repairs. Keep failed packages append-only. On the next failure, return upstream when the contract is wrong or enter `MANUAL_TAKEOVER` when implementation remains unresolved.
 
-```bash
-python3 scripts/convert_asset.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --conversion-id <new-conversion-id> \
-  --asset-id <Asset-ID> \
-  --contract-id <frozen-contract-id> \
-  --executed-by <visual-asset-agent-id>
-```
+Run the deterministic Stage 4 validator only after every page and shared capability closes against one final HAP. Open differences, missing states, stale evidence, invented native symbols without build/runtime effect proof, and unmatched assets block the machine Gate.
 
-The result is immutable and binds the tool hash, exact command, source bytes, target bytes, logs, and registry update. A recreation requires both a parity-bound `ASSET_RECREATION` decision and controller approval.
+Return the sealed workspace to the controller. It recomputes Gate 4 and shows Android, Harmony, and difference cards plus red/yellow exceptions and sampled green results. Status becomes `WAITING_HUMAN_REVIEW`; human approval never edits the machine result.
 
-## Seal a build
+## Reference map
 
-Create one immutable build package for the exact source snapshot:
-
-```bash
-python3 scripts/run_build.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --plan <completed-build-plan.json>
-```
-
-Every required `H4ENV-ID` has exactly one final PASS `HBUILD-ID`. All final state evidence on that environment must reference that build and its exact source snapshot.
-
-## Verify every state on the emulator
-
-Read [references/emulator-evidence.md](references/emulator-evidence.md) and [references/arkui-inspector-evidence.md](references/arkui-inspector-evidence.md). For every seeded parity row, run the frozen emulator workflow:
-
-```bash
-python3 scripts/capture_state.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --plan <completed-state-verification-plan.json>
-```
-
-A valid `HEVD-ID` contains command logs, steps, deterministic assertion results, an ArkUI `UIContext` Inspector raw tree, repository-derived component bindings, Inspector-backed event/transition snapshots, PNG screenshot, build artifact identity, source snapshot identity, metadata, hashes, and `COMMITTED`. The Inspector Bridge is test-only and must not enter the release module. An external `PASS` label or a hand-written `nodes` array is ignored unless the repository recomputes the tree and comparison. Before commands run, the execution is appended to both the local and controller hash-chain ledgers. Each migration unit gets one initial execution and at most two automatic repairs; deleting a local failure package cannot reset that budget.
-
-## Close Phase 4
-
-Read [references/review-and-rework.md](references/review-and-rework.md). The parity acceptance agent visually opens every PNG, compares it with the cited Android evidence, verifies functional assertions and asset provenance, then alone runs:
-
-```bash
-python3 scripts/review_parity.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --parity-id <PAR-ID> \
-  --comparison <completed-comparison.json> \
-  --reviewer <parity-acceptance-agent-id> \
-  --decision ACCEPTED \
-  --attest-opened-both-screenshots \
-  --attest-functional-results \
-  --attest-asset-provenance
-```
-
-`review_parity.py --decision REWORK` records the review but does not create the return ticket. The parity acceptance agent must also run `manage_stage4_rework.py --action open`; the script routes the fixed problem type and updates the local/controller ledgers together. After the responsible agent fixes the issue, create a newer sealed PASS `HBUILD-ID` and `HEVD-ID`, close the ticket with `--action close`, then review the parity again as `ACCEPTED`. The implementation lead confirms both ticket operations.
-
-```bash
-python3 scripts/validate_stage4.py \
-  --workspace <migration-run>/phase-04-harmony-implementation \
-  --build-id <final-HBUILD-for-H4ENV-001> \
-  --build-id <final-HBUILD-for-H4ENV-002> \
-  --reviewer <parity-acceptance-agent-id> \
-  --decision PASS \
-  --attest-visual-review \
-  --attest-functional-parity \
-  --attest-asset-provenance \
-  --attest-nativeization-review
-```
-
-Repeat `--build-id` exactly once per required `H4ENV-ID`; omit extra lines when only one environment is required. Local validation first runs controller Gate 4 read-only, then seals the exact project, registries, builds, emulator evidence, reviews, acceptance ledger, and closure manifest. The controller must still independently write Gate 4:
-
-```bash
-python3 android-harmony-migration-controller/scripts/validate_gate.py \
-  --run-dir <migration-run> --phase 4 --write
-```
-
-Later changes require a new Phase 4 run or a newly issued controller work order; sealed evidence is never edited.
-
-Exact completion is mandatory: no `PASS_WITH_GAPS`, `PARTIAL`, `PENDING`, `INPUT_LOCKED`, placeholder, or imaginary later implementation phase may appear in the final report or production source. Build/install/launch success alone never closes Phase 4.
+- [input-contract.md](references/input-contract.md): frozen inputs and initialization.
+- [observable-consistency-contract.md](references/observable-consistency-contract.md): required semantics and carrier fidelity.
+- [asset-and-visual-parity.md](references/asset-and-visual-parity.md): source-first assets and visual thresholds.
+- [arkui-inspector-evidence.md](references/arkui-inspector-evidence.md) and [emulator-evidence.md](references/emulator-evidence.md): formal execution evidence.
+- [review-and-rework.md](references/review-and-rework.md): difference routing and bounded repair.
