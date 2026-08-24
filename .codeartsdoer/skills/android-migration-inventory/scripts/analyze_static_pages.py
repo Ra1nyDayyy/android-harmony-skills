@@ -70,13 +70,32 @@ def class_layout_bindings(project: Path) -> dict[str, list[str]]:
     return result
 
 
-def source_files(root: Path) -> list[Path]:
+def source_candidates(root: Path) -> list[Path]:
     return sorted(
         path for path in root.rglob("*")
         if path.is_file() and path.suffix in SOURCE_SUFFIXES
         and not any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
-        and path.stat().st_size <= 2 * 1024 * 1024
     )
+
+
+def source_files(root: Path) -> list[Path]:
+    return [path for path in source_candidates(root) if path.stat().st_size <= 2 * 1024 * 1024]
+
+
+def source_scan_ledger(root: Path) -> dict[str, Any]:
+    discovered = source_candidates(root)
+    parsed = source_files(root)
+    parsed_set = set(parsed)
+    skipped = [
+        {"path": rel(path, root), "reason": "FILE_TOO_LARGE", "size_bytes": path.stat().st_size}
+        for path in discovered if path not in parsed_set
+    ]
+    return {
+        "discovered_count": len(discovered),
+        "parsed_count": len(parsed),
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+    }
 
 
 def xml_files(root: Path, category: str) -> list[Path]:
@@ -533,8 +552,15 @@ def main() -> int:
         parser.error("Static analysis is already committed; create a new Phase 2 run to recapture")
     output.mkdir(parents=True, exist_ok=True)
 
+    source_scan = source_scan_ledger(project)
     resources = read_resources(project)
     layouts, issues = scan_layouts(project, resources)
+    for skipped in source_scan["skipped"]:
+        issues.append({
+            "kind": "SOURCE_SCAN_SKIPPED",
+            "source_ref": f"{skipped['path']}:1",
+            "detail": f"{skipped['reason']}: {skipped['size_bytes']} bytes",
+        })
     pages = manifest_pages(project)
     nav_pages, nav_transitions = navigation_resources(project)
     source_pages, events, transitions, states = scan_sources(project)
@@ -756,16 +782,20 @@ def main() -> int:
             "status": "OPEN", "source_refs": [item["source_ref"]],
         })
     for issue in issues:
+        subject_id = stable_id("DISCOVERY", issue["kind"], issue["source_ref"])
         runtime_tasks.append({
             "task_id": stable_id("RTASK", issue["source_ref"], issue["kind"]), "task_type": issue["kind"],
+            "subject_id": subject_id,
             "page_id": "PENDING_SOURCE_BINDING", "candidate_feature_ids": [], "trigger": "AUTO_RESCAN",
             "expected": issue["detail"], "status": "OPEN", "source_refs": [issue["source_ref"]],
+            "blocking_discovery_gap": True,
         })
 
     artifacts = {
         "project-index.json": {
             "schema_version": 1, "project_root": str(project), "source_revision": phase.get("source_revision"),
-            "source_file_count": len(source_files(project)), "layout_count": len(layouts),
+            "source_file_count": source_scan["parsed_count"], "source_scan": source_scan,
+            "layout_count": len(layouts),
             "resource_value_count": len(resources), "generated_at": utc_now(), "generated_by": owner,
         },
         "pages.json": {"schema_version": 1, "pages": page_rows},
