@@ -79,6 +79,17 @@ def safe_file(run_dir: Path, relative: str, label: str) -> Path:
 
 def expected_actors(order: dict[str, Any]) -> list[tuple[str, str]]:
     phase = order.get("phase")
+    schema_version = order.get("schema_version")
+    if schema_version == "page-work-order-v1":
+        owner = order.get("owner_id")
+        if phase != 4 or not isinstance(owner, str) or not ID_RE.fullmatch(owner):
+            raise ValueError("Page work order has an invalid owner assignment")
+        return [("page_owner_id", owner)]
+    if schema_version == "capability-work-order-v1":
+        owner = order.get("owner_id")
+        if phase != 4 or not isinstance(owner, str) or not ID_RE.fullmatch(owner):
+            raise ValueError("Capability work order has an invalid owner assignment")
+        return [("capability_owner_id", owner)]
     ownership = order.get("ownership")
     if not isinstance(phase, int) or not isinstance(ownership, dict):
         raise ValueError("Work order lacks integer phase or ownership")
@@ -131,6 +142,9 @@ def validate_order_receipts(run_dir: Path, order_path: Path) -> list[str]:
         if not ID_RE.fullmatch(task_id) or task_id in task_ids:
             errors.append(f"Worker receipt has invalid or reused platform task ID: {task_id!r}")
         task_ids.add(task_id)
+        if order.get("schema_version") in {"page-work-order-v1", "capability-work-order-v1"}:
+            if task_id != order.get("codearts_task_id"):
+                errors.append(f"Worker receipt task differs from work-order task binding: {task_id!r}")
         relative = row.get("relative_path", "")
         try:
             receipt_path = safe_file(run_dir, relative, "worker receipt")
@@ -138,12 +152,19 @@ def validate_order_receipts(run_dir: Path, order_path: Path) -> list[str]:
                 errors.append(f"Worker receipt hash changed: {relative}")
                 continue
             receipt = load_json(receipt_path)
+            current_work_order_sha256 = sha256_file(order_path)
             if (
                 receipt.get("work_order_id") != work_order_id
+                or receipt.get("work_order_sha256") != current_work_order_sha256
+                or row.get("work_order_sha256") != current_work_order_sha256
                 or receipt.get("phase") != phase
                 or receipt.get("role_key") != pair[0]
                 or receipt.get("actor_id") != pair[1]
                 or receipt.get("platform_task_id") != task_id
+                or receipt.get("started_at") != row.get("started_at")
+                or receipt.get("ended_at") != row.get("ended_at")
+                or receipt.get("terminal_task_state") != "SUCCEEDED"
+                or row.get("terminal_task_state") != "SUCCEEDED"
                 or receipt.get("status") != "COMPLETED"
             ):
                 errors.append(f"Worker receipt identity differs from registry: {relative}")

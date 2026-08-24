@@ -1,0 +1,16 @@
+{
+  "schema_version": "capability-work-order-v1",
+  "work_order_id": "H4CWO-__AUTO__",
+  "phase": 4,
+  "capability_id": "CAP-__FILL__",
+  "owner_id": "__FILL_CAPABILITY_OWNER__",
+  "codearts_task_id": "__FILL_REAL_CODEARTS_TASK_ID__",
+  "consumer_page_ids": ["__AUTO_EXACT_CONSUMERS__"],
+  "behavior_contracts": ["__AUTO__"],
+  "side_effect_contracts": ["__AUTO__"],
+  "interface_files": [],
+  "implementation_files": ["__FILL__"],
+  "test_files": [],
+  "exclusive_code_paths": ["__FILL__"],
+  "completion_command": "python scripts/validate_stage4.py --workspace . --reviewer <independent-reviewer>"
+}

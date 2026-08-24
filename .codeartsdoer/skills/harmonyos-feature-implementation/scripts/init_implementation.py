@@ -1586,6 +1586,16 @@ def main() -> int:
                 csv_fieldnames(ASSETS / "feature-work-order-registry.template.csv"),
                 [],
             )
+            write_csv(
+                temp_dir / "page-work-order-registry.csv",
+                csv_fieldnames(ASSETS / "page-work-order-registry.template.csv"),
+                [],
+            )
+            write_csv(
+                temp_dir / "capability-work-order-registry.csv",
+                csv_fieldnames(ASSETS / "capability-work-order-registry.template.csv"),
+                [],
+            )
             write_csv(temp_dir / "parity-map.csv", csv_fieldnames(ASSETS / "parity-map.template.csv"), parity_rows)
             write_csv(
                 temp_dir / "visual-elements.csv",
@@ -1621,6 +1631,28 @@ def main() -> int:
                 {row["page_id"] for row in inventory}
             ):
                 raise ValueError("Published page contracts do not exactly cover active Phase 2 pages")
+            page_contract_by_id = {str(contract["page_id"]): contract for contract in page_contracts}
+            write_csv(
+                temp_dir / "page-implementation-ledger.csv",
+                csv_fieldnames(ASSETS / "page-implementation-ledger.template.csv"),
+                [
+                    {
+                        "page_id": row["page_id"],
+                        "work_order_id": "",
+                        "owner_id": "",
+                        "codearts_task_id": "",
+                        "contract_sha256": row["contract_sha256"],
+                        "state_ids": join_multi(
+                            str(state["state_id"])
+                            for state in page_contract_by_id[str(row["page_id"])]["states"]
+                        ),
+                        "exclusive_code_paths": "[]",
+                        "status": "NOT_STARTED",
+                        "updated_at": "",
+                    }
+                    for row in page_contract_registry
+                ],
+            )
             page_contract_lock_records = [
                 {
                     "page_id": row["page_id"],

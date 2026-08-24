@@ -60,6 +60,9 @@ def record_team_receipt(
         "--role-key", role_key,
         "--actor-id", actor_id,
         "--platform-task-id", platform_task_id,
+        "--started-at", "2026-08-24T10:00:00Z",
+        "--ended-at", "2026-08-24T10:05:00Z",
+        "--terminal-task-state", "SUCCEEDED",
         "--artifact", artifact.relative_to(run_dir).as_posix(),
     )
 
