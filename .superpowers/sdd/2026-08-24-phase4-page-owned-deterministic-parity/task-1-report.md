@@ -154,3 +154,64 @@ Both commands completed successfully.
 ### Concerns
 
 The brief's obsolete `Stage4WorkflowTest.test_full_workflow` selector remains absent. The current equivalent end-to-end regression passes.
+
+## Repair round 2 — record-level contract structure
+
+### Status
+
+DONE_WITH_CONCERNS
+
+### Covering tests
+
+- `.codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_page_acceptance_contract.py::test_rejects_malformed_records_in_every_required_composite_structure`
+- `.codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_stage4_workflow.py::Stage4WorkflowTest.test_full_stage4_and_controller_gate4_detect_post_close_tamper`
+
+### RED command and actual output
+
+```powershell
+python .codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_page_acceptance_contract.py -v
+```
+
+Before the repair, the new record-level test produced 14 expected failures. In particular, staged publication accepted both reviewer counterexamples, `source_geometry=[42]` and `interaction_bindings=[{}]`, plus empty/malformed records for entry conditions, source/code/rule/dependency/capability records, states, components, transitions, assets, Android evidence, and Phase 3 targets.
+
+### GREEN commands and actual output
+
+```powershell
+python .codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_page_acceptance_contract.py -v
+```
+
+```text
+Ran 14 tests in 0.522s
+OK
+```
+
+```powershell
+python .codeartsdoer/skills/harmonyos-feature-implementation/scripts/tests/test_stage4_workflow.py Stage4WorkflowTest.test_full_stage4_and_controller_gate4_detect_post_close_tamper -v
+```
+
+```text
+Ran 1 test in 27.374s
+OK
+```
+
+```powershell
+python -m py_compile .codeartsdoer/skills/harmonyos-feature-implementation/scripts/page_acceptance_contract.py
+git diff --check
+```
+
+Both commands completed successfully.
+
+### Fix decisions and self-review
+
+- Added a standard-library record validator for every required composite contract field; it checks object/array types, required keys, non-empty IDs, evidence SHA-256 formats, state record shape, geometry tree shape, and the exact fixed comparison policy.
+- Kept raw frozen source records extensible only where they intentionally preserve upstream facts; generated record shapes (state records, Android evidence, and Phase 3 targets) reject undeclared fields.
+- Rebuilt the JSON Schema with matching `$defs`, required fields, nested record constraints, and top-level `additionalProperties: false`; it does not rely on a runtime third-party schema package.
+- Confirmed both generated fixture contracts and the current end-to-end Stage 4 workflow satisfy the stricter runtime publication gate.
+
+### Repair commit
+
+`66df772aa00a5b54e4d8366da3be23d64b6d397d` — `fix: validate page contract record schemas`
+
+### Concerns
+
+The brief's obsolete `Stage4WorkflowTest.test_full_workflow` selector remains absent. The current equivalent end-to-end regression passes.
