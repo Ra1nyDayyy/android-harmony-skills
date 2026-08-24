@@ -1,6 +1,6 @@
 interface:
-  display_name: "HarmonyOS 工程骨架"
-  short_description: "创建无业务实现的鸿蒙工程骨架，并用冻结模拟器截图完成可复核验收"
-  default_prompt: "使用 $harmonyos-migration-scaffold 基于阶段二冻结清单创建并验收 HarmonyOS NEXT 工程骨架。"
+  display_name: "HarmonyOS 工程基座"
+  short_description: "从冻结盘点创建可运行、无业务实现的鸿蒙基座"
+  default_prompt: "使用 $harmonyos-migration-scaffold 从内置 ArkUI Stage 模板创建并验证基座，逐 Page-ID 保持页面、Dialog、Sheet 等载体一致，不提前实现业务；机器 Gate 后停在 WAITING_HUMAN_REVIEW。"
 policy:
   allow_implicit_invocation: true

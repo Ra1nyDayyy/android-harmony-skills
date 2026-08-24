@@ -1,6 +1,6 @@
 interface:
   display_name: "HarmonyOS Feature Implementation"
-  short_description: "Implement and verify Android feature parity on HarmonyOS"
-  default_prompt: "Use $harmonyos-feature-implementation to implement frozen Android features in HarmonyOS and verify every state on the emulator."
+  short_description: "按页面实现并机器验证 Android 到 HarmonyOS 一致性"
+  default_prompt: "使用 $harmonyos-feature-implementation 按 Page-ID 分配 PAGE_WORK_ORDER，共享能力单独分工，以 Phase 2 页面合同为唯一来源，在最终 HAP 上验证全部状态；模型不得写 MATCH 或批准完成。"
 policy:
   allow_implicit_invocation: true

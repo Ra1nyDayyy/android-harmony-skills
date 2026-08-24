@@ -1,6 +1,6 @@
 interface:
   display_name: "安卓到鸿蒙迁移总控"
-  short_description: "一次指令执行四阶段迁移、真实多Agent分工与确定性门禁"
-  default_prompt: "使用 $android-harmony-migration-controller 对当前 Android 项目连续执行 Phase 1-4。每个冻结角色必须分配给独立的真实 CodeArts 工作任务并登记平台任务ID和产物哈希；每个 Gate 仅接受规范脚本的精确 PASS，失败后自动返工复验；最终必须运行 audit_delivery.py 且退出码为0，禁止 PASS_WITH_GAPS、占位业务和自行重设计。"
+  short_description: "治理四阶段迁移、机器门禁、人工审核与返工"
+  default_prompt: "使用 $android-harmony-migration-controller 在同一个任务中执行 Phase 1-4。每阶段先计算机器 Gate，再生成简明审核包并停在 WAITING_HUMAN_REVIEW；只有当前 Gate 的人工批准才能进入下一阶段。"
 policy:
   allow_implicit_invocation: true

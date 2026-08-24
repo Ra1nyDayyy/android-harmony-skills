@@ -1,7 +1,7 @@
 interface:
   display_name: "HarmonyOS Migration Scaffold"
   short_description: "Build the verified non-business ArkUI scaffold"
-  default_prompt: "Use $harmonyos-migration-scaffold after Gate 2 to create and close the constrained Phase 3 project foundation."
+  default_prompt: "Use $harmonyos-migration-scaffold after approved Gate 2 to build a runnable non-business scaffold, preserve every Android carrier, and stop at WAITING_HUMAN_REVIEW."
 compatibility:
   canonical_format: "agent-skills"
   adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]

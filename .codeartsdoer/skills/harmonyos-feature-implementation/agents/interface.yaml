@@ -1,7 +1,7 @@
 interface:
   display_name: "HarmonyOS Feature Implementation"
   short_description: "Implement and prove Android-to-ArkUI parity"
-  default_prompt: "Use $harmonyos-feature-implementation after Gate 3 to implement every authorized migration unit and close Phase 4 with emulator evidence."
+  default_prompt: "Use $harmonyos-feature-implementation after approved Gate 3 to implement one PAGE_WORK_ORDER per Page-ID, verify one final HAP, and stop at WAITING_HUMAN_REVIEW."
 compatibility:
   canonical_format: "agent-skills"
   adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]
