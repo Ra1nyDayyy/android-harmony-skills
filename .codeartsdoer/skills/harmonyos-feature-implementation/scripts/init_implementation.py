@@ -35,6 +35,7 @@ from _common import (
     validate_id,
     write_csv,
 )
+from page_acceptance_contract import compile_page_contracts, publish_page_contracts
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -1614,6 +1615,20 @@ def main() -> int:
                 temp_dir / "migration-unit-contracts.json",
                 {"schema_version": 1, "units": migration_units},
             )
+            page_contracts = compile_page_contracts(phase2, phase3, tuple(sorted(h4env_ids)))
+            page_contract_registry = publish_page_contracts(page_contracts, temp_dir)
+            if [str(row["page_id"]) for row in page_contract_registry] != sorted(
+                {row["page_id"] for row in inventory}
+            ):
+                raise ValueError("Published page contracts do not exactly cover active Phase 2 pages")
+            page_contract_lock_records = [
+                {
+                    "page_id": row["page_id"],
+                    "relative_path": row["relative_path"],
+                    "sha256": row["contract_sha256"],
+                }
+                for row in page_contract_registry
+            ]
 
             inspector_bridge = temp_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
             inspector_bridge.parent.mkdir(parents=True, exist_ok=True)
@@ -1625,6 +1640,8 @@ def main() -> int:
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
             make_tree_read_only(temp_dir / "tools")
+            make_tree_read_only(temp_dir / "page-contracts")
+            (temp_dir / "page-contract-registry.csv").chmod(0o444)
             input_lock = {
                 "schema_version": "1.0",
                 "stage": 4,
@@ -1647,6 +1664,12 @@ def main() -> int:
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
                 "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                 "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
+                "page_contract_registry": {
+                    "relative_path": "page-contract-registry.csv",
+                    "sha256": sha256_file(temp_dir / "page-contract-registry.csv"),
+                    "schema_sha256": sha256_file(ASSETS / "page-acceptance-contract.schema.json"),
+                },
+                "page_contracts": page_contract_lock_records,
                 "arkui_inspector_bridge": {
                     "relative_path": "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
                     "sha256": sha256_file(inspector_bridge),
@@ -1680,6 +1703,7 @@ def main() -> int:
                     "initial_project_snapshot_sha256": initial_snapshot["snapshot_sha256"],
                     "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                     "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
+                    "page_contract_registry_sha256": sha256_file(temp_dir / "page-contract-registry.csv"),
                     "formal_evidence_device_type": "emulator",
                     "mp4_allowed": False,
                     "source_first_assets_required": True,
@@ -1691,6 +1715,7 @@ def main() -> int:
                 temp_dir / "initial-project-snapshot.json",
                 temp_dir / "asset-conversion-contracts.json",
                 temp_dir / "migration-unit-contracts.json",
+                temp_dir / "page-contract-registry.csv",
             ):
                 frozen_record.chmod(0o444)
             temp_dir.rename(phase_dir)

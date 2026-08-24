@@ -44,9 +44,11 @@ from _stage4_audit import (
     verify_sealed_package,
     verify_upstream_closure,
 )
+from page_acceptance_contract import REGISTRY_FIELDS, canonical_contract_sha256
 
 
 PHASE_NAME = "phase-04-harmony-implementation"
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
 ROLE_KEYS = {
     "implementation_lead_id",
     "visual_asset_agent_id",
@@ -60,6 +62,7 @@ INPUT_LOCK_KEYS = {
     "phase3_work_order_sha256", "inputs", "android_evidence",
     "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
     "migration_unit_contracts_sha256",
+    "page_contract_registry", "page_contracts",
     "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
     "phase3_source_snapshot_sha256",
     "arkui_inspector_bridge",
@@ -469,6 +472,52 @@ def validate_upstream_and_work_order(
     )
     require(input_lock.get("schema_version") == "1.0" and input_lock.get("stage") == 4,
             "Phase 4 input-lock schema/stage differs")
+    page_registry_lock = input_lock.get("page_contract_registry")
+    require(
+        isinstance(page_registry_lock, dict)
+        and set(page_registry_lock) == {"relative_path", "sha256", "schema_sha256"}
+        and page_registry_lock.get("relative_path") == "page-contract-registry.csv"
+        and page_registry_lock.get("schema_sha256") == sha256_file(
+            ASSETS / "page-acceptance-contract.schema.json"
+        ),
+        "Phase 4 page-contract registry lock differs",
+    )
+    registry_path = workspace / "page-contract-registry.csv"
+    require(
+        registry_path.is_file() and not registry_path.stat().st_mode & 0o222
+        and page_registry_lock.get("sha256") == sha256_file(registry_path),
+        "Phase 4 page-contract registry is missing, mutable, or hash-mismatched",
+    )
+    with registry_path.open(encoding="utf-8", newline="") as stream:
+        registry_rows = list(csv.DictReader(stream))
+    require(registry_rows and list(registry_rows[0]) == REGISTRY_FIELDS,
+            "Phase 4 page-contract registry header differs")
+    lock_rows = input_lock.get("page_contracts")
+    require(isinstance(lock_rows, list) and lock_rows, "Phase 4 page-contract lock records are missing")
+    contract_locks: dict[str, dict[str, Any]] = {}
+    for raw in lock_rows:
+        require(isinstance(raw, dict) and set(raw) == {"page_id", "relative_path", "sha256"},
+                "Phase 4 page-contract lock record differs")
+        page_id = str(raw.get("page_id", ""))
+        relative = str(raw.get("relative_path", ""))
+        require(page_id and page_id not in contract_locks and relative == f"page-contracts/{page_id}.json",
+                f"Invalid or duplicate page-contract lock: {page_id}")
+        path = workspace / relative
+        require(path.is_file() and not path.stat().st_mode & 0o222,
+                f"Phase 4 page contract is missing or mutable: {page_id}")
+        contract = object_json(path, f"page acceptance contract {page_id}")
+        require(contract.get("page_id") == page_id and canonical_contract_sha256(contract) == raw.get("sha256"),
+                f"Phase 4 page contract hash differs: {page_id}")
+        contract_locks[page_id] = raw
+    require(
+        [row.get("page_id") for row in registry_rows] == sorted(contract_locks)
+        and all(
+            row.get("relative_path") == contract_locks[str(row.get("page_id", ""))]["relative_path"]
+            and row.get("contract_sha256") == contract_locks[str(row.get("page_id", ""))]["sha256"]
+            for row in registry_rows
+        ),
+        "Phase 4 page-contract registry differs from its locks",
+    )
     require(manifest.get("phase") == 4 and manifest.get("status") == "IN_PROGRESS",
             "Phase 4 manifest is not IN_PROGRESS")
     require(manifest.get("run_id") == scope.get("run_id") == input_lock.get("run_id"),

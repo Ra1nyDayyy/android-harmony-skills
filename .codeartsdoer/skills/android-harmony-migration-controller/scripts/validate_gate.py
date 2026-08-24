@@ -2289,6 +2289,7 @@ def validate_phase4(
         "phase3_work_order_id", "phase3_work_order_sha256", "inputs", "android_evidence",
         "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
         "migration_unit_contracts_sha256",
+        "page_contract_registry", "page_contracts",
         "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
         "phase3_source_snapshot_sha256",
         "arkui_inspector_bridge",
@@ -2298,6 +2299,7 @@ def validate_phase4(
         "work_order_id", "work_order_sha256", "work_order_relative_path", "ownership",
         "roles", "input_lock_sha256", "initial_project_snapshot_sha256",
         "asset_conversion_contracts_sha256", "migration_unit_contracts_sha256",
+        "page_contract_registry_sha256",
         "formal_evidence_device_type", "mp4_allowed",
         "source_first_assets_required",
     }

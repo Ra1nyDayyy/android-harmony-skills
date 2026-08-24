@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Immutable Phase 4 page acceptance contract",
+  "type": "object",
+  "required": [
+    "schema_version", "page_id", "page_name", "feature_ids", "states",
+    "components", "source_geometry", "assets", "visible_text",
+    "interaction_bindings", "entry_conditions", "transitions", "code_map", "business_rules",
+    "data_dependencies", "side_effects", "system_capabilities",
+    "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
+    "comparison_policy"
+  ],
+  "properties": {
+    "schema_version": {"const": "page-acceptance-contract-v1"},
+    "page_id": {"type": "string", "minLength": 1},
+    "page_name": {"type": "string"},
+    "feature_ids": {"type": "array", "items": {"type": "string"}},
+    "states": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "comparison_policy": {
+      "type": "object",
+      "required": ["geometry_tolerance", "application_region_ssim", "changed_pixel_ratio", "required_element_masks"]
+    }
+  },
+  "additionalProperties": true
+}
