@@ -310,7 +310,10 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                 })
         for match in compose_re.finditer(text):
             symbol = match.group(1)
-            if symbol.endswith("Preview") or not symbol.endswith(("Screen", "Page", "Dialog", "Sheet")):
+            # Naming conventions are hints, not a discovery boundary. Projects often use
+            # names such as `SettingsContent`; excluding them silently shrinks Gate 2's
+            # denominator and can make an incomplete inventory appear complete.
+            if symbol.endswith("Preview"):
                 continue
             body = text[match.end():match.end() + 12000]
             next_composable = body.find("@Composable")
