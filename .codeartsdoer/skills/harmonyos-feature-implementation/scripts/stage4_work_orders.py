@@ -20,6 +20,7 @@ from _common import (
     validate_id,
     write_csv,
 )
+from arkts_page_plan import compile_arkts_page_plan, validate_arkts_page_plan
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,7 @@ def _ensure_records(workspace: Path, contracts: dict[str, tuple[dict[str, Any], 
                 "page_id": page_id,
                 "work_order_id": "",
                 "owner_id": "",
+                "ui_understanding_agent_id": "",
                 "codearts_task_id": "",
                 "contract_sha256": digest,
                 "state_ids": json.dumps(sorted(str(row["state_id"]) for row in contract["states"]), separators=(",", ":")),
@@ -128,7 +130,10 @@ def _ensure_records(workspace: Path, contracts: dict[str, tuple[dict[str, Any], 
         write_csv(ledger, PAGE_LEDGER_FIELDS, rows)
 
 
-def _registered_orders(workspace: Path) -> list[dict[str, Any]]:
+def _registered_orders(
+    workspace: Path,
+    contracts: dict[str, tuple[dict[str, Any], str, str]],
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for registry_name, fields, kind, key in (
         ("page-work-order-registry.csv", PAGE_REGISTRY_FIELDS, "page", "page_id"),
@@ -139,7 +144,20 @@ def _registered_orders(workspace: Path) -> list[dict[str, Any]]:
             if set(row) != set(fields) or row.get("status") != "ISSUED":
                 raise ValueError(f"Malformed {kind} work-order registry row")
             relative = row.get("relative_path", "")
-            path = workspace / PurePosixPath(relative)
+            work_order_id = str(row.get("work_order_id", ""))
+            expected_relative = f"{kind}-work-orders/{work_order_id}.json"
+            pure_relative = PurePosixPath(relative)
+            if (
+                relative != expected_relative
+                or pure_relative.is_absolute()
+                or ".." in pure_relative.parts
+            ):
+                raise ValueError(f"Registered {kind} work-order path is not canonical: {relative}")
+            path = (workspace / Path(*pure_relative.parts)).resolve()
+            try:
+                path.relative_to(workspace.resolve())
+            except ValueError as exc:
+                raise ValueError(f"Registered {kind} work-order path escapes workspace") from exc
             if not path.is_file() or path.is_symlink() or sha256_file(path) != row.get("work_order_sha256"):
                 raise ValueError(f"Registered {kind} work order changed: {row.get('work_order_id')}")
             order = load_json(path)
@@ -151,6 +169,58 @@ def _registered_orders(workspace: Path) -> list[dict[str, Any]]:
                 or order.get("codearts_task_id") != row.get("codearts_task_id")
             ):
                 raise ValueError(f"Registered {kind} work-order identity differs")
+            if kind == "page":
+                contract_record = contracts.get(str(order.get("page_id", "")))
+                if not contract_record:
+                    raise ValueError("Registered page work-order schema references an unknown page")
+                contract, contract_relative, contract_digest = contract_record
+                expected_keys = {
+                    "schema_version", "work_order_id", "phase", "page_id", "owner_id",
+                    "ui_understanding_agent_id", "ui_understanding_role_mode", "codearts_task_id",
+                    "status", "issued_at", "page_contract_path",
+                    "page_contract_sha256", "state_ids", "feature_ids", "phase3_targets",
+                    "required_h4env_ids", "capability_dependencies", "required_parity_checks",
+                    "comparison_policy", "exclusive_code_paths", "arkts_page_plan_path",
+                    "arkts_page_plan_sha256", "ui_understanding_contract", "completion_command",
+                }
+                plan_relative = f"arkts-page-plans/{order['page_id']}/arkts-page-plan.json"
+                plan_path = workspace / Path(*PurePosixPath(plan_relative).parts)
+                if not plan_path.is_file() or plan_path.is_symlink():
+                    raise ValueError(f"Registered page work-order plan is missing: {work_order_id}")
+                plan = load_json(plan_path)
+                validate_arkts_page_plan(plan, contract, contract_digest)
+                expected_dependencies = sorted({
+                    str(item["system_capability_id"])
+                    for item in contract.get("system_capabilities", [])
+                    if isinstance(item, dict) and item.get("system_capability_id")
+                })
+                if (
+                    set(order) != expected_keys
+                    or order.get("schema_version") != "page-work-order-v1"
+                    or order.get("phase") != 4
+                    or order.get("status") != "ISSUED"
+                    or not order.get("ui_understanding_agent_id")
+                    or order.get("ui_understanding_role_mode") not in {"PAGE_OWNER_COMBINED", "SEPARATE"}
+                    or (order.get("ui_understanding_role_mode") == "PAGE_OWNER_COMBINED")
+                    != (order.get("ui_understanding_agent_id") == order.get("owner_id"))
+                    or order.get("page_contract_path") != contract_relative
+                    or order.get("page_contract_sha256") != contract_digest
+                    or order.get("arkts_page_plan_path") != plan_relative
+                    or order.get("arkts_page_plan_sha256") != sha256_file(plan_path)
+                    or order.get("ui_understanding_contract") != "PHASE2_PAGE_CONTRACT_ONLY_NO_FREE_INFERENCE"
+                    or order.get("state_ids") != sorted(str(item["state_id"]) for item in contract["states"])
+                    or order.get("feature_ids") != sorted(str(value) for value in contract.get("feature_ids", []))
+                    or order.get("phase3_targets") != contract.get("phase3_targets", [])
+                    or order.get("required_h4env_ids") != sorted(str(value) for value in contract.get("required_h4env_ids", []))
+                    or order.get("capability_dependencies") != expected_dependencies
+                    or order.get("required_parity_checks") != list(PARITY_CHECKS)
+                    or order.get("comparison_policy") != contract.get("comparison_policy")
+                ):
+                    raise ValueError(f"Registered page work-order schema differs: {work_order_id}")
+            else:
+                for field in ("interface_files", "implementation_files", "test_files"):
+                    if not isinstance(order.get(field), list) or not order[field]:
+                        raise ValueError(f"Registered capability work-order schema lacks {field}")
             records.append(order)
     return records
 
@@ -198,10 +268,21 @@ def _write_order(workspace: Path, directory: str, order: dict[str, Any], registr
     return path
 
 
-def issue_page_order(workspace: Path, page_id: str, owner_id: str, codearts_task_id: str, code_paths: tuple[str, ...]) -> Path:
+def issue_page_order(
+    workspace: Path,
+    page_id: str,
+    owner_id: str,
+    codearts_task_id: str,
+    code_paths: tuple[str, ...],
+    ui_understanding_agent_id: str | None = None,
+) -> Path:
     workspace = _workspace(workspace)
     page_id = validate_id(page_id, "Page-ID")
     owner_id = validate_actor(owner_id, "page owner")
+    ui_understanding_agent_id = validate_actor(
+        ui_understanding_agent_id or owner_id,
+        "UI understanding agent",
+    )
     codearts_task_id = _real_task_id(codearts_task_id)
     paths = _code_paths(code_paths)
     with exclusive_lock(workspace / ".locks" / "stage4-order-issuance.lock"):
@@ -209,9 +290,28 @@ def issue_page_order(workspace: Path, page_id: str, owner_id: str, codearts_task
         _ensure_records(workspace, contracts)
         if page_id not in contracts:
             raise ValueError(f"Page is outside the frozen contract registry: {page_id}")
-        orders = _registered_orders(workspace)
+        orders = _registered_orders(workspace, contracts)
         _assert_available(orders, unit_key="page_id", unit_id=page_id, owner=owner_id, task=codearts_task_id, paths=paths)
+        if any(
+            order.get("page_id") != page_id
+            and order.get("ui_understanding_agent_id") == ui_understanding_agent_id
+            for order in orders
+        ):
+            raise ValueError(f"UI understanding agent is already bound to another page: {ui_understanding_agent_id}")
         contract, relative, digest = contracts[page_id]
+        plan_relative = f"arkts-page-plans/{page_id}/arkts-page-plan.json"
+        plan_path = workspace / Path(*PurePosixPath(plan_relative).parts)
+        if plan_path.exists():
+            if not plan_path.is_file() or plan_path.is_symlink():
+                raise ValueError(f"ArkTS page plan target is not a regular file: {page_id}")
+            plan = load_json(plan_path)
+            validate_arkts_page_plan(plan, contract, digest)
+        else:
+            plan = compile_arkts_page_plan(contract, digest)
+            validate_arkts_page_plan(plan, contract, digest)
+            atomic_json(plan_path, plan)
+            plan_path.chmod(0o444)
+        plan_digest = sha256_file(plan_path)
         state_ids = sorted(str(row["state_id"]) for row in contract["states"])
         capabilities = sorted({
             str(row["system_capability_id"])
@@ -219,7 +319,15 @@ def issue_page_order(workspace: Path, page_id: str, owner_id: str, codearts_task
             if isinstance(row, dict) and row.get("system_capability_id")
         })
         issued_at = utc_now()
-        binding = {"page_id": page_id, "owner_id": owner_id, "codearts_task_id": codearts_task_id, "contract_sha256": digest, "exclusive_code_paths": paths}
+        binding = {
+            "page_id": page_id,
+            "owner_id": owner_id,
+            "ui_understanding_agent_id": ui_understanding_agent_id,
+            "codearts_task_id": codearts_task_id,
+            "contract_sha256": digest,
+            "arkts_page_plan_sha256": plan_digest,
+            "exclusive_code_paths": paths,
+        }
         work_order_id = _order_id("H4PWO-", binding)
         order = {
             "schema_version": "page-work-order-v1",
@@ -227,11 +335,16 @@ def issue_page_order(workspace: Path, page_id: str, owner_id: str, codearts_task
             "phase": 4,
             "page_id": page_id,
             "owner_id": owner_id,
+            "ui_understanding_agent_id": ui_understanding_agent_id,
+            "ui_understanding_role_mode": "PAGE_OWNER_COMBINED" if ui_understanding_agent_id == owner_id else "SEPARATE",
             "codearts_task_id": codearts_task_id,
             "status": "ISSUED",
             "issued_at": issued_at,
             "page_contract_path": relative,
             "page_contract_sha256": digest,
+            "arkts_page_plan_path": plan_relative,
+            "arkts_page_plan_sha256": plan_digest,
+            "ui_understanding_contract": "PHASE2_PAGE_CONTRACT_ONLY_NO_FREE_INFERENCE",
             "state_ids": state_ids,
             "feature_ids": sorted(str(value) for value in contract.get("feature_ids", [])),
             "phase3_targets": contract.get("phase3_targets", []),
@@ -246,12 +359,12 @@ def issue_page_order(workspace: Path, page_id: str, owner_id: str, codearts_task
         matches = [row for row in ledger_rows if row.get("page_id") == page_id]
         if len(matches) != 1 or matches[0].get("status") != "NOT_STARTED":
             raise ValueError(f"Page implementation ledger is not eligible: {page_id}")
-        matches[0].update({"work_order_id": work_order_id, "owner_id": owner_id, "codearts_task_id": codearts_task_id, "exclusive_code_paths": json.dumps(paths, separators=(",", ":")), "status": "INPUT_LOCKED", "updated_at": issued_at})
+        matches[0].update({"work_order_id": work_order_id, "owner_id": owner_id, "ui_understanding_agent_id": ui_understanding_agent_id, "codearts_task_id": codearts_task_id, "exclusive_code_paths": json.dumps(paths, separators=(",", ":")), "status": "INPUT_LOCKED", "updated_at": issued_at})
         registry_path = workspace / "page-work-order-registry.csv"
         old_registry = read_csv(registry_path)
         path = _write_order(
             workspace, "page-work-orders", order, "page-work-order-registry.csv", PAGE_REGISTRY_FIELDS,
-            {"work_order_id": work_order_id, "page_id": page_id, "owner_id": owner_id, "codearts_task_id": codearts_task_id, "relative_path": f"page-work-orders/{work_order_id}.json", "work_order_sha256": "", "issued_at": issued_at, "status": "ISSUED"},
+            {"work_order_id": work_order_id, "page_id": page_id, "owner_id": owner_id, "ui_understanding_agent_id": ui_understanding_agent_id, "codearts_task_id": codearts_task_id, "relative_path": f"page-work-orders/{work_order_id}.json", "work_order_sha256": "", "issued_at": issued_at, "status": "ISSUED"},
         )
         try:
             write_csv(workspace / "page-implementation-ledger.csv", PAGE_LEDGER_FIELDS, ledger_rows)
@@ -283,7 +396,7 @@ def issue_capability_order(workspace: Path, capability_id: str, owner_id: str, c
         requested_consumers = sorted({validate_id(value, "consumer Page-ID") for value in consumer_page_ids})
         if not actual_consumers or requested_consumers != actual_consumers:
             raise ValueError(f"Capability consumer pages differ for {capability_id}: expected {actual_consumers}, got {requested_consumers}")
-        orders = _registered_orders(workspace)
+        orders = _registered_orders(workspace, contracts)
         _assert_available(orders, unit_key="capability_id", unit_id=capability_id, owner=owner_id, task=codearts_task_id, paths=paths)
         behavior_contracts = []
         side_effect_contracts = []
@@ -320,6 +433,11 @@ def issue_capability_order(workspace: Path, capability_id: str, owner_id: str, c
         binding = {"capability_id": capability_id, "owner_id": owner_id, "codearts_task_id": codearts_task_id, "consumer_page_ids": actual_consumers, "page_contracts": contract_bindings, "exclusive_code_paths": paths}
         work_order_id = _order_id("H4CWO-", binding)
         lower_paths = [(path, path.lower()) for path in paths]
+        interface_files = [path for path, lower in lower_paths if "interface" in lower or "contract" in lower]
+        implementation_files = [path for path, lower in lower_paths if "test" not in lower and "interface" not in lower and "contract" not in lower]
+        test_files = [path for path, lower in lower_paths if "test" in lower]
+        if not interface_files or not implementation_files or not test_files:
+            raise ValueError("Capability order requires nonempty interface, implementation, and test code paths")
         order = {
             "schema_version": "capability-work-order-v1",
             "work_order_id": work_order_id,
@@ -333,9 +451,9 @@ def issue_capability_order(workspace: Path, capability_id: str, owner_id: str, c
             "page_contracts": contract_bindings,
             "behavior_contracts": behavior_contracts,
             "side_effect_contracts": sorted(side_effect_contracts, key=lambda row: str(row.get("side_effect_id", ""))),
-            "interface_files": [path for path, lower in lower_paths if "interface" in lower or "contract" in lower],
-            "implementation_files": [path for path, lower in lower_paths if "test" not in lower and "interface" not in lower and "contract" not in lower],
-            "test_files": [path for path, lower in lower_paths if "test" in lower],
+            "interface_files": interface_files,
+            "implementation_files": implementation_files,
+            "test_files": test_files,
             "exclusive_code_paths": paths,
             "completion_command": "python scripts/validate_stage4.py --workspace . --reviewer <independent-reviewer>",
         }
@@ -350,7 +468,7 @@ def validate_order_coverage(workspace: Path) -> dict[str, int]:
     workspace = _workspace(workspace)
     contracts = _page_contracts(workspace)
     _ensure_records(workspace, contracts)
-    orders = _registered_orders(workspace)
+    orders = _registered_orders(workspace, contracts)
     page_orders = {str(order["page_id"]): order for order in orders if order.get("page_id")}
     capability_orders = {
         str(order["capability_id"]): order for order in orders if order.get("capability_id")

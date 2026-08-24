@@ -15,11 +15,15 @@ def main() -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--page-id", required=True)
     parser.add_argument("--owner-id", required=True)
+    parser.add_argument("--ui-understanding-agent-id")
     parser.add_argument("--codearts-task-id", required=True)
     parser.add_argument("--exclusive-code-path", action="append", required=True)
     args = parser.parse_args()
     try:
-        path = issue_page_order(Path(args.workspace), args.page_id, args.owner_id, args.codearts_task_id, tuple(args.exclusive_code_path))
+        path = issue_page_order(
+            Path(args.workspace), args.page_id, args.owner_id, args.codearts_task_id,
+            tuple(args.exclusive_code_path), args.ui_understanding_agent_id,
+        )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps({"work_order": str(path)}, ensure_ascii=False))

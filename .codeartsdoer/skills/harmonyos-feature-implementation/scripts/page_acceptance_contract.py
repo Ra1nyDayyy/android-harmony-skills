@@ -25,15 +25,35 @@ REGISTRY_FIELDS = [
     "feature_ids", "required_h4env_ids", "status",
 ]
 CONTRACT_KEYS = {
-    "schema_version", "page_id", "page_name", "feature_ids", "states", "components",
+    "schema_version", "page_id", "page_name", "carrier_type", "feature_ids", "states", "components",
     "source_geometry", "assets", "visible_text", "interaction_bindings", "entry_conditions",
     "transitions", "code_map", "business_rules", "data_dependencies", "side_effects",
     "system_capabilities", "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
     "comparison_policy",
 }
-CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "comparison_policy"}
+CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "carrier_type", "comparison_policy"}
 PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ANDROID_CARRIER_KINDS = {
+    "ACTIVITY": "PAGE",
+    "APP_COMPAT_ACTIVITY": "PAGE",
+    "COMPONENT_ACTIVITY": "PAGE",
+    "FRAGMENT": "PAGE",
+    "COMPOSABLE": "PAGE",
+    "SCREEN": "PAGE",
+    "PAGE": "PAGE",
+    "DIALOG": "DIALOG",
+    "DIALOG_FRAGMENT": "DIALOG",
+    "ALERT_DIALOG": "DIALOG",
+    "BOTTOM_SHEET": "SHEET",
+    "BOTTOM_SHEET_DIALOG": "SHEET",
+    "BOTTOM_SHEET_DIALOG_FRAGMENT": "SHEET",
+    "MODAL_BOTTOM_SHEET": "SHEET",
+    "POPUP": "POPUP",
+    "POPUP_WINDOW": "POPUP",
+    "APP_WIDGET": "WIDGET",
+    "WIDGET": "WIDGET",
+}
 RECORD_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "components": ("component_id", "page_id"),
     "interaction_bindings": ("event_id", "page_id"),
@@ -242,6 +262,7 @@ def compile_page_contracts(
             "schema_version": "page-acceptance-contract-v1",
             "page_id": page_id,
             "page_name": page_name,
+            "carrier_type": _android_carrier_type(page, page_id),
             "feature_ids": feature_ids,
             "states": state_records,
             "components": _records_for_page(components, page_id, "page_id", "component_id"),
@@ -349,6 +370,7 @@ def _validate_contract(contract: dict[str, object]) -> None:
         contract.get("schema_version") != "page-acceptance-contract-v1"
         or not isinstance(contract.get("page_name"), str)
         or not contract["page_name"]
+        or contract.get("carrier_type") not in {"PAGE", "DIALOG", "SHEET", "POPUP", "WIDGET"}
     ):
         raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: identity structure differs")
     for field in CONTRACT_LIST_FIELDS:
@@ -591,6 +613,26 @@ def _sorted_ids(values: object, label: str) -> list[str]:
 
 def _unique_sorted(values: list[str]) -> list[str]:
     return sorted({value for value in values if value})
+
+
+def _android_carrier_type(page: dict[str, object], page_id: str) -> str:
+    raw_kinds = page.get("kinds", page.get("kind", page.get("page_kind", "")))
+    kinds = _multi(raw_kinds)
+    if not kinds:
+        raise ValueError(f"{page_id}: missing Android page kinds")
+    mapped: set[str] = set()
+    for raw in kinds:
+        short = raw.split(".")[-1]
+        if short != short.upper():
+            short = re.sub(r"(?<!^)(?=[A-Z])", "_", short)
+        normalized = short.replace("-", "_").upper()
+        carrier = ANDROID_CARRIER_KINDS.get(normalized)
+        if not carrier:
+            raise ValueError(f"{page_id}: unknown Android page kind {raw!r}")
+        mapped.add(carrier)
+    if len(mapped) != 1:
+        raise ValueError(f"{page_id}: conflicting Android carrier kinds {sorted(kinds)}")
+    return next(iter(mapped))
 
 
 def _sha256_file(path: Path) -> str:

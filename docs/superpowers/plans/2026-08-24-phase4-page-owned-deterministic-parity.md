@@ -10,6 +10,8 @@
 
 **Spec:** [2026-08-24-phase4-page-owned-deterministic-parity-design.md](../specs/2026-08-24-phase4-page-owned-deterministic-parity-design.md)
 
+> **2026-08-25 binding amendment:** Original Tasks 3-4 are superseded by [Phase 4 UiTest and ArkTS Page-Plan Amendment](../specs/2026-08-25-phase4-uitest-page-plan-amendment.md). Phase 4 must use `@ohos.UiTest`, must compile a conservation-checked `arkts-page-plan.json` before page code, and must not implement the replaced tree-dump bridge design.
+
 ## Global Constraints
 
 - Phase 2 frozen artifacts are the only source of Android UI and functional truth. Phase 4 may normalize them into contracts but must not reinterpret or silently reduce them.

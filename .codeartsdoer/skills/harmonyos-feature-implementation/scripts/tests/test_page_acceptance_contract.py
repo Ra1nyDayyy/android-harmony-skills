@@ -67,6 +67,7 @@ class PageAcceptanceContractTest(unittest.TestCase):
         self.assertEqual(["Calculator.kt:1"], [item["code_ref"] for item in calculator["code_map"]])
         self.assertEqual(["H4ENV-001"], calculator["required_h4env_ids"])
         self.assertEqual(0.98, calculator["comparison_policy"]["application_region_ssim"])
+        self.assertEqual("PAGE", calculator["carrier_type"])
 
     def test_rejects_page_when_inventory_references_missing_evidence(self) -> None:
         remove_android_evidence(self.phase2, "EVID-RESULT")
@@ -78,6 +79,26 @@ class PageAcceptanceContractTest(unittest.TestCase):
         pages["pages"].append(dict(pages["pages"][0]))
         write_json(self.phase2 / "static-analysis" / "pages.json", pages)
         with self.assertRaisesRegex(ValueError, "duplicate Page-ID.*PAGE-CALCULATOR"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+
+    def test_freezes_android_carrier_and_rejects_unknown_or_conflicting_kinds(self) -> None:
+        pages = read_json(self.phase2 / "static-analysis" / "pages.json")
+        pages["pages"][0]["kinds"] = ["DIALOG_FRAGMENT"]
+        write_json(self.phase2 / "static-analysis" / "pages.json", pages)
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        calculator = next(row for row in contracts if row["page_id"] == "PAGE-CALCULATOR")
+        self.assertEqual("DIALOG", calculator["carrier_type"])
+        build_fixture(self.phase2, self.phase3)
+        pages = read_json(self.phase2 / "static-analysis" / "pages.json")
+        pages["pages"][0]["kinds"] = ["MAGIC_SURFACE"]
+        write_json(self.phase2 / "static-analysis" / "pages.json", pages)
+        with self.assertRaisesRegex(ValueError, "PAGE-CALCULATOR.*unknown Android page kind"):
+            compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        build_fixture(self.phase2, self.phase3)
+        pages = read_json(self.phase2 / "static-analysis" / "pages.json")
+        pages["pages"][0]["kinds"] = ["ACTIVITY", "DIALOG_FRAGMENT"]
+        write_json(self.phase2 / "static-analysis" / "pages.json", pages)
+        with self.assertRaisesRegex(ValueError, "PAGE-CALCULATOR.*conflicting Android carrier"):
             compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
         build_fixture(self.phase2, self.phase3)
         pages = read_json(self.phase2 / "static-analysis" / "pages.json")
@@ -351,8 +372,8 @@ def build_fixture(phase2: Path, phase3: Path) -> None:
         "system_capability_id": "SYS-CALC", "feature_id": "FEATURE-CALC", "status": "VERIFIED",
     }])
     write_json(phase2 / "static-analysis" / "pages.json", {"pages": [
-        {"page_id": "PAGE-CALCULATOR", "page_name": "Calculator", "candidate_feature_ids": ["FEATURE-CALC"]},
-        {"page_id": "PAGE-HISTORY", "page_name": "History", "candidate_feature_ids": ["FEATURE-CALC"]},
+        {"page_id": "PAGE-CALCULATOR", "page_name": "Calculator", "kinds": ["ACTIVITY"], "candidate_feature_ids": ["FEATURE-CALC"]},
+        {"page_id": "PAGE-HISTORY", "page_name": "History", "kinds": ["FRAGMENT"], "candidate_feature_ids": ["FEATURE-CALC"]},
     ]})
     write_json(phase2 / "static-analysis" / "components.json", {"components": [
         {"component_id": "COMP-CALC-RESULT", "page_id": "PAGE-CALCULATOR", "resource_id": "result", "text": "0", "type": "Text"},

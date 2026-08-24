@@ -36,6 +36,7 @@ from _common import (
     write_csv,
 )
 from page_acceptance_contract import compile_page_contracts, publish_page_contracts
+from prepare_uitest_probe import prepare_uitest_probe
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -1640,6 +1641,7 @@ def main() -> int:
                         "page_id": row["page_id"],
                         "work_order_id": "",
                         "owner_id": "",
+                        "ui_understanding_agent_id": "",
                         "codearts_task_id": "",
                         "contract_sha256": row["contract_sha256"],
                         "state_ids": join_multi(
@@ -1662,17 +1664,16 @@ def main() -> int:
                 for row in page_contract_registry
             ]
 
-            inspector_bridge = temp_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
-            inspector_bridge.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(
-                ASSETS / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets",
-                inspector_bridge,
-            )
+            probe_generation = prepare_uitest_probe(temp_dir)
+            probe_manifest = temp_dir / "ui-test-snapshot-generation-manifest.json"
+            if Path(probe_generation["manifest"]) != probe_manifest:
+                raise ValueError("UiTest snapshot generation returned a non-canonical manifest path")
 
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
             make_tree_read_only(temp_dir / "tools")
             make_tree_read_only(temp_dir / "page-contracts")
+            make_tree_read_only(temp_dir / "arkts-page-plans")
             (temp_dir / "page-contract-registry.csv").chmod(0o444)
             input_lock = {
                 "schema_version": "1.0",
@@ -1702,10 +1703,13 @@ def main() -> int:
                     "schema_sha256": sha256_file(ASSETS / "page-acceptance-contract.schema.json"),
                 },
                 "page_contracts": page_contract_lock_records,
-                "arkui_inspector_bridge": {
-                    "relative_path": "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
-                    "sha256": sha256_file(inspector_bridge),
-                    "contract": "arkui-inspector-bridge-v1",
+                "ui_test_snapshot_generation": {
+                    "relative_path": "ui-test-snapshot-generation-manifest.json",
+                    "sha256": sha256_file(probe_manifest),
+                    "generation_id": probe_generation["generation_id"],
+                    "page_ids": probe_generation["page_ids"],
+                    "probe_count": probe_generation["probe_count"],
+                    "contract": "ui-test-snapshot-generation-v1",
                     "production_packaging": "FORBIDDEN",
                 },
             }
@@ -1748,6 +1752,7 @@ def main() -> int:
                 temp_dir / "asset-conversion-contracts.json",
                 temp_dir / "migration-unit-contracts.json",
                 temp_dir / "page-contract-registry.csv",
+                temp_dir / "ui-test-snapshot-generation-manifest.json",
             ):
                 frozen_record.chmod(0o444)
             temp_dir.rename(phase_dir)
