@@ -103,6 +103,40 @@ class HumanGateTest(unittest.TestCase):
             self.assertIn("machine gate", result.stderr.lower())
             self.assertFalse((run_dir / "controller" / "human-reviews" / "phase-02" / "HREV-FAIL-001.json").exists())
 
+    def test_recorder_rejects_noncurrent_gate_report_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-old-report-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp))
+            old_report = run_dir / "controller" / "old-gate-report.json"
+            old_report.write_bytes(gate_report.read_bytes())
+            result = self.run_script(
+                "record_human_review.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(old_report), "--review-id", "HREV-OLD",
+                "--reviewer", "human-reviewer", "--decision", "APPROVED",
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("current controller gate report", result.stderr.lower())
+
+    def test_machine_pass_with_blockers_cannot_be_approved(self) -> None:
+        for blocker in (
+            {"errors": ["coverage incomplete"]},
+            {"blocking": True},
+            {"critical_count": 1},
+        ):
+            with self.subTest(blocker=blocker), tempfile.TemporaryDirectory(prefix="human-gate-blocked-") as temp:
+                run_dir, gate_report = self.make_run(Path(temp), verdict="PASS")
+                gate = json.loads(gate_report.read_text(encoding="utf-8"))
+                gate.update(blocker)
+                write_json(gate_report, gate)
+                result = self.run_script(
+                    "record_human_review.py",
+                    "--run-dir", str(run_dir), "--phase", "2",
+                    "--gate-report", str(gate_report), "--review-id", "HREV-BLOCKED",
+                    "--reviewer", "human-reviewer", "--decision", "APPROVED",
+                )
+                self.assertEqual(2, result.returncode)
+                self.assertIn("machine gate", result.stderr.lower())
+
     def test_human_review_is_immutable_and_duplicate_id_cannot_overwrite(self) -> None:
         with tempfile.TemporaryDirectory(prefix="human-gate-immutable-") as temp:
             run_dir, gate_report = self.make_run(Path(temp))
@@ -149,6 +183,57 @@ class HumanGateTest(unittest.TestCase):
             })
             with self.assertRaisesRegex(ValueError, "seal"):
                 read_current_human_review(run_dir, 2, gate_report)
+
+    def test_reader_rejects_approved_deviation_without_deviations(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-deviation-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp))
+            result = self.run_script(
+                "record_human_review.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(gate_report), "--review-id", "HREV-DEVIATION",
+                "--reviewer", "human-reviewer", "--decision", "APPROVED_DEVIATION",
+                "--deviation", "accepted spacing difference",
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            record_path = run_dir / "controller" / "human-reviews" / "phase-02" / "HREV-DEVIATION.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["deviations"] = []
+            record_path.chmod(0o644)
+            write_json(record_path, record)
+            seal_path = record_path.with_suffix(".json.sha256")
+            seal_path.chmod(0o644)
+            seal_path.write_text(f"{hashlib.sha256(record_path.read_bytes()).hexdigest()}  {record_path.name}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "deviation"):
+                read_current_human_review(run_dir, 2, gate_report)
+
+    def test_review_summary_rejects_symlink_output_escape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="human-gate-symlink-") as temp:
+            root = Path(temp)
+            run_dir, gate_report = self.make_run(root)
+            source = run_dir / "review-input.json"
+            write_json(source, {"coverage": {}, "exceptions": []})
+            outside = root / "outside"
+            outside.mkdir()
+            link = run_dir / "controller" / "review-summaries"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                if sys.platform != "win32":
+                    self.skipTest(f"Directory symlinks unavailable: {exc}")
+                junction = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                if junction.returncode != 0:
+                    self.skipTest(f"Directory links unavailable: {junction.stderr or junction.stdout}")
+            result = self.run_script(
+                "generate_review_summary.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(gate_report), "--input", str(source),
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("inside the migration run", result.stderr.lower())
+            self.assertFalse((outside / "phase-02" / "review-summary.json").exists())
 
 
 if __name__ == "__main__":

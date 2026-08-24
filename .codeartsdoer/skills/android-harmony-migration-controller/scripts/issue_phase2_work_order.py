@@ -14,6 +14,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _human_gate import require_current_human_approval
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -41,6 +43,23 @@ def atomic_json(path: Path, value: dict) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def atomic_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
@@ -116,7 +135,8 @@ def main() -> int:
     try:
         scope_path = run_dir / "controller" / "scope.json"
         scope = load_json(scope_path)
-        gate = load_json(run_dir / "controller" / "gate-report.json")
+        gate_path = run_dir / "controller" / "gate-report.json"
+        gate = load_json(gate_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     scope_sha256 = sha256_file(scope_path)
@@ -132,13 +152,19 @@ def main() -> int:
     )
     if recheck.returncode != 0:
         parser.error("Phase 1 baseline changed after its recorded PASS; refusing to issue a work order")
+    try:
+        human_review = require_current_human_approval(run_dir, 1, gate_path)
+    except ValueError as exc:
+        parser.error(f"Current human approval is required after Gate 1 recheck: {exc}")
     ownership = scope.get("ownership", {})
     if args.issued_by != ownership.get("migration_controller_id"):
         parser.error("--issued-by must equal the frozen migration controller")
     suffix = scope_sha256[:12].upper()
     work_order_id = f"WO-PHASE-02-{suffix}"
     output = run_dir / "controller" / "work-orders" / f"{work_order_id}.json"
-    if output.exists():
+    gate_snapshot_relative = f"controller/work-orders/{work_order_id}.phase-01-gate-report.json"
+    gate_snapshot_path = run_dir / gate_snapshot_relative
+    if output.exists() or gate_snapshot_path.exists():
         parser.error(f"Work order already exists; overwrite is prohibited: {output}")
     baseline = [env["env_id"] for env in scope.get("environments", []) if env.get("is_baseline") is True]
     issued_at = utc_now()
@@ -151,6 +177,11 @@ def main() -> int:
         "issued_by": args.issued_by,
         "scope_relative_path": "controller/scope.json",
         "scope_sha256": scope_sha256,
+        "controller_gate1_snapshot_relative_path": gate_snapshot_relative,
+        "controller_gate1_sha256": sha256_file(gate_path),
+        "human_review_id": human_review["review_id"],
+        "human_review_decision": human_review["decision"],
+        "human_review_gate_sha256": human_review["gate_report_sha256"],
         "source_revision": scope.get("android", {}).get("source_revision"),
         "apk_sha256": scope.get("android", {}).get("apk_sha256"),
         "baseline_env_id": baseline[0] if len(baseline) == 1 else None,
@@ -171,6 +202,7 @@ def main() -> int:
             "evidence-anchors.snapshot.csv", "closure-manifest.sha256", "CLOSED",
         ],
     }
+    atomic_bytes(gate_snapshot_path, gate_path.read_bytes())
     atomic_json(output, work_order)
     try:
         register_work_order(

@@ -13,7 +13,7 @@ from pathlib import Path
 from _human_gate import (
     APPROVAL_DECISIONS,
     DECISIONS,
-    gate_verdict,
+    gate_is_clear_pass,
     load_json_object,
     resolve_run_file,
     review_directory,
@@ -57,11 +57,14 @@ def main() -> int:
     try:
         run_dir = Path(args.run_dir).resolve()
         gate_path = resolve_run_file(run_dir, Path(args.gate_report), "controller gate report")
+        current_gate_path = (run_dir / "controller" / "gate-report.json").resolve()
+        if gate_path != current_gate_path:
+            raise ValueError("Human review must bind the current controller gate report")
         report = load_json_object(gate_path, "controller gate report")
         if report.get("phase") != args.phase:
             raise ValueError("Controller gate report phase differs from requested human review phase")
-        if args.decision in APPROVAL_DECISIONS and gate_verdict(report) != "PASS":
-            raise ValueError("Human approval requires a PASS machine gate")
+        if args.decision in APPROVAL_DECISIONS and not gate_is_clear_pass(report):
+            raise ValueError("Human approval requires a clear PASS machine gate with no blockers")
         if args.decision == "APPROVED_DEVIATION" and not args.deviation:
             raise ValueError("APPROVED_DEVIATION requires at least one --deviation")
         if not args.review_id.strip() or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for char in args.review_id):

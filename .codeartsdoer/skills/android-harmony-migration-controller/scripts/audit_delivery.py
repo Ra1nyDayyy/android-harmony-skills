@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from _human_gate import require_current_human_approval
 from _team_execution import load_json, safe_file, validate_order_receipts
 
 
@@ -101,6 +102,56 @@ def feature_orders(run_dir: Path) -> list[Path]:
     return result
 
 
+def human_approval_errors(
+    run_dir: Path,
+    gate_reports: dict[int, Path | tuple[Path, str]],
+) -> list[str]:
+    errors: list[str] = []
+    for phase, value in sorted(gate_reports.items()):
+        if isinstance(value, tuple):
+            gate_path, bound_relative = value
+        else:
+            gate_path, bound_relative = value, None
+        try:
+            require_current_human_approval(
+                run_dir,
+                phase,
+                gate_path,
+                bound_gate_report_relative_path=bound_relative,
+            )
+        except ValueError as exc:
+            errors.append(f"Phase {phase} human approval is not current and valid: {exc}")
+    return errors
+
+
+def delivery_gate_reports(
+    run_dir: Path,
+    through_phase: int,
+) -> tuple[dict[int, Path | tuple[Path, str]], list[str]]:
+    reports: dict[int, Path | tuple[Path, str]] = {}
+    errors: list[str] = []
+    downstream = {
+        1: (2, "controller_gate1_snapshot_relative_path"),
+        2: (3, "phase2_gate_snapshot_relative_path"),
+        3: (4, "controller_gate3_snapshot_relative_path"),
+    }
+    for phase in range(1, through_phase):
+        next_phase, field = downstream[phase]
+        orders = active_orders(run_dir, next_phase)
+        if len(orders) != 1:
+            errors.append(f"Cannot locate the unique Phase {phase} gate snapshot for human approval audit")
+            continue
+        try:
+            order = load_json(orders[0])
+            relative = str(order.get(field, ""))
+            path = safe_file(run_dir, relative, f"Phase {phase} gate snapshot")
+            reports[phase] = (path, "controller/gate-report.json")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"Cannot inspect Phase {phase} gate snapshot: {exc}")
+    reports[through_phase] = run_dir / "controller" / "gate-report.json"
+    return reports, errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
@@ -128,6 +179,10 @@ def main() -> int:
         if not passed:
             detail = report.get("errors") or result.stderr.strip() or result.stdout.strip()
             errors.append(f"Controller Gate {phase} did not independently revalidate: {detail}")
+
+    gate_reports, gate_report_errors = delivery_gate_reports(run_dir, args.through_phase)
+    errors.extend(gate_report_errors)
+    errors.extend(human_approval_errors(run_dir, gate_reports))
 
     ledger = run_dir / "controller" / "task-ledger.csv"
     try:

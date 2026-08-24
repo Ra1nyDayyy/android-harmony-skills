@@ -36,6 +36,15 @@ def gate_verdict(report: dict[str, Any]) -> str:
     return str(verdict).strip().upper()
 
 
+def gate_is_clear_pass(report: dict[str, Any]) -> bool:
+    if gate_verdict(report) != "PASS" or bool(report.get("errors")) or bool(report.get("blocking")):
+        return False
+    try:
+        return int(report.get("critical_count", 0)) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_run_file(run_dir: Path, value: Path, label: str) -> Path:
     root = run_dir.resolve()
     path = value if value.is_absolute() else root / value
@@ -82,6 +91,8 @@ def validate_human_review_record(
         raise ValueError(f"Human review phase differs: {record_path}")
     if record.get("decision") not in DECISIONS:
         raise ValueError(f"Human review decision is invalid: {record_path}")
+    if record.get("decision") == "APPROVED_DEVIATION" and not record.get("deviations"):
+        raise ValueError(f"Approved deviation review has no deviations: {record_path}")
     if not str(record.get("reviewer", "")).strip():
         raise ValueError(f"Human review reviewer is empty: {record_path}")
     return record
@@ -91,6 +102,7 @@ def read_current_human_review(
     run_dir: Path,
     phase: int,
     gate_report_path: Path,
+    bound_gate_report_relative_path: str | None = None,
 ) -> dict[str, Any]:
     """Return the sealed review bound to the current gate report.
 
@@ -104,7 +116,11 @@ def read_current_human_review(
     if report.get("phase") != phase:
         raise ValueError("Controller gate report phase differs from requested human review phase")
     current_sha256 = sha256_file(gate_report_path)
-    current_relative = gate_report_path.relative_to(run_dir).as_posix()
+    current_relative = (
+        bound_gate_report_relative_path
+        if bound_gate_report_relative_path is not None
+        else gate_report_path.relative_to(run_dir).as_posix()
+    )
 
     directory = review_directory(run_dir, phase)
     matches: list[dict[str, Any]] = []
@@ -114,8 +130,8 @@ def read_current_human_review(
             record.get("gate_report_sha256") == current_sha256
             and record.get("gate_report_relative_path") == current_relative
         ):
-            if record.get("decision") in APPROVAL_DECISIONS and gate_verdict(report) != "PASS":
-                raise ValueError("Approval is invalid because the current machine gate is not PASS")
+            if record.get("decision") in APPROVAL_DECISIONS and not gate_is_clear_pass(report):
+                raise ValueError("Approval is invalid because the current machine gate is not a clear PASS")
             matches.append(record)
 
     if not matches:
@@ -123,3 +139,24 @@ def read_current_human_review(
     if len(matches) != 1:
         raise ValueError("Multiple human reviews are bound to the current gate report")
     return matches[0]
+
+
+def require_current_human_approval(
+    run_dir: Path,
+    phase: int,
+    gate_report_path: Path,
+    bound_gate_report_relative_path: str | None = None,
+) -> dict[str, Any]:
+    """Return the current review only when it authorizes forward progress."""
+
+    review = read_current_human_review(
+        run_dir,
+        phase,
+        gate_report_path,
+        bound_gate_report_relative_path=bound_gate_report_relative_path,
+    )
+    if review.get("decision") not in APPROVAL_DECISIONS:
+        raise ValueError(
+            f"Human decision {review.get('decision')} does not authorize continuation"
+        )
+    return review
