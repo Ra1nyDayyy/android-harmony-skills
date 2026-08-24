@@ -49,12 +49,16 @@ def compare_components(contract: dict[str, Any], snapshot: dict[str, Any]) -> Co
             "visible": (bool(wanted.get("visible", True)), observed.get("visible")),
             "enabled": (bool(wanted.get("enabled", True)), observed.get("enabled")),
             "clickable": (bool(wanted.get("clickable", False)), observed.get("clickable")),
+            "parent_component_id": (str(wanted.get("parent_component_id", "")), str(observed.get("parent_component_id", ""))),
+            "order": (wanted.get("order"), observed.get("order")),
         }
         for field, (wanted_value, observed_value) in fields.items():
-            if wanted_value != observed_value:
+            if field not in observed:
+                differences.append({"kind": "MISSING_ACTUAL_COMPONENT_FIELD", "component_id": component_id, "field": field, "expected": wanted_value})
+            elif wanted_value != observed_value:
                 differences.append({"kind": "PROPERTY_MISMATCH", "component_id": component_id, "field": field, "expected": wanted_value, "actual": observed_value})
-    normalized_expected = [{"component_id": key, "type": normalized_type(value)} for key, value in sorted(expected.items())]
-    normalized_actual = [{"component_id": key, "type": normalized_type(value)} for key, value in sorted(actual.items())]
+    normalized_expected = [{"component_id": key, "type": normalized_type(value), "parent_component_id": value.get("parent_component_id", ""), "order": value.get("order")} for key, value in sorted(expected.items())]
+    normalized_actual = [{"component_id": key, "type": normalized_type(value), "parent_component_id": value.get("parent_component_id", ""), "order": value.get("order")} for key, value in sorted(actual.items())]
     return comparison_result(
         "CMP-COMPONENT-TREE", "component-tree", normalized_expected, normalized_actual,
         {"required_components": len(expected), "observed_components": len(actual)}, differences,

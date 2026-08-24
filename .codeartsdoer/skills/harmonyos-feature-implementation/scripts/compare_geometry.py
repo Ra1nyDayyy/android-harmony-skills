@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from comparison_common import ComparisonResult, comparison_result
@@ -24,10 +25,23 @@ def _geometry_rows(value: Any) -> list[dict[str, Any]]:
 
 def _density(value: dict[str, Any]) -> float:
     density = value.get("density")
-    if isinstance(density, (int, float)) and density > 0:
-        return float(density)
+    if density is not None:
+        if isinstance(density, (int, float)) and not isinstance(density, bool) and math.isfinite(float(density)) and float(density) > 0:
+            return float(density)
+        raise ValueError("Geometry density must be finite and positive")
     dpi = value.get("density_dpi")
-    return float(dpi) / 160.0 if isinstance(dpi, (int, float)) and dpi > 0 else 1.0
+    if dpi is not None and (not isinstance(dpi, (int, float)) or isinstance(dpi, bool) or not math.isfinite(float(dpi)) or float(dpi) <= 0):
+        raise ValueError("Geometry density DPI must be finite and positive")
+    result = float(dpi) / 160.0 if dpi is not None else 1.0
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError("Geometry density must be finite and positive")
+    return result
+
+
+def _finite(value: Any, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+        raise ValueError(f"Geometry {label} must be finite")
+    return float(value)
 
 
 def compare_geometry(contract: dict[str, Any], snapshot: dict[str, Any]) -> ComparisonResult:
@@ -39,8 +53,11 @@ def compare_geometry(contract: dict[str, Any], snapshot: dict[str, Any]) -> Comp
     source_density = _density(source_root)
     actual_density = _density(snapshot)
     viewport = snapshot.get("viewport") if isinstance(snapshot.get("viewport"), dict) else {}
-    viewport_width = float(viewport.get("width", source_root.get("viewport_width", 0)) or 0) / actual_density
-    viewport_height = float(viewport.get("height", source_root.get("viewport_height", 0)) or 0) / actual_density
+    region = snapshot.get("application_region") if isinstance(snapshot.get("application_region"), dict) else {}
+    viewport_width = _finite(viewport.get("width", region.get("width", 0)), "viewport width") / actual_density
+    viewport_height = _finite(viewport.get("height", region.get("height", 0)), "viewport height") / actual_density
+    if viewport_width <= 0 or viewport_height <= 0:
+        raise ValueError("Geometry viewport must be positive")
     tolerances = {
         "x": max(2.0, viewport_width * 0.005), "width": max(2.0, viewport_width * 0.005),
         "y": max(2.0, viewport_height * 0.005), "height": max(2.0, viewport_height * 0.005),
@@ -49,18 +66,22 @@ def compare_geometry(contract: dict[str, Any], snapshot: dict[str, Any]) -> Comp
     normalized_expected: dict[str, dict[str, float]] = {}
     normalized_actual: dict[str, dict[str, float]] = {}
     for component_id, expected in sorted(expected_by_id.items()):
-        normalized_expected[component_id] = {key: float(expected[key]) / source_density for key in ("x", "y", "width", "height")}
+        normalized_expected[component_id] = {key: _finite(expected.get(key), f"{component_id}.{key}") / source_density for key in ("x", "y", "width", "height")}
+        if normalized_expected[component_id]["width"] <= 0 or normalized_expected[component_id]["height"] <= 0:
+            raise ValueError(f"Geometry expected bounds must be positive: {component_id}")
         actual = actual_by_id.get(component_id)
         bounds = actual.get("bounds") if isinstance(actual, dict) and isinstance(actual.get("bounds"), dict) else None
         if bounds is None:
             differences.append({"kind": "MISSING_BOUNDS", "component_id": component_id})
             continue
         normalized_actual[component_id] = {
-            "x": float(bounds.get("left", 0)) / actual_density,
-            "y": float(bounds.get("top", 0)) / actual_density,
-            "width": (float(bounds.get("right", 0)) - float(bounds.get("left", 0))) / actual_density,
-            "height": (float(bounds.get("bottom", 0)) - float(bounds.get("top", 0))) / actual_density,
+            "x": _finite(bounds.get("left"), f"{component_id}.left") / actual_density,
+            "y": _finite(bounds.get("top"), f"{component_id}.top") / actual_density,
+            "width": (_finite(bounds.get("right"), f"{component_id}.right") - _finite(bounds.get("left"), f"{component_id}.left")) / actual_density,
+            "height": (_finite(bounds.get("bottom"), f"{component_id}.bottom") - _finite(bounds.get("top"), f"{component_id}.top")) / actual_density,
         }
+        if normalized_actual[component_id]["width"] <= 0 or normalized_actual[component_id]["height"] <= 0:
+            raise ValueError(f"Geometry bounds must be positive: {component_id}")
         for field in ("x", "y", "width", "height"):
             delta = abs(normalized_expected[component_id][field] - normalized_actual[component_id][field])
             if delta > tolerances[field]:

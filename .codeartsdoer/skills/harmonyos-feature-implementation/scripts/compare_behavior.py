@@ -30,13 +30,22 @@ def compare_side_effects(contract: dict[str, Any], assertions: dict[str, Any]) -
     expected_rows = [row for row in contract.get("side_effects", []) if isinstance(row, dict)]
     assertion_rows = assertions.get("assertions") if isinstance(assertions.get("assertions"), list) else []
     actual_by_id: dict[str, dict[str, Any]] = {}
+    duplicate_ids: set[str] = set()
     for row in assertion_rows:
         if not isinstance(row, dict) or row.get("kind") != "SIDE_EFFECT":
             continue
         for subject in row.get("subject_ids", []):
-            actual_by_id[str(subject)] = row
+            identity = str(subject)
+            if identity in actual_by_id:
+                duplicate_ids.add(identity)
+            actual_by_id[identity] = row
     differences: list[dict[str, object]] = []
     actual_values: dict[str, Any] = {}
+    expected_ids = {str(row.get("side_effect_id", "")) for row in expected_rows}
+    for extra in sorted(set(actual_by_id) - expected_ids):
+        differences.append({"kind": "UNCONTRACTED_SIDE_EFFECT", "side_effect_id": extra})
+    for duplicate in sorted(duplicate_ids):
+        differences.append({"kind": "DUPLICATE_SIDE_EFFECT", "side_effect_id": duplicate})
     for expected in sorted(expected_rows, key=lambda item: str(item.get("side_effect_id", ""))):
         side_effect_id = str(expected.get("side_effect_id", ""))
         row = actual_by_id.get(side_effect_id)
@@ -44,16 +53,29 @@ def compare_side_effects(contract: dict[str, Any], assertions: dict[str, Any]) -
         actual_values[side_effect_id] = actual
         expected_hash = expected.get("expected_payload_sha256")
         actual_hash = actual.get("payload_sha256") if isinstance(actual, dict) else None
-        if expected.get("operator") != "HASH_EQUALS" or actual_hash != expected_hash:
+        if expected.get("operator") != "HASH_EQUALS" or not expected_hash or actual_hash != expected_hash:
             differences.append({"kind": "SIDE_EFFECT_MISMATCH", "side_effect_id": side_effect_id, "expected_payload_sha256": expected_hash, "actual_payload_sha256": actual_hash})
     return comparison_result("CMP-SIDE-EFFECT", "side-effect", expected_rows, actual_values, {"required_side_effects": len(expected_rows)}, differences)
 
 
 def compare_navigation(contract: dict[str, Any], trace: list[Any]) -> ComparisonResult:
     expected_rows = [row for row in contract.get("transitions", []) if isinstance(row, dict)]
-    actual_by_id = {str(row.get("subject_id", "")): row for row in trace if isinstance(row, dict) and row.get("subject_type") == "TRANSITION"}
-    fields = ("source_page_id", "source_state_id", "target_page_id", "target_state_id", "back_behavior", "carrier_type")
+    actual_by_id: dict[str, dict[str, Any]] = {}
+    duplicate_ids: set[str] = set()
+    for row in trace:
+        if not isinstance(row, dict) or row.get("subject_type") != "TRANSITION":
+            continue
+        identity = str(row.get("subject_id", ""))
+        if identity in actual_by_id:
+            duplicate_ids.add(identity)
+        actual_by_id[identity] = row
+    fields = ("action", "source_page_id", "source_state_id", "target_page_id", "target_state_id", "back_behavior", "carrier_type")
     differences: list[dict[str, object]] = []
+    expected_ids = {str(row.get("transition_id", "")) for row in expected_rows}
+    for extra in sorted(set(actual_by_id) - expected_ids):
+        differences.append({"kind": "UNCONTRACTED_TRANSITION", "transition_id": extra})
+    for duplicate in sorted(duplicate_ids):
+        differences.append({"kind": "DUPLICATE_TRANSITION", "transition_id": duplicate})
     normalized_actual: list[dict[str, Any]] = []
     for expected in sorted(expected_rows, key=lambda item: str(item.get("transition_id", ""))):
         transition_id = str(expected.get("transition_id", ""))
@@ -61,6 +83,9 @@ def compare_navigation(contract: dict[str, Any], trace: list[Any]) -> Comparison
         if actual is None:
             differences.append({"kind": "MISSING_TRANSITION", "transition_id": transition_id})
             continue
+        missing_contract_fields = [field for field in fields if field not in expected]
+        if missing_contract_fields:
+            differences.append({"kind": "CONTRACT_MISSING_NAVIGATION_FIELDS", "transition_id": transition_id, "fields": missing_contract_fields})
         normalized_actual.append({"transition_id": transition_id, **{field: actual.get(field) for field in fields}})
         for field in fields:
             if expected.get(field) != actual.get(field):
