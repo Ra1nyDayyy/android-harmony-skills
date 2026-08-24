@@ -227,11 +227,21 @@ class ReviewFixture:
         write_json(
             self.harmony / "ui-test-snapshot.json",
             {
-                "window": {"id": "window-1"},
-                "root": "node-1",
-                "nodes": [{"id": "node-1", "text": "Login"}],
-                "bounds": {"x": 0, "y": 0, "width": 4, "height": 3},
-                "device": {"id": "HDEVICE-001"},
+                "probe_id": f"{PAGE_ID}::{STATE_ID}",
+                "components": [
+                    {
+                        "component_id": "COMP-LOGIN-ROOT",
+                        "type": "Column",
+                        "text": "Login",
+                        "bounds": {"left": 0, "top": 0, "right": 4, "bottom": 3},
+                        "visible": True,
+                        "enabled": True,
+                        "clickable": False,
+                        "locator_strategy": "ID",
+                        "locator_value": "COMP-LOGIN-ROOT",
+                        "match_count": 1,
+                    }
+                ],
             },
         )
         write_json(
@@ -259,6 +269,10 @@ class ReviewFixture:
                 "page_id": PAGE_ID,
                 "state_id": STATE_ID,
                 "captured_by": EXECUTOR,
+                "ui_test_snapshot": {
+                    "path": "ui-test-snapshot.json",
+                    "sha256": sha256_file(self.harmony / "ui-test-snapshot.json"),
+                },
             },
         )
         (self.harmony / "steps.md").write_text("1. Open the login state.\n", encoding="utf-8")
