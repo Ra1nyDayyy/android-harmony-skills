@@ -294,8 +294,21 @@ def main() -> int:
     wo_root = ctl / "work-orders"
     wo_root.mkdir(exist_ok=True)
     write_json(wo_root / f"PHASE3-GMI-{ws.name}.json", work_order)
-    write_json(ctl / "scope.json", {"included_features": list(dict.fromkeys(page_syms)),
-                                    "excluded_features": [], "generated_by": "gmi-phase3-adapter"})
+    write_json(ctl / "scope.json", {
+        "run_id": "RUN-%s" % ws.name,
+        "project_id": "PRJ-%s" % ws.name,
+        "migration_scope": {
+            "included_features": list(dict.fromkeys(page_syms)),
+            "excluded_features": [],
+        },
+        "ownership": {
+            "code_map_agent_id": "CODEMAP-001",
+            "migration_controller_id": "team-leader",
+            "coverage_checker_id": "gmi",
+        },
+        "android": {"application_id": "", "package": ""},
+        "generated_by": "gmi-phase3-adapter",
+    })
     write_json(ctl / "gate-report.json", {"phase": 2, "verdict": "PASS",
                                           "generated_by": "gmi-phase3-adapter"})
     (ctl / "evidence-anchor-registry.csv").write_text("evidence_id\n", encoding="utf-8")
