@@ -894,11 +894,26 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # write phase-manifest for traceability
-    (workspace / "phase-manifest.json").write_text(json.dumps({
-        "included_features": features,
+    # 重要：若 P1 已产出 phase-manifest.json（含 scope/features 决策），不得整体覆盖；
+    # 只补充 gmi 观测字段，P1 决策字段原样保留。
+    manifest_path = workspace / "phase-manifest.json"
+    merged_manifest: Dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                merged_manifest.update(existing)
+        except ValueError:
+            merged_manifest = {}
+    merged_manifest.update({
         "android_project_root": str(project),
         "phase": 2, "status": "GENERATED", "generator": "gmi",
-    }, indent=2, ensure_ascii=False), encoding="utf-8")
+        "gmi_counts": counts,
+        "gmi_pages": [p["symbol"] for p in pages],
+    })
+    if "included_features" not in merged_manifest:
+        merged_manifest["included_features"] = features
+    manifest_path.write_text(json.dumps(merged_manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # gate
     unmapped = [l for l in ledger if l["status"] == "GAP"]
