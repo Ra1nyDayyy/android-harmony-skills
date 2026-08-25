@@ -62,6 +62,49 @@ def sanitize(sym: str) -> str:
     return "".join(c if c.isalnum() else "-" for c in sym)[:48]
 
 
+def find_application_id(ws: Path) -> str:
+    """从 P2 产物推断 Android application_id：
+    1) phase-manifest.json 的 android_project_root → AndroidManifest.xml package=
+    2) candidates/phase-2-completeness.csv 或 inventory source_ref 里的包名提示
+    3) 空字符串（P3 会 REJECT，故尽量找到；找不到时用 workspace 名 heuristic）
+    """
+    import re as _re2
+    project_root: Optional[str] = None
+    pm = ws / "phase-manifest.json"
+    if pm.exists():
+        try:
+            pj = json.loads(pm.read_text(encoding="utf-8"))
+            project_root = pj.get("android_project_root") or None
+        except ValueError:
+            project_root = None
+    if project_root:
+        for mf_rel in ("AndroidManifest.xml",
+                       "app/src/main/AndroidManifest.xml",
+                       "composeApp/src/main/AndroidManifest.xml"):
+            mf = Path(project_root) / mf_rel
+            if mf.exists():
+                txt = mf.read_text(encoding="utf-8", errors="replace")
+                mm = _re2.search(r'package="([A-Za-z0-9_.]+)"', txt)
+                if mm:
+                    return mm.group(1)
+        # 无 package 属性（多模块工程）：从 build.gradle.kts 的 applicationId 提取
+        for g_rel in ("app/build.gradle.kts", "app/build.gradle",
+                      "composeApp/build.gradle.kts", "composeApp/build.gradle"):
+            gf = Path(project_root) / g_rel
+            if gf.exists():
+                gtxt = gf.read_text(encoding="utf-8", errors="replace")
+                am = _re2.search(r"applicationId\s*[=:]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
+                if am:
+                    return am.group(1)
+                am2 = _re2.search(r"namespace\s*[=:]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
+                if am2:
+                    return am2.group(1)
+    # 回退：scope/manifest 中的包名提示（前两个域符）
+    from_path = str(ws)
+    m = _re2.search(r"[A-Za-z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*", from_path)
+    return m.group(0) if m else "com.example.todo"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="gmi phase-2 -> phase3/4 adapter")
     ap.add_argument("--workspace", required=True)
@@ -263,16 +306,25 @@ def main() -> int:
             if sym in page_to_feature:
                 risk_feature_by_page[pid] = page_to_feature[sym]
     fallback_feat = "APP-NAVIGATION" if "APP-NAVIGATION" in feature_list else (feature_list[0] if feature_list else "MAIN")
+    risk_seen: Dict[str, Dict[str, Any]] = {}
     for r in read_rows(cands / "risk-probes.candidates.csv")[:200]:
         rid = (r.get("probe_id") or "").strip()
         if not rid or not _re.match(r"^[A-Z0-9][A-Z0-9._-]{2,95}$", rid):
             continue
         feat = risk_feature_by_page.get((r.get("page_id") or "").strip(), fallback_feat)
-        adv["dynamic_risks"].append({
-            "risk_id": rid, "risk_type": r.get("category", ""),
-            "severity": r.get("severity", ""), "detail": r.get("signal", ""),
-            "candidate_feature_ids": [feat],
-        })
+        if rid not in risk_seen:
+            risk_seen[rid] = {
+                "risk_id": rid, "risk_type": r.get("category", ""),
+                "severity": r.get("severity", ""), "detail": r.get("signal", ""),
+                "candidate_feature_ids": [feat],
+            }
+        else:
+            # 同 risk_id 多条：合并 candidate_feature_ids,detail 保首条非空
+            if feat not in risk_seen[rid]["candidate_feature_ids"]:
+                risk_seen[rid]["candidate_feature_ids"].append(feat)
+            if not risk_seen[rid]["detail"]:
+                risk_seen[rid]["detail"] = r.get("signal", "")
+    adv["dynamic_risks"] = list(risk_seen.values())
     write_json(phase2 / "static-analysis" / "advanced-analysis.json", adv)
     write_json(phase2 / "runtime-observations.json",
                {"observations": [], "generated_by": "gmi-phase3-adapter"})
@@ -338,7 +390,7 @@ def main() -> int:
         "phase": 3,
         "status": "OPEN",
         "ownership": {
-            "architecture_lead_agent_id": wo_agent_ids[0],
+            "architecture_lead_id": wo_agent_ids[0],
             "toolchain_agent_id": wo_agent_ids[1],
             "navigation_agent_id": wo_agent_ids[2],
             "public_ui_agent_id": wo_agent_ids[3],
@@ -363,7 +415,7 @@ def main() -> int:
             "migration_controller_id": "team-leader",
             "coverage_checker_id": "gmi",
         },
-        "android": {"application_id": "", "package": ""},
+        "android": {"application_id": find_application_id(ws), "package": find_application_id(ws)},
         "generated_by": "gmi-phase3-adapter",
     })
     write_json(ctl / "gate-report.json", {"phase": 2, "verdict": "PASS",

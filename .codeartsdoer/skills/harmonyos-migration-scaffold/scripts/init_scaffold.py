@@ -563,6 +563,18 @@ def main() -> int:
         gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
         if not gate_work_order_snapshot.exists():
             gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
+        # gmi 资产清单（adapter 合成；非空保证合流段 row_count/asset_ids）
+        phase2_assets = read_csv(phase2_paths["asset_inventory"])
+        phase2_asset_files = [
+            {
+                "asset_id": row.get("asset_id", ""),
+                "source_path": row.get("source_path", ""),
+                "archive_path": row.get("archive_path", ""),
+                "sha256": row.get("sha256", ""),
+                "asset_type": row.get("asset_type", ""),
+            }
+            for row in phase2_assets
+        ]
     if not gmi_mode:
         gate_sha256_before = sha256_file(gate_source_path)
         try:
