@@ -99,8 +99,6 @@ def main() -> int:
     }
     closure_report_path = phase2 / "closure-report.json"
     write_json(closure_report_path, closure_report)
-    # CLOSED 绑定 closure-report 哈希
-    (phase2 / "CLOSED").write_text(sha256_file(closure_report_path), encoding="utf-8")
     write_json(phase2 / "phase-manifest.json", {
         "phase": 2, "status": "CLOSED", "generator": "gmi",
         "gmi_closure": closure["gate"],
@@ -111,6 +109,9 @@ def main() -> int:
         shutil.copy2(src_manifest, phase2 / "closure-manifest.sha256")
         closure_report["closure_manifest_sha256"] = sha256_file(phase2 / "closure-manifest.sha256")
         write_json(closure_report_path, closure_report)
+    # CLOSED 绑定 closure-report **最终态**哈希（必须在 report 全部定稿之后计算，
+    # 否则任何后续字段写入都会使 CLOSED 失配——本 bug 已导致 Windows 运行中手动修补）
+    (phase2 / "CLOSED").write_text(sha256_file(closure_report_path), encoding="utf-8")
 
     # 2) inventory.csv（合成：每页一行 REVIEWED）
     inv_rows: List[Dict[str, Any]] = []
