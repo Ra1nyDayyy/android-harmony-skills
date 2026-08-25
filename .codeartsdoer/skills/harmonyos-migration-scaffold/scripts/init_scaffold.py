@@ -557,6 +557,12 @@ def main() -> int:
         )
         advanced_gate = require_object(load_json(phase2_paths["advanced_gate"]), "Phase 2 advanced gate")
         probe_index = read_csv(phase2_paths["probe_index"])
+        # gmi 合流段需要的变量（非 gmi 路径在下方 recheck 后赋值；这里直接派生）
+        work_order_sha256 = sha256_file(work_order_path)
+        ownership = require_object(work_order.get("ownership"), "Phase 3 work-order ownership")
+        gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
+        if not gate_work_order_snapshot.exists():
+            gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
     if not gmi_mode:
         gate_sha256_before = sha256_file(gate_source_path)
         try:

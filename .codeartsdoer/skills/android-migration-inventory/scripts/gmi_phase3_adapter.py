@@ -271,8 +271,10 @@ def main() -> int:
     (ctl / "work-order-registry.csv").write_text(
         "work_order_id,status\nPHASE3-GMI-%s,OPEN\n" % ws.name, encoding="utf-8")
     write_json(out / "run-manifest.json", {
+        "run_id": "RUN-%s" % ws.name,
+        "project_id": "PRJ-%s" % (Path(args.project).name if hasattr(args, "project") else (ws.name or "gmi")),
         "id": ws.name, "generated_by": "gmi-phase3-adapter",
-        "ownership": {"code_map_agent_id": "CODEMAP-001"},
+        "ownership": {"code_map_agent_id": "CODEMAP-001", "migration_controller_id": "team-leader"},
         "phase2_closure_gate": closure["gate"],
     })
 
