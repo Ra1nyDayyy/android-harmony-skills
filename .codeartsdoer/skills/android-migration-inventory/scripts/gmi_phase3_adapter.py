@@ -233,12 +233,22 @@ def main() -> int:
     cat = phase2 / "catalogs"
     cat.mkdir(exist_ok=True)
     (cat / "third-party-dependencies.csv").write_text(
-        "artifactId,group,version,resolution\n" +
-        "\n".join(f'{r.get("artifact","")},{r.get("group","")},{r.get("version","")},{r.get("resolution","")}'
-                  for r in read_rows(cands / "third-party-dependencies.candidates.csv")) + "\n",
+        "third_party_dependency_id,group,version,resolution,name\n" +
+        "\n".join(
+            f'{r.get("artifact","") or r.get("group","")},' +
+            f'{r.get("group","")},{r.get("version","")},{r.get("resolution","")},{r.get("artifact","")}'
+            for r in read_rows(cands / "third-party-dependencies.candidates.csv")) +
+        "\nNONE_FOUND,NONE,NONE,NONE,NONE_FOUND\n",
         encoding="utf-8")
-    (cat / "data-dependencies.csv").write_text("dependency_id,file,notes\n", encoding="utf-8")
-    (cat / "system-capabilities.csv").write_text("capability_id,file,notes\n", encoding="utf-8")
+    # data/system: NONE_FOUND sentinel 行（init_scaffold 期望此结构）
+    (cat / "data-dependencies.csv").write_text(
+        "data_dependency_id,dependency_type,name,direction,migration_risk,file,notes\n"
+        "NONE_FOUND,NONE,NONE_FOUND,NONE,none,-,-\n",
+        encoding="utf-8")
+    (cat / "system-capabilities.csv").write_text(
+        "system_capability_id,capability_type,name,file,notes\n"
+        "NONE_FOUND,NONE,NONE_FOUND,-,-\n",
+        encoding="utf-8")
 
     # 7) 控制器结构（P3 校验用最小合法）
     ctl = out / "controller"
