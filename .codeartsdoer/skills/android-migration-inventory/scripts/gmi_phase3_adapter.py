@@ -114,21 +114,59 @@ def main() -> int:
     (phase2 / "CLOSED").write_text(sha256_file(closure_report_path), encoding="utf-8")
 
     # 2) inventory.csv（合成：每页一行 REVIEWED）
+    # Feature-ID 契约：^[A-Z0-9][A-Z0-9._-]{2,95}$（大写）；来源 = P2 inventory 的
+    # feature_id 列（Phase 1 定义的大写 feature，如 DETAIL/CALENDAR/AI-SETTINGS），
+    # 而非 Android 类名。类名只作 page_symbol/page_name。
     inv_rows: List[Dict[str, Any]] = []
     page_syms: List[str] = []
-    for r in read_rows(cands / "phase-2-completeness.csv"):
+    inv_cands = read_rows(cands / "inventory.candidates.csv")
+    page_to_feature: Dict[str, str] = {}
+    for r in inv_cands:
+        feat = (r.get("feature_id") or "").strip()
+        p_sym_txt = (r.get("source_ref") or "")
+        # inventory 无 page_symbol 列：用 page_id 关联 completeness 的 page_symbol
+    comp_rows = read_rows(cands / "phase-2-completeness.csv")
+    pid_to_sym = {r.get("page_id", ""): r.get("page_symbol", "") for r in comp_rows}
+    for r in inv_cands:
+        feat = (r.get("feature_id") or "").strip()
+        if feat and feat != "":
+            pid = r.get("page_id", "")
+            sym = pid_to_sym.get(pid, "")
+            if sym:
+                page_to_feature.setdefault(sym, feat)
+    for r in comp_rows:
         sym = r.get("page_symbol", "")
         pid = r.get("page_id", "")
         if not sym or sym in page_syms:
             continue
         page_syms.append(sym)
+        feat = page_to_feature.get(sym) or "MAIN"
         inv_rows.append({
             "inventory_id": f"INV-{sanitize(sym)}",
-            "feature_id": sym, "page_id": pid, "page_name": sym,
+            "feature_id": feat, "page_id": pid, "page_name": sym,
             "state_id": f"STATE-{pid}-DEFAULT", "state_name": "DEFAULT",
             "env_id": "ENV-001", "evidence_id": f"EVD-{sanitize(sym)}",
             "row_status": "REVIEWED", "reviewed_by": "gmi",
         })
+    feature_list: List[str] = []
+    # 优先 Phase 1 scope：phase-manifest.json（gmi merge 后保留 P1 included_features）
+    pm = ws / "phase-manifest.json"
+    if pm.exists():
+        try:
+            import json as _j
+            mm = _j.loads(pm.read_text(encoding="utf-8"))
+            for f in mm.get("included_features", []):
+                if f and f not in feature_list:
+                    feature_list.append(f)
+        except ValueError:
+            feature_list = []
+    # 补充 inventory feature 列（页面级 primary feature；可能含 manifest 没有的）
+    for feat in sorted(set(page_to_feature.values())):
+        if feat and feat not in feature_list:
+            feature_list.append(feat)
+    if not feature_list:
+        # 最终回退：类名大写化（保证非空，防止 scope 空集报错）
+        feature_list = [re.sub(r"[^A-Z0-9.-]", "-", s.upper()) for s in page_syms if s]
     write_rows(phase2 / "inventory.csv",
                ["inventory_id", "feature_id", "page_id", "page_name", "state_id",
                 "state_name", "env_id", "evidence_id", "row_status", "reviewed_by"],
@@ -298,7 +336,7 @@ def main() -> int:
         "run_id": "RUN-%s" % ws.name,
         "project_id": "PRJ-%s" % ws.name,
         "migration_scope": {
-            "included_features": list(dict.fromkeys(page_syms)),
+            "included_features": feature_list or list(dict.fromkeys(page_syms)),
             "excluded_features": [],
         },
         "ownership": {
