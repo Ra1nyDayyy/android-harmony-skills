@@ -243,15 +243,21 @@ def main() -> int:
         json.dumps({"components": [], "generated_by": "gmi-phase3-adapter"}, ensure_ascii=False),
         encoding="utf-8")
     # advanced-analysis.json 从 risk-probes 映射
+    # 字段名契约：dynamic_risks 每项须有 risk_id（^[A-Z0-9][A-Z0-9._-]{2,95}$），
+    # 不合法/空 probe_id 直接跳过（防止校验报空值；真实风险仍保留在 risk-probes.candidates.csv）
     adv = {
         "dynamic_risks": [],
         "side_effects": [],
         "scenarios": [],
         "summary": {"generated_by": "gmi-phase3-adapter"},
     }
+    import re as _re
     for r in read_rows(cands / "risk-probes.candidates.csv")[:200]:
+        rid = (r.get("probe_id") or "").strip()
+        if not rid or not _re.match(r"^[A-Z0-9][A-Z0-9._-]{2,95}$", rid):
+            continue
         adv["dynamic_risks"].append({
-            "subject_id": r.get("probe_id", ""), "risk_type": r.get("category", ""),
+            "risk_id": rid, "risk_type": r.get("category", ""),
             "severity": r.get("severity", ""), "detail": r.get("signal", ""),
         })
     write_json(phase2 / "static-analysis" / "advanced-analysis.json", adv)
