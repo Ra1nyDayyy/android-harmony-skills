@@ -232,13 +232,34 @@ def main() -> int:
     # 6) catalogs
     cat = phase2 / "catalogs"
     cat.mkdir(exist_ok=True)
+    # third-party：按 group:artifact 聚合去重（ALIAS+CATALOG 合并为一行），
+    # ID = group:artifact:version（唯一）；版本/来源留示踪列
+    dep_rows_raw = read_rows(cands / "third-party-dependencies.candidates.csv")
+    dep_agg: Dict[str, Dict[str, str]] = {}
+    for r in dep_rows_raw:
+        g = (r.get("group") or "").strip()
+        a = (r.get("artifact") or "").strip()
+        v = (r.get("version") or "").strip()
+        if not a and not g:
+            continue
+        key = f"{g}:{a}"
+        if key not in dep_agg:
+            dep_agg[key] = {"group": g, "artifact": a, "version": v,
+                            "resolutions": []}
+        if r.get("resolution") and r["resolution"] not in dep_agg[key]["resolutions"]:
+            dep_agg[key]["resolutions"].append(r["resolution"])
+        if dep_agg[key]["version"] != v and v:
+            dep_agg[key]["version"] = dep_agg[key]["version"] or v
+    dep_csv_rows = []
+    for key, d in sorted(dep_agg.items()):
+        vid = f"{d['group']}:{d['artifact']}:{d['version']}"
+        dep_csv_rows.append(
+            f'{vid},{d["group"]},{d["version"]},{"+".join(d["resolutions"]) or "DIRECT"},{d["artifact"]}'
+        )
     (cat / "third-party-dependencies.csv").write_text(
-        "third_party_dependency_id,group,version,resolution,name\n" +
-        "\n".join(
-            f'{r.get("artifact","") or r.get("group","")},' +
-            f'{r.get("group","")},{r.get("version","")},{r.get("resolution","")},{r.get("artifact","")}'
-            for r in read_rows(cands / "third-party-dependencies.candidates.csv")) +
-        "\nNONE_FOUND,NONE,NONE,NONE,NONE_FOUND\n",
+        "third_party_dependency_id,group,version,resolution,name\n"
+        + "\n".join(dep_csv_rows)
+        + "\nNONE_FOUND,NONE,NONE,NONE,NONE_FOUND\n",
         encoding="utf-8")
     # data/system: NONE_FOUND sentinel 行（init_scaffold 期望此结构）
     (cat / "data-dependencies.csv").write_text(
