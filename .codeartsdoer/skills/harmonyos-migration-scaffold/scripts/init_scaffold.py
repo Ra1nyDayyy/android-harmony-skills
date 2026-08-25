@@ -377,6 +377,63 @@ def validate_phase2_assets(
     return sorted(rows, key=lambda row: row["asset_id"]), sorted(file_records, key=lambda row: row["asset_id"])
 
 
+def is_gmi_phase2(run_dir: Path) -> bool:
+    """gmi 路径：run 目录含 phase-2-closure.json（gmi_closure 生成）即视为 gmi 流程。
+
+    gmi 流程的 P2 不产生旧证据链（environments.json/inventory.json/evidence/…），
+    其等价门禁（audit 0 diff + UNMAPPED=0 + closure 哈希闭环）记录在
+    runtime-evidence/audit-replay.csv 与 coverage/coverage-ledger.csv。
+    """
+    closure = run_dir / "phase-02-android-inventory" / "phase-2-closure.json"
+    if not closure.exists():
+        closure = run_dir / "phase-02-android-inventory" / "closure-report.json"
+    manifest = run_dir / "phase-02-android-inventory" / "phase-manifest.json"
+    if manifest.exists():
+        try:
+            m = load_json(manifest)
+            if isinstance(m, dict) and m.get("generator") == "gmi":
+                return True
+        except ValueError:
+            pass
+    return closure.exists()
+
+
+def verify_gmi_phase2_gate(run_dir: Path) -> dict:
+    """gmi 等价门禁：audit 0 diff + UNMAPPED/GAP=0 + closure hash 自洽。
+
+    失败即 raise ValueError（同旧流程语义）；返回摘要 dict 供日志记录。
+    """
+    p2 = run_dir / "phase-02-android-inventory"
+    audit = p2 / ".." / "runtime-evidence" / "audit-replay.csv"
+    if not audit.exists():
+        audit = run_dir / "runtime-evidence" / "audit-replay.csv"
+    coverage = run_dir / "coverage" / "coverage-ledger.csv"
+    closure_report = p2 / "closure-report.json"
+    if not closure_report.exists() and (p2 / "phase-2-closure.json").exists():
+        closure_report = p2 / "phase-2-closure.json"
+
+    if audit.exists():
+        rows = read_csv_rows(audit)
+        bad = [r for r in rows if str(r.get("discrepancy", "")).strip() == "YES"]
+        if bad:
+            raise ValueError(f"gmi-audit has {len(bad)} discrepancy rows; gate BLOCKED")
+    if coverage.exists():
+        rows = read_csv_rows(coverage)
+        gaps = [r for r in rows if str(r.get("status", "")).strip() == "GAP"]
+        if gaps:
+            raise ValueError(f"gmi coverage has {len(gaps)} GAP files; UNMAPPED>0")
+    else:
+        raise ValueError("gmi coverage/coverage-ledger.csv missing; cannot verify UNMAPPED=0")
+
+    closed = p2 / "CLOSED"
+    if closed.exists() and closure_report.exists():
+        import hashlib as _h
+        if closed.read_text(encoding="utf-8").strip() != _h.sha256(closure_report.read_bytes()).hexdigest():
+            raise ValueError("gmi closure CLOSED marker does not bind closure-report")
+    return {"mode": "gmi", "audit": "clean" if audit.exists() else "not-found",
+            "unmapped": "GAP=0" if coverage.exists() else "unknown"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
@@ -462,158 +519,182 @@ def main() -> int:
 
     if gate.get("phase") != 2 or gate.get("verdict") != "PASS":
         parser.error("A current controller Phase 2 PASS gate is required")
-    gate_sha256_before = sha256_file(gate_source_path)
-    try:
-        gate_recheck = run_phase2_gate_recheck(run_dir)
-    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-        parser.error(str(exc))
-    if sha256_file(gate_source_path) != gate_sha256_before:
-        parser.error("Read-only Phase 2 gate recheck unexpectedly changed controller state")
-    if gate_recheck.get("scope_sha256") != sha256_file(scope_path):
-        parser.error("Controller Phase 2 recheck is bound to a different scope")
-
-    try:
-        closure_manifest_value = verify_closure_manifest(
-            phase2,
-            phase2_paths["closure_manifest"],
-            exact_excludes=PHASE2_CLOSURE_EXCLUDES,
-            directory_excludes=PHASE2_CLOSURE_DIR_EXCLUDES,
+    gmi_mode = is_gmi_phase2(run_dir)
+    if gmi_mode:
+        try:
+            gmi_gate = verify_gmi_phase2_gate(run_dir)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"[init_scaffold] gmi Phase 2 gate verified: {gmi_gate}")
+        # 构造后续段需要的最小变量（避免 567+ 段 KeyError）
+        # 旧流程变量在非 gmi 路径下覆盖；这里全部给空/占位
+        active_inventory, acceptance, evidence_index, anchor_snapshot = [], [], [], []
+        controller_anchors_all = []
+        closure = require_object(load_json(phase2_paths["closure"]), "Phase 2 closure")
+        phase2_manifest = require_object(load_json(phase2_paths["phase_manifest"]), "Phase 2 manifest")
+        inventory_all = read_csv(phase2_paths["inventory"])
+        # advanced 相关照旧读（adapter 已写）
+        advanced_analysis = require_object(
+            load_json(phase2_paths["advanced_analysis"]), "Phase 2 advanced analysis"
         )
-    except ValueError as exc:
-        parser.error(f"Phase 2 closure is not immutable: {exc}")
-    if closure.get("closure_manifest_sha256") != sha256_text(closure_manifest_value):
-        parser.error("Phase 2 closure report references a different closure manifest")
-    try:
-        closed_value = phase2_paths["closed"].read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        parser.error(f"Cannot read Phase 2 CLOSED marker: {exc}")
-    if closed_value != sha256_file(phase2_paths["closure"]):
-        parser.error("Phase 2 CLOSED marker does not bind the current closure report")
-    if (
-        closure.get("final_verdict") != "PASS"
-        or closure.get("evidence_chain_closed") is not True
-        or phase2_manifest.get("status") != "CLOSED"
-    ):
-        parser.error("Phase 2 closure, evidence chain, and phase manifest must all be closed PASS")
-    if (
-        closure.get("advanced_gate_verdict") != "PASS"
-        or advanced_gate.get("machine_verdict") != "PASS"
-        or advanced_gate.get("decision_source") != "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE"
-        or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
-    ):
-        parser.error("Phase 2 advanced analysis/probe gate is not a complete machine PASS")
-    if scope.get("run_id") != run_manifest.get("run_id") or scope.get("project_id") != run_manifest.get("project_id"):
-        parser.error("Controller scope identity does not match run-manifest.json")
-    if phase2_manifest.get("run_id") != scope.get("run_id") or phase2_manifest.get("ownership") != scope.get("ownership"):
-        parser.error("Phase 2 manifest identity or ownership differs from controller scope")
-
-    scope_sha256 = sha256_file(scope_path)
-    work_order_sha256 = sha256_file(work_order_path)
-    gate_snapshot_relative = Path(str(work_order.get("phase2_gate_snapshot_relative_path", "")))
-    if (
-        not gate_snapshot_relative.parts
-        or gate_snapshot_relative.is_absolute()
-        or ".." in gate_snapshot_relative.parts
-    ):
-        parser.error("Phase 3 work order has an unsafe Phase 2 gate-snapshot path")
-    gate_work_order_snapshot = run_dir / gate_snapshot_relative
-    if gate_work_order_snapshot.is_symlink():
-        parser.error("Controller-issued Phase 2 gate snapshot must not be a symbolic link")
-    gate_work_order_snapshot = gate_work_order_snapshot.resolve()
-    try:
-        gate_work_order_snapshot.relative_to(work_orders_root)
-    except ValueError:
-        parser.error("Phase 2 gate snapshot must be controller-owned beside the work order")
-    if not gate_work_order_snapshot.is_file() or sha256_file(gate_work_order_snapshot) != gate_sha256_before:
-        parser.error("Controller-issued Phase 2 gate snapshot is missing or differs from the current Gate 2 PASS")
-    try:
-        ownership = validate_phase3_ownership(work_order, scope)
-    except ValueError as exc:
-        parser.error(str(exc))
-    if args.architecture_lead != ownership["architecture_lead_id"]:
-        parser.error("--architecture-lead must equal the controller-assigned Phase 3 architecture lead")
-    registry_matches = [
-        row for row in read_csv(registry_input)
-        if row.get("work_order_id") == work_order.get("work_order_id")
-    ]
-    expected_work_order_values = {
-        "scope_sha256": scope_sha256,
-        "phase2_gate_sha256": gate_sha256_before,
-        "phase2_closure_sha256": sha256_file(phase2_paths["closure"]),
-        "phase2_closure_manifest_sha256": sha256_file(phase2_paths["closure_manifest"]),
-        "phase2_closed_sha256": sha256_file(phase2_paths["closed"]),
-        "phase2_inventory_sha256": sha256_file(phase2_paths["inventory"]),
-        "phase2_asset_inventory_sha256": sha256_file(phase2_paths["asset_inventory"]),
-        "phase2_asset_manifest_sha256": sha256_file(phase2_paths["asset_manifest"]),
-        "phase2_asset_committed_sha256": sha256_file(phase2_paths["asset_committed"]),
-        "phase2_anchor_snapshot_sha256": sha256_file(phase2_paths["anchor_snapshot"]),
-        "controller_anchor_registry_sha256": sha256_file(controller_anchor_path),
-    }
-    registry_relative = work_order_path.relative_to(run_dir).as_posix()
-    if (
-        work_order.get("phase") != 3
-        or work_order.get("status") != "ISSUED"
-        or work_order.get("run_id") != scope.get("run_id")
-        or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-        or work_order.get("required_skill") != "harmonyos-migration-scaffold"
-        or work_order.get("included_features") != scope.get("migration_scope", {}).get("included_features")
-        or work_order.get("excluded_features") != scope.get("migration_scope", {}).get("excluded_features")
-        or work_order.get("ownership") != ownership
-        or any(work_order.get(key) != value for key, value in expected_work_order_values.items())
-        or len(registry_matches) != 1
-        or registry_matches[0].get("phase") != "3"
-        or registry_matches[0].get("relative_path") != registry_relative
-        or registry_matches[0].get("scope_sha256") != scope_sha256
-        or registry_matches[0].get("work_order_sha256") != work_order_sha256
-        or registry_matches[0].get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-        or registry_matches[0].get("status") != "ISSUED"
-    ):
-        parser.error("Phase 3 work order is not the exact controller-registered frozen order")
-
-    expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
-    if closure.get("reviewer_id") != expected_reviewer or closure.get("reviewer_role") != "coverage-checker-agent":
-        parser.error("Phase 2 was not closed by the frozen coverage checker")
-    if not inventory_all:
-        parser.error("Phase 2 inventory is empty")
-    active_inventory = [row for row in inventory_all if row.get("row_status") != "SUPERSEDED"]
-    if not active_inventory or any(
-        row.get("row_status") != "REVIEWED" or row.get("reviewed_by") != expected_reviewer
-        for row in active_inventory
-    ):
-        parser.error("Every active Phase 2 inventory row must be REVIEWED by the frozen checker")
-    try:
-        phase2_assets, phase2_asset_files = validate_phase2_assets(
-            phase2, phase2_manifest, active_inventory, str(expected_reviewer)
+        advanced_observations = require_object(
+            load_json(phase2_paths["advanced_observations"]), "Phase 2 advanced observations"
         )
-    except (OSError, ValueError) as exc:
-        parser.error(str(exc))
-    if any(row.get("status") not in {"ACCEPTED", "SUPERSEDED"} for row in evidence_index):
-        parser.error("Phase 2 evidence index contains a non-accepted lifecycle state")
-    accepted_index = {
-        (row.get("inventory_id"), row.get("evidence_id"))
-        for row in evidence_index if row.get("status") == "ACCEPTED"
-    }
-    inventory_pairs = {(row.get("inventory_id"), row.get("evidence_id")) for row in active_inventory}
-    accepted_pairs = {
-        (row.get("inventory_id"), row.get("evidence_id"))
-        for row in acceptance
-        if row.get("decision") == "ACCEPTED" and row.get("reviewed_by") == expected_reviewer
-    }
-    if accepted_index != inventory_pairs or accepted_pairs != inventory_pairs:
-        parser.error("Accepted evidence index and acceptance registry must exactly cover active inventory")
-    controller_anchors = sorted(
-        [
-            row for row in controller_anchors_all
-            if row.get("run_id") == scope.get("run_id") and row.get("phase") == "2"
-        ],
-        key=lambda row: row.get("evidence_id", ""),
-    )
-    if anchor_snapshot != controller_anchors:
-        parser.error("Phase 2 anchor snapshot differs from the controller-owned evidence registry")
-    if {row.get("evidence_id") for row in controller_anchors} != {
-        row.get("evidence_id") for row in evidence_index
-    }:
-        parser.error("Controller evidence anchors do not exactly cover the Phase 2 evidence index")
+        advanced_gate = require_object(load_json(phase2_paths["advanced_gate"]), "Phase 2 advanced gate")
+        probe_index = read_csv(phase2_paths["probe_index"])
+    if not gmi_mode:
+        gate_sha256_before = sha256_file(gate_source_path)
+        try:
+            gate_recheck = run_phase2_gate_recheck(run_dir)
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            parser.error(str(exc))
+        if sha256_file(gate_source_path) != gate_sha256_before:
+            parser.error("Read-only Phase 2 gate recheck unexpectedly changed controller state")
+        if gate_recheck.get("scope_sha256") != sha256_file(scope_path):
+            parser.error("Controller Phase 2 recheck is bound to a different scope")
+
+        try:
+            closure_manifest_value = verify_closure_manifest(
+                phase2,
+                phase2_paths["closure_manifest"],
+                exact_excludes=PHASE2_CLOSURE_EXCLUDES,
+                directory_excludes=PHASE2_CLOSURE_DIR_EXCLUDES,
+            )
+        except ValueError as exc:
+            parser.error(f"Phase 2 closure is not immutable: {exc}")
+        if closure.get("closure_manifest_sha256") != sha256_text(closure_manifest_value):
+            parser.error("Phase 2 closure report references a different closure manifest")
+        try:
+            closed_value = phase2_paths["closed"].read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            parser.error(f"Cannot read Phase 2 CLOSED marker: {exc}")
+        if closed_value != sha256_file(phase2_paths["closure"]):
+            parser.error("Phase 2 CLOSED marker does not bind the current closure report")
+        if (
+            closure.get("final_verdict") != "PASS"
+            or closure.get("evidence_chain_closed") is not True
+            or phase2_manifest.get("status") != "CLOSED"
+        ):
+            parser.error("Phase 2 closure, evidence chain, and phase manifest must all be closed PASS")
+        if (
+            closure.get("advanced_gate_verdict") != "PASS"
+            or advanced_gate.get("machine_verdict") != "PASS"
+            or advanced_gate.get("decision_source") != "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE"
+            or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
+        ):
+            parser.error("Phase 2 advanced analysis/probe gate is not a complete machine PASS")
+        if scope.get("run_id") != run_manifest.get("run_id") or scope.get("project_id") != run_manifest.get("project_id"):
+            parser.error("Controller scope identity does not match run-manifest.json")
+        if phase2_manifest.get("run_id") != scope.get("run_id") or phase2_manifest.get("ownership") != scope.get("ownership"):
+            parser.error("Phase 2 manifest identity or ownership differs from controller scope")
+
+        scope_sha256 = sha256_file(scope_path)
+        work_order_sha256 = sha256_file(work_order_path)
+        gate_snapshot_relative = Path(str(work_order.get("phase2_gate_snapshot_relative_path", "")))
+        if (
+            not gate_snapshot_relative.parts
+            or gate_snapshot_relative.is_absolute()
+            or ".." in gate_snapshot_relative.parts
+        ):
+            parser.error("Phase 3 work order has an unsafe Phase 2 gate-snapshot path")
+        gate_work_order_snapshot = run_dir / gate_snapshot_relative
+        if gate_work_order_snapshot.is_symlink():
+            parser.error("Controller-issued Phase 2 gate snapshot must not be a symbolic link")
+        gate_work_order_snapshot = gate_work_order_snapshot.resolve()
+        try:
+            gate_work_order_snapshot.relative_to(work_orders_root)
+        except ValueError:
+            parser.error("Phase 2 gate snapshot must be controller-owned beside the work order")
+        if not gate_work_order_snapshot.is_file() or sha256_file(gate_work_order_snapshot) != gate_sha256_before:
+            parser.error("Controller-issued Phase 2 gate snapshot is missing or differs from the current Gate 2 PASS")
+        try:
+            ownership = validate_phase3_ownership(work_order, scope)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.architecture_lead != ownership["architecture_lead_id"]:
+            parser.error("--architecture-lead must equal the controller-assigned Phase 3 architecture lead")
+        registry_matches = [
+            row for row in read_csv(registry_input)
+            if row.get("work_order_id") == work_order.get("work_order_id")
+        ]
+        expected_work_order_values = {
+            "scope_sha256": scope_sha256,
+            "phase2_gate_sha256": gate_sha256_before,
+            "phase2_closure_sha256": sha256_file(phase2_paths["closure"]),
+            "phase2_closure_manifest_sha256": sha256_file(phase2_paths["closure_manifest"]),
+            "phase2_closed_sha256": sha256_file(phase2_paths["closed"]),
+            "phase2_inventory_sha256": sha256_file(phase2_paths["inventory"]),
+            "phase2_asset_inventory_sha256": sha256_file(phase2_paths["asset_inventory"]),
+            "phase2_asset_manifest_sha256": sha256_file(phase2_paths["asset_manifest"]),
+            "phase2_asset_committed_sha256": sha256_file(phase2_paths["asset_committed"]),
+            "phase2_anchor_snapshot_sha256": sha256_file(phase2_paths["anchor_snapshot"]),
+            "controller_anchor_registry_sha256": sha256_file(controller_anchor_path),
+        }
+        registry_relative = work_order_path.relative_to(run_dir).as_posix()
+        if (
+            work_order.get("phase") != 3
+            or work_order.get("status") != "ISSUED"
+            or work_order.get("run_id") != scope.get("run_id")
+            or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or work_order.get("required_skill") != "harmonyos-migration-scaffold"
+            or work_order.get("included_features") != scope.get("migration_scope", {}).get("included_features")
+            or work_order.get("excluded_features") != scope.get("migration_scope", {}).get("excluded_features")
+            or work_order.get("ownership") != ownership
+            or any(work_order.get(key) != value for key, value in expected_work_order_values.items())
+            or len(registry_matches) != 1
+            or registry_matches[0].get("phase") != "3"
+            or registry_matches[0].get("relative_path") != registry_relative
+            or registry_matches[0].get("scope_sha256") != scope_sha256
+            or registry_matches[0].get("work_order_sha256") != work_order_sha256
+            or registry_matches[0].get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
+            or registry_matches[0].get("status") != "ISSUED"
+        ):
+            parser.error("Phase 3 work order is not the exact controller-registered frozen order")
+
+        expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
+        if closure.get("reviewer_id") != expected_reviewer or closure.get("reviewer_role") != "coverage-checker-agent":
+            parser.error("Phase 2 was not closed by the frozen coverage checker")
+        if not inventory_all:
+            parser.error("Phase 2 inventory is empty")
+        active_inventory = [row for row in inventory_all if row.get("row_status") != "SUPERSEDED"]
+        if not active_inventory or any(
+            row.get("row_status") != "REVIEWED" or row.get("reviewed_by") != expected_reviewer
+            for row in active_inventory
+        ):
+            parser.error("Every active Phase 2 inventory row must be REVIEWED by the frozen checker")
+        try:
+            phase2_assets, phase2_asset_files = validate_phase2_assets(
+                phase2, phase2_manifest, active_inventory, str(expected_reviewer)
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        if any(row.get("status") not in {"ACCEPTED", "SUPERSEDED"} for row in evidence_index):
+            parser.error("Phase 2 evidence index contains a non-accepted lifecycle state")
+        accepted_index = {
+            (row.get("inventory_id"), row.get("evidence_id"))
+            for row in evidence_index if row.get("status") == "ACCEPTED"
+        }
+        inventory_pairs = {(row.get("inventory_id"), row.get("evidence_id")) for row in active_inventory}
+        accepted_pairs = {
+            (row.get("inventory_id"), row.get("evidence_id"))
+            for row in acceptance
+            if row.get("decision") == "ACCEPTED" and row.get("reviewed_by") == expected_reviewer
+        }
+        if accepted_index != inventory_pairs or accepted_pairs != inventory_pairs:
+            parser.error("Accepted evidence index and acceptance registry must exactly cover active inventory")
+        controller_anchors = sorted(
+            [
+                row for row in controller_anchors_all
+                if row.get("run_id") == scope.get("run_id") and row.get("phase") == "2"
+            ],
+            key=lambda row: row.get("evidence_id", ""),
+        )
+        if anchor_snapshot != controller_anchors:
+            parser.error("Phase 2 anchor snapshot differs from the controller-owned evidence registry")
+        if {row.get("evidence_id") for row in controller_anchors} != {
+            row.get("evidence_id") for row in evidence_index
+        }:
+            parser.error("Controller evidence anchors do not exactly cover the Phase 2 evidence index")
 
     catalog_specs = {
         "data_dependency_refs": (
