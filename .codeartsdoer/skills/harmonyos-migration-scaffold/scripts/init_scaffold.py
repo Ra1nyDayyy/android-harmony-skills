@@ -398,27 +398,42 @@ def is_gmi_phase2(run_dir: Path) -> bool:
     return closure.exists()
 
 
+def _read_rows_csv(path: Path) -> list[dict[str, str]]:
+    import csv
+    with open(path, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
 def verify_gmi_phase2_gate(run_dir: Path) -> dict:
     """gmi 等价门禁：audit 0 diff + UNMAPPED/GAP=0 + closure hash 自洽。
 
     失败即 raise ValueError（同旧流程语义）；返回摘要 dict 供日志记录。
+    覆盖 ledger/audit 位置两处约定：run_dir/ 下（adapter 期望）与 workspace（run_dir 上一级，
+    gmi P2 真身）兜底查找。
     """
     p2 = run_dir / "phase-02-android-inventory"
-    audit = p2 / ".." / "runtime-evidence" / "audit-replay.csv"
-    if not audit.exists():
-        audit = run_dir / "runtime-evidence" / "audit-replay.csv"
-    coverage = run_dir / "coverage" / "coverage-ledger.csv"
+
+    def locate(name: str) -> Path:
+        # 先 run_dir（适配器复制位置），再 workspace 上一级（gmi 真身）
+        for base in (run_dir, run_dir.parent):
+            p = base / name
+            if p.exists():
+                return p
+        return run_dir / name
+
+    audit = locate("runtime-evidence/audit-replay.csv")
+    coverage = locate("coverage/coverage-ledger.csv")
     closure_report = p2 / "closure-report.json"
     if not closure_report.exists() and (p2 / "phase-2-closure.json").exists():
         closure_report = p2 / "phase-2-closure.json"
 
     if audit.exists():
-        rows = read_csv_rows(audit)
+        rows = _read_rows_csv(audit)
         bad = [r for r in rows if str(r.get("discrepancy", "")).strip() == "YES"]
         if bad:
             raise ValueError(f"gmi-audit has {len(bad)} discrepancy rows; gate BLOCKED")
     if coverage.exists():
-        rows = read_csv_rows(coverage)
+        rows = _read_rows_csv(coverage)
         gaps = [r for r in rows if str(r.get("status", "")).strip() == "GAP"]
         if gaps:
             raise ValueError(f"gmi coverage has {len(gaps)} GAP files; UNMAPPED>0")
