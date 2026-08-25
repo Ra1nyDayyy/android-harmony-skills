@@ -21,7 +21,12 @@ CONTROLLER = BUNDLE / "android-harmony-migration-controller"
 STAGE3_TESTS = BUNDLE / "harmonyos-migration-scaffold" / "scripts" / "tests"
 sys.path.insert(0, str(STAGE3_TESTS))
 
-from phase2_fixture import build_closed_phase2, record_team_receipt, write_csv  # noqa: E402
+from phase2_fixture import (  # noqa: E402
+    build_closed_phase2,
+    record_human_approval,
+    record_team_receipt,
+    write_csv,
+)
 from test_stage3_workflow import (  # noqa: E402
     create_project_and_registries,
     freeze_environment,
@@ -81,6 +86,7 @@ def close_stage3(root: Path) -> Path:
         sys.executable, str(CONTROLLER / "scripts" / "validate_gate.py"),
         "--run-dir", str(run_dir), "--phase", "3", "--write",
     )
+    record_human_approval(run_dir, 3, "HREV-PHASE-03-FEATURE")
     phase3_receipts = [
         ("architecture_lead_id", "architecture-lead-1", "TASK-P3-ARCH", workspace / "architecture-map.csv"),
         ("toolchain_agent_id", "toolchain-agent-1", "TASK-P3-TOOL", workspace / "verification" / "HVER-001" / "COMMITTED"),
@@ -124,8 +130,9 @@ def category_contracts(scope: dict[str, object]) -> dict[str, dict[str, object]]
             ["screenshot", serial, bundle, "ROUTE-LOGIN", "{SCREENSHOT}"],
             "SCREENSHOT_OK",
         ),
-        "UI_TREE_CAPTURE": (
-            ["ui-tree", serial, bundle, "ROUTE-LOGIN", "{UI_TREE}"], "UI_TREE_OK"
+        "UITEST_SNAPSHOT_CAPTURE": (
+            ["uitest-snapshot", serial, bundle, "ROUTE-LOGIN", "{TEST_HAP}", "{UITEST_RESULT}"],
+            "UITEST_SNAPSHOT_OK"
         ),
     }
     return {
@@ -194,6 +201,7 @@ def state_plan(
     evidence_id: str,
     build_id: str,
     supersedes_evidence_id: str = "",
+    test_hap_path: str = "uitest-test.hap",
 ) -> None:
     executable = str(FAKE)
     serial = "fixture-001"
@@ -218,14 +226,17 @@ def state_plan(
         ("SCREENSHOT_CAPTURE", [executable, "screenshot", "--serial", serial,
                                 "--bundle", bundle, "--target", "ROUTE-LOGIN",
                                 "--output", "{SCREENSHOT}", "--width", "320", "--height", "640"]),
-        ("UI_TREE_CAPTURE", [executable, "ui-tree", "--serial", serial, "--bundle", bundle,
-                             "--target", "ROUTE-LOGIN", "--output", "{UI_TREE}"]),
+        ("UITEST_SNAPSHOT_CAPTURE", [executable, "uitest-snapshot", "--serial", serial,
+                                     "--bundle", bundle, "--target", "ROUTE-LOGIN",
+                                     "--test-hap", "{TEST_HAP}",
+                                     "--output", "{UITEST_RESULT}"]),
     ]
     value = {
         "evidence_id": evidence_id,
         "parity_id": parity_id,
         "hbuild_id": build_id,
         "h4env_id": "H4ENV-001",
+        "test_hap_path": test_hap_path,
         "supersedes_evidence_id": supersedes_evidence_id,
         "implemented_by": implemented_by,
         "executed_by": "verification-executor-4",
@@ -270,15 +281,27 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "--environment-config", str(env_config),
             )
             workspace = Path(json.loads(initialized.stdout)["workspace"])
-            issued_feature = run_cmd(
-                sys.executable, str(SKILL / "scripts" / "issue_feature_work_order.py"),
-                "--workspace", str(workspace), "--feature-id", "FEATURE-AUTH",
-                "--issued-by", "implementation-lead-4", "--feature-owner", "feature-owner-4",
-                "--ui-agent", "ui-agent-4", "--business-data-agent", "business-data-agent-4",
-                "--native-capability-agent", "native-capability-agent-4",
+            issued_page = run_cmd(
+                sys.executable, str(SKILL / "scripts" / "issue_page_work_order.py"),
+                "--workspace", str(workspace), "--page-id", "PAGE-LOGIN",
+                "--owner-id", "page-owner-4",
+                "--ui-understanding-agent-id", "ui-agent-4",
+                "--codearts-task-id", "TASK-P4-PAGE-LOGIN",
                 "--exclusive-code-path", "entry/src/LoginShell.ets",
             )
-            feature_order_id = json.loads(issued_feature.stdout)["work_order_id"]
+            page_order = Path(json.loads(issued_page.stdout)["work_order"])
+            page_order_id = json.loads(page_order.read_text(encoding="utf-8"))["work_order_id"]
+            issued_capability = run_cmd(
+                sys.executable, str(SKILL / "scripts" / "issue_capability_work_order.py"),
+                "--workspace", str(workspace), "--capability-id", "SYS-AUTH-NONE",
+                "--owner-id", "capability-owner-4",
+                "--codearts-task-id", "TASK-P4-CAP-AUTH",
+                "--consumer-page-id", "PAGE-LOGIN",
+                "--exclusive-code-path", "entry/src/AuthCapabilityContract.ets",
+                "--exclusive-code-path", "entry/src/AuthCapability.ets",
+                "--exclusive-code-path", "entry/src/AuthCapability.test.ets",
+            )
+            capability_order = Path(json.loads(issued_capability.stdout)["work_order"])
 
             source = workspace / "harmony-project" / "entry" / "src" / "LoginShell.ets"
             source.write_text(
@@ -288,6 +311,15 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "export const LoginState = 'ready'\n"
                 "export struct LoginShell {}\n",
                 encoding="utf-8",
+            )
+            (workspace / "harmony-project" / "entry" / "src" / "AuthCapabilityContract.ets").write_text(
+                "export interface AuthCapabilityContract {}\n", encoding="utf-8"
+            )
+            (workspace / "harmony-project" / "entry" / "src" / "AuthCapability.ets").write_text(
+                "export class AuthCapability {}\n", encoding="utf-8"
+            )
+            (workspace / "harmony-project" / "entry" / "src" / "AuthCapability.test.ets").write_text(
+                "export const AuthCapabilityTest = true\n", encoding="utf-8"
             )
 
             parity_fields, parity_rows = read_csv(workspace / "parity-map.csv")
@@ -319,6 +351,11 @@ class Stage4WorkflowTest(unittest.TestCase):
                 sys.executable, str(SKILL / "scripts" / "run_build.py"),
                 "--workspace", str(workspace), "--plan", str(build),
             )
+            first_build = json.loads(
+                (workspace / "builds" / "HBUILD-001" / "metadata.json").read_text(encoding="utf-8")
+            )
+            first_hap = workspace / "builds" / "HBUILD-001" / first_build["primary_artifact"]["sealed_relative_path"]
+            (workspace / "uitest-test.hap").write_bytes(first_hap.read_bytes())
             steps = workspace / "login-state-steps.md"
             steps.write_text("1. Reset seed.\n2. Launch.\n3. Open login.\n", encoding="utf-8")
             state = root / "state-plan-001.json"
@@ -390,18 +427,16 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "--attest-functional-results", "--attest-asset-provenance",
             )
 
-            ledger_fields, ledger_rows = read_csv(workspace / "implementation-ledger.csv")
+            ledger_fields, ledger_rows = read_csv(workspace / "page-implementation-ledger.csv")
             ledger_rows[0].update({
-                "work_order_id": feature_order_id,
+                "work_order_id": page_order_id,
                 "status": "ACCEPTED",
-                "updated_by": "parity-acceptance-4",
-                "notes": "Accepted after sealed state review.",
+                "updated_at": "2026-08-25T00:00:00Z",
             })
-            write_csv(workspace / "implementation-ledger.csv", ledger_fields, ledger_rows)
+            write_csv(workspace / "page-implementation-ledger.csv", ledger_fields, ledger_rows)
             visual_fields, visual_rows = read_csv(workspace / "visual-elements.csv")
             visual_rows[0]["status"] = "ACCEPTED"
             write_csv(workspace / "visual-elements.csv", visual_fields, visual_rows)
-
             validation_args = (
                 sys.executable, str(SKILL / "scripts" / "validate_stage4.py"),
                 "--workspace", str(workspace), "--build-id", "HBUILD-002",
@@ -428,6 +463,7 @@ class Stage4WorkflowTest(unittest.TestCase):
             )
             self.assertEqual(json.loads(gate4.stdout)["verdict"], "PASS")
             self.assertTrue((workspace / "CLOSED").is_file())
+            record_human_approval(run_dir, 4, "HREV-PHASE-04-PAGE")
 
             phase4_receipts = [
                 (phase4_order, "implementation_lead_id", "implementation-lead-4", "TASK-P4-LEAD", workspace / "phase-manifest.json"),
@@ -435,12 +471,9 @@ class Stage4WorkflowTest(unittest.TestCase):
                 (phase4_order, "verification_executor_id", "verification-executor-4", "TASK-P4-VERIFY", workspace / "evidence-index.csv"),
                 (phase4_order, "parity_acceptance_agent_id", "parity-acceptance-4", "TASK-P4-ACCEPT", workspace / "stage-04-gate-report.json"),
             ]
-            feature_order = workspace / "feature-work-orders" / f"{feature_order_id}.json"
             phase4_receipts.extend([
-                (feature_order, "feature_owner_id", "feature-owner-4", "TASK-P4-FEATURE", workspace / "implementation-ledger.csv"),
-                (feature_order, "ui_agent_id", "ui-agent-4", "TASK-P4-UI", workspace / "visual-elements.csv"),
-                (feature_order, "business_data_agent_id", "business-data-agent-4", "TASK-P4-BIZ", workspace / "implementation-ledger.csv"),
-                (feature_order, "native_capability_agent_id", "native-capability-agent-4", "TASK-P4-NATIVE", workspace / "capability-implementation.csv"),
+                (page_order, "page_owner_id", "page-owner-4", "TASK-P4-PAGE-LOGIN", workspace / "page-implementation-ledger.csv"),
+                (capability_order, "capability_owner_id", "capability-owner-4", "TASK-P4-CAP-AUTH", workspace / "capability-implementation.csv"),
             ])
             for order_path, role_key, actor_id, task_id, artifact in phase4_receipts:
                 record_team_receipt(run_dir, order_path, role_key, actor_id, task_id, artifact)

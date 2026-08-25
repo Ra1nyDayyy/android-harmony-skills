@@ -359,6 +359,27 @@ class WorkflowTest(unittest.TestCase):
                 str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
                 "--run-dir", str(run_dir), "--phase", "1", "--write",
             )
+            review_input = run_dir / "controller" / "phase-01-review-input.json"
+            review_input.write_text(
+                json.dumps({"coverage": {}, "exceptions": [], "top_risks": []}) + "\n",
+                encoding="utf-8",
+            )
+            run(
+                sys.executable,
+                str(CONTROLLER_SKILL / "scripts" / "generate_review_summary.py"),
+                "--run-dir", str(run_dir), "--phase", "1",
+                "--gate-report", str(run_dir / "controller" / "gate-report.json"),
+                "--input", str(review_input),
+            )
+            run(
+                sys.executable,
+                str(CONTROLLER_SKILL / "scripts" / "record_human_review.py"),
+                "--run-dir", str(run_dir), "--phase", "1",
+                "--gate-report", str(run_dir / "controller" / "gate-report.json"),
+                "--review-id", "HREV-PHASE-01-WORKFLOW",
+                "--reviewer", "fixture-human-reviewer",
+                "--decision", "APPROVED",
+            )
             issued = run(
                 sys.executable,
                 str(CONTROLLER_SKILL / "scripts" / "issue_phase2_work_order.py"),

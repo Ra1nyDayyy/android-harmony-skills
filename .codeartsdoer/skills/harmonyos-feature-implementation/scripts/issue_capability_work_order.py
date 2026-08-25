@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Issue one immutable shared-capability Phase 4 work order."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from stage4_work_orders import issue_capability_order
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--capability-id", required=True)
+    parser.add_argument("--owner-id", required=True)
+    parser.add_argument("--codearts-task-id", required=True)
+    parser.add_argument("--consumer-page-id", action="append", required=True)
+    parser.add_argument("--exclusive-code-path", action="append", required=True)
+    args = parser.parse_args()
+    try:
+        path = issue_capability_order(Path(args.workspace), args.capability_id, args.owner_id, args.codearts_task_id, tuple(args.consumer_page_id), tuple(args.exclusive_code_path))
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    print(json.dumps({"work_order": str(path)}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

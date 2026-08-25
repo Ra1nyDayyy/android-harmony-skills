@@ -1,7 +1,7 @@
 interface:
   display_name: "Android Migration Inventory"
   short_description: "Discover Android pages, states, behavior, and evidence"
-  default_prompt: "Use $android-migration-inventory after Gate 1 to build and deterministically close the Phase 2 semantic inventory."
+  default_prompt: "Use $android-migration-inventory after approved Gate 1 to inventory Android pages, states, behavior, transitions, side effects, and evidence, then stop at WAITING_HUMAN_REVIEW."
 compatibility:
   canonical_format: "agent-skills"
   adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]

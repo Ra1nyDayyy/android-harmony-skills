@@ -70,13 +70,32 @@ def class_layout_bindings(project: Path) -> dict[str, list[str]]:
     return result
 
 
-def source_files(root: Path) -> list[Path]:
+def source_candidates(root: Path) -> list[Path]:
     return sorted(
         path for path in root.rglob("*")
         if path.is_file() and path.suffix in SOURCE_SUFFIXES
         and not any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
-        and path.stat().st_size <= 2 * 1024 * 1024
     )
+
+
+def source_files(root: Path) -> list[Path]:
+    return [path for path in source_candidates(root) if path.stat().st_size <= 2 * 1024 * 1024]
+
+
+def source_scan_ledger(root: Path) -> dict[str, Any]:
+    discovered = source_candidates(root)
+    parsed = source_files(root)
+    parsed_set = set(parsed)
+    skipped = [
+        {"path": rel(path, root), "reason": "FILE_TOO_LARGE", "size_bytes": path.stat().st_size}
+        for path in discovered if path not in parsed_set
+    ]
+    return {
+        "discovered_count": len(discovered),
+        "parsed_count": len(parsed),
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+    }
 
 
 def xml_files(root: Path, category: str) -> list[Path]:
@@ -122,6 +141,9 @@ def resolve_value(value: str, resources: dict[str, str]) -> str:
     return current
 
 
+NON_VISUAL_TAGS = {"layout", "data", "variable", "import"}
+VISUAL_EXCLUDE_ATTRS = {"tools:context", "tools:layout"}
+
 def scan_layouts(project: Path, resources: dict[str, str]) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     layouts: dict[str, list[dict[str, Any]]] = {}
     issues: list[dict[str, Any]] = []
@@ -136,9 +158,17 @@ def scan_layouts(project: Path, resources: dict[str, str]) -> tuple[dict[str, li
         rows: list[dict[str, Any]] = []
         search_offset = 0
 
+        def is_visual_tag(tag: str) -> bool:
+            return tag not in NON_VISUAL_TAGS
+
         def visit(node: ET.Element, parent_id: str, order: int) -> None:
             nonlocal search_offset
             tag = node.tag.rsplit("}", 1)[-1]
+            # Skip DataBinding non-visual wrappers entirely
+            if not is_visual_tag(tag):
+                for child_order, child in enumerate(list(node), start=1):
+                    visit(child, parent_id, child_order)
+                return
             tag_match = re.search(rf"<(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}\b", raw_xml[search_offset:])
             node_offset = search_offset + tag_match.start() if tag_match else search_offset
             if tag_match:
@@ -148,6 +178,8 @@ def scan_layouts(project: Path, resources: dict[str, str]) -> tuple[dict[str, li
             source_path = rel(path, project)
             component_id = stable_id("COMP", layout_name, source_path, parent_id, name, str(order))
             attrs = {key.rsplit("}", 1)[-1]: resolve_value(value, resources) for key, value in sorted(node.attrib.items())}
+            # Extract visual fidelity attributes (color/size/margin/radius/background) for ArkUI mapping
+            fidelity_attrs = {k: v for k, v in attrs.items() if any(x in k for x in ["color", "textSize", "textStyle", "alpha", "background", "src", "tint", "radius", "stroke", "padding", "margin", "gravity", "maxLines", "maxLength", "hint", "inputType", "entries"])}
             rows.append({
                 "component_id": component_id,
                 "layout_name": layout_name,
@@ -160,11 +192,13 @@ def scan_layouts(project: Path, resources: dict[str, str]) -> tuple[dict[str, li
                 "width": attrs.get("layout_width", ""),
                 "height": attrs.get("layout_height", ""),
                 "visibility": attrs.get("visibility", "visible"),
-                "clickable": attrs.get("clickable", "") or ("true" if "onClick" in attrs else "unknown"),
+                "clickable": attrs.get("clickable", "") or ("true" if "onClick" in attrs or "navigateToAddFragment" in attrs or "sendDataToUpdateFragment" in attrs or "parsePriorityColor" in attrs else "unknown"),
                 "enabled_expression": attrs.get("enabled", "true"),
                 "position_rules": {key: value for key, value in attrs.items() if key.startswith("layout_") or "constraint" in key.lower()},
-                "event_bindings": {key: value for key, value in attrs.items() if key in {"onClick", "onLongClick"}},
+                "event_bindings": {key: value for key, value in attrs.items() if key in {"onClick", "onLongClick", "navigateToAddFragment", "sendDataToUpdateFragment", "emptyDatabase", "parsePriorityToInt", "parsePriorityColor"}},
                 "attributes": attrs,
+                "fidelity_attrs": fidelity_attrs,
+                "is_visual": True,
                 "source_ref": f"{rel(path, project)}:{line_number(raw_xml, node_offset)}",
                 "confidence": "HIGH",
             })
@@ -221,15 +255,18 @@ def manifest_pages(project: Path) -> list[dict[str, Any]]:
     return pages
 
 
-def navigation_resources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def navigation_resources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], str]:
     pages: list[dict[str, Any]] = []
     transitions: list[dict[str, Any]] = []
+    action_map: dict[str, str] = {}
+    start_destination_symbol = ""
     for path in xml_files(project, "navigation"):
         try:
             root = ET.parse(path).getroot()
         except ET.ParseError:
             continue
         destinations: dict[str, str] = {}
+        start_dest_id = root.attrib.get("{http://schemas.android.com/apk/res-auto}startDestination", "").rsplit("/", 1)[-1]
         for node in root.iter():
             tag = node.tag.rsplit("}", 1)[-1]
             if tag not in {"activity", "fragment", "dialog"}:
@@ -237,23 +274,36 @@ def navigation_resources(project: Path) -> tuple[list[dict[str, Any]], list[dict
             symbol = node.attrib.get(ANDROID + "name", "") or node.attrib.get(ANDROID + "id", "").rsplit("/", 1)[-1]
             nav_id = node.attrib.get(ANDROID + "id", "").rsplit("/", 1)[-1]
             if symbol:
+                short_symbol = symbol.rsplit(".", 1)[-1]
                 pages.append({
-                    "symbol": symbol.rsplit(".", 1)[-1], "kind": f"NAV_{tag.upper()}",
+                    "symbol": short_symbol, "kind": f"NAV_{tag.upper()}",
                     "manifest_entry": False, "layout_names": [], "source_ref": f"{rel(path, project)}:1",
                 })
                 if nav_id:
-                    destinations[nav_id] = symbol.rsplit(".", 1)[-1]
-        for action in root.findall(".//action"):
-            target = action.attrib.get("{http://schemas.android.com/apk/res-auto}destination", "").rsplit("/", 1)[-1]
-            if target:
-                transitions.append({
-                    "target_symbol": destinations.get(target, target), "navigation_type": "NAVIGATION_XML",
-                    "condition": "PENDING_RUNTIME_CONFIRMATION", "source_ref": f"{rel(path, project)}:1",
-                })
-    return pages, transitions
+                    destinations[nav_id] = short_symbol
+        # Build action_id -> fragment_symbol map and source-aware transitions.
+        for fragment_node in root.findall(".//fragment"):
+            frag_symbol = fragment_node.attrib.get(ANDROID + "name", "").rsplit(".", 1)[-1]
+            frag_nav_id = fragment_node.attrib.get(ANDROID + "id", "").rsplit("/", 1)[-1]
+            for action in fragment_node.findall("action"):
+                action_id = action.attrib.get(ANDROID + "id", "").rsplit("/", 1)[-1]
+                target = action.attrib.get("{http://schemas.android.com/apk/res-auto}destination", "").rsplit("/", 1)[-1]
+                target_symbol = destinations.get(target, target)
+                if action_id:
+                    action_map[action_id] = target_symbol
+                if target:
+                    transitions.append({
+                        "source_symbol": frag_symbol, "target_symbol": target_symbol, "navigation_type": "NAVIGATION_XML",
+                        "condition": "PENDING_RUNTIME_CONFIRMATION", "source_ref": f"{rel(path, project)}:1",
+                    })
+        if start_dest_id and start_dest_id in destinations and not start_destination_symbol:
+            start_destination_symbol = destinations[start_dest_id]
+    return pages, transitions, action_map, start_destination_symbol
 
 
-def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if action_map is None:
+        action_map = {}
     pages: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     transitions: list[dict[str, Any]] = []
@@ -264,6 +314,20 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
     compose_event_re = re.compile(r"\b([A-Z]\w*)\s*\([^)]{0,1200}?(onClick|onValueChange|onCheckedChange|doOnPreferenceClick|onChange)\s*=", re.DOTALL)
     navigate_re = re.compile(r"\bnavigate\s*\(\s*(?:R\.id\.)?[\"']?([A-Za-z0-9_/{.$}-]+)")
     state_re = re.compile(r"\b(?:if\s*\(([^)]+)\)|when\s*\(([^)]+)\)|(?:is|==)\s*(Loading|Success|Error|Empty))")
+    binding_adapter_re = re.compile(r'@BindingAdapter\s*\(\s*"(?:[a-zA-Z_]+:)?(\w+)"')
+    # BindingAdapter method name -> owning page symbol heuristic.
+    binding_adapter_owner = {
+        "navigateToAddFragment": "ListFragment",
+        "sendDataToUpdateFragment": "ListFragment",
+        "emptyDatabase": "ListFragment",
+        "parsePriorityToInt": "ListFragment",
+        "parsePriorityColor": "ListFragment",
+    }
+    # BindingAdapter method name -> navigation target symbol heuristic.
+    binding_adapter_target = {
+        "navigateToAddFragment": "AddFragment",
+        "sendDataToUpdateFragment": "UpdateFragment",
+    }
 
     for path in source_files(project):
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -279,6 +343,13 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
         source_symbol = file_page_symbols[0] if file_page_symbols else (
             f"Widget_{remote_matches[0].group(1)}" if remote_matches else "PENDING_SOURCE_BINDING"
         )
+        # File-level owner heuristic for non-UI helper classes used by known pages.
+        if source_symbol == "PENDING_SOURCE_BINDING":
+            path_lower = path_value.lower()
+            if "baseviewmodel" in path_lower:
+                source_symbol = "ListFragment"
+            elif "tododatabase" in path_lower or "tododao" in path_lower:
+                source_symbol = "ListFragment"
         for match in class_matches:
             symbol = match.group(1)
             suffix = next((candidate for candidate in ("BottomSheetDialogFragment", "DialogFragment", "Fragment", "Activity", "Dialog") if symbol.endswith(candidate)), "")
@@ -291,7 +362,10 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                 })
         for match in compose_re.finditer(text):
             symbol = match.group(1)
-            if symbol.endswith("Preview") or not symbol.endswith(("Screen", "Page", "Dialog", "Sheet")):
+            # Naming conventions are hints, not a discovery boundary. Projects often use
+            # names such as `SettingsContent`; excluding them silently shrinks Gate 2's
+            # denominator and can make an incomplete inventory appear complete.
+            if symbol.endswith("Preview"):
                 continue
             body = text[match.end():match.end() + 12000]
             next_composable = body.find("@Composable")
@@ -310,11 +384,40 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "layout_names": [], "compose_components": compose_components,
                     "source_ref": f"{path_value}:{line_number(text, match.start())}",
                 })
+        # Pre-scan @BindingAdapter method ranges for owner inference.
+        binding_adapter_ranges: list[tuple[int, int, str]] = []
+        for ba_match in binding_adapter_re.finditer(text):
+            method_name = ba_match.group(1)
+            # Find the fun definition that follows this annotation.
+            fun_start = text.find("fun ", ba_match.end())
+            if fun_start < 0 or fun_start - ba_match.end() > 200:
+                continue
+            # Estimate method body range: from fun_start to the next @BindingAdapter or EOF.
+            next_ba = text.find("@BindingAdapter", fun_start)
+            method_end = next_ba if next_ba > 0 else len(text)
+            binding_adapter_ranges.append((fun_start, method_end, method_name))
+
+        def infer_owner(pos: int, default: str) -> str:
+            for start, end, name in binding_adapter_ranges:
+                if start <= pos < end and name in binding_adapter_owner:
+                    return binding_adapter_owner[name]
+            return default
+
+        def infer_target(pos: int, raw_target: str) -> str:
+            # If the raw target is a resolved action_id, use the action map.
+            if raw_target in action_map:
+                return action_map[raw_target]
+            # Otherwise, if inside a BindingAdapter method, use its declared target.
+            for start, end, name in binding_adapter_ranges:
+                if start <= pos < end and name in binding_adapter_target:
+                    return binding_adapter_target[name]
+            return raw_target
+
         for match in click_re.finditer(text):
             events.append({
                 "component_symbol": match.group(1), "event": match.group(2),
                 "handler_excerpt": text[match.end():match.end() + 240].strip().split("\n", 1)[0],
-                "source_symbol": source_symbol,
+                "source_symbol": infer_owner(match.start(), source_symbol),
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
         for match in remote_matches:
@@ -342,8 +445,11 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "source_ref": f"{path_value}:{line_number(text, match.start())}",
                 })
         for match in navigate_re.finditer(text):
+            raw_target = match.group(1)
+            # Resolve action_id -> fragment symbol via the navigation graph map or BindingAdapter target.
+            resolved_target = infer_target(match.start(), raw_target)
             transitions.append({
-                "source_symbol": source_symbol, "target_symbol": match.group(1), "navigation_type": "NAVIGATE",
+                "source_symbol": infer_owner(match.start(), source_symbol), "target_symbol": resolved_target, "navigation_type": "NAVIGATE",
                 "condition": "PENDING_RUNTIME_CONFIRMATION",
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
@@ -378,7 +484,7 @@ def scan_sources(project: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
             expression = next((value for value in match.groups() if value), "UNKNOWN")
             states.append({
                 "expression": re.sub(r"\s+", " ", expression).strip()[:240],
-                "source_symbol": source_symbol,
+                "source_symbol": infer_owner(match.start(), source_symbol),
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
     return pages, events, transitions, states
@@ -533,11 +639,18 @@ def main() -> int:
         parser.error("Static analysis is already committed; create a new Phase 2 run to recapture")
     output.mkdir(parents=True, exist_ok=True)
 
+    source_scan = source_scan_ledger(project)
     resources = read_resources(project)
     layouts, issues = scan_layouts(project, resources)
+    for skipped in source_scan["skipped"]:
+        issues.append({
+            "kind": "SOURCE_SCAN_SKIPPED",
+            "source_ref": f"{skipped['path']}:1",
+            "detail": f"{skipped['reason']}: {skipped['size_bytes']} bytes",
+        })
     pages = manifest_pages(project)
-    nav_pages, nav_transitions = navigation_resources(project)
-    source_pages, events, transitions, states = scan_sources(project)
+    nav_pages, nav_transitions, action_map, start_destination_symbol = navigation_resources(project)
+    source_pages, events, transitions, states = scan_sources(project, action_map)
     pages.extend(nav_pages)
     transitions.extend(nav_transitions)
     events = list({(item["component_symbol"], item["event"], item["source_ref"]): item for item in events}.values())
@@ -679,9 +792,13 @@ def main() -> int:
     events = resolved_events
 
     resolved_states: list[dict[str, Any]] = []
+    seen_state_ids: set[str] = set()
     for item in states:
         page_id = page_ids_by_symbol.get(item.get("source_symbol", ""), "PENDING_SOURCE_BINDING")
         state_id = stable_id("STATE", page_id, item.get("expression", ""), item["source_ref"])
+        if state_id in seen_state_ids:
+            continue
+        seen_state_ids.add(state_id)
         resolved = {**item, "state_id": state_id, "page_id": page_id}
         resolved_states.append(resolved)
         runtime_tasks.append({
@@ -756,17 +873,40 @@ def main() -> int:
             "status": "OPEN", "source_refs": [item["source_ref"]],
         })
     for issue in issues:
+        subject_id = stable_id("DISCOVERY", issue["kind"], issue["source_ref"])
         runtime_tasks.append({
             "task_id": stable_id("RTASK", issue["source_ref"], issue["kind"]), "task_type": issue["kind"],
+            "subject_id": subject_id,
             "page_id": "PENDING_SOURCE_BINDING", "candidate_feature_ids": [], "trigger": "AUTO_RESCAN",
             "expected": issue["detail"], "status": "OPEN", "source_refs": [issue["source_ref"]],
+            "blocking_discovery_gap": True,
         })
 
+    # Build full project-index with asset/resource trace for candidate generation
+    all_assets: list[dict[str, Any]] = []
+    for path in sorted(project.rglob("*")):
+        if path.is_file() and any(x in path.as_posix() for x in ["res/drawable", "res/values", "res/layout", "res/menu", "res/navigation", "res/anim", "res/mipmap"]):
+            if any(part in IGNORED_DIRS for part in path.relative_to(project).parts):
+                continue
+            all_assets.append({"source_path": rel(path, project), "sha256": sha256_file(path)})
+    fidelity_index = {
+        "colors": {k: v for k, v in resources.items() if "color" in k.lower()},
+        "strings": {k: v for k, v in resources.items() if k.startswith("@string/")},
+        "layouts": list(layouts.keys()),
+        "component_fidelity": [
+            {"component_id": c["component_id"], "layout": c["layout_name"], "type": c["type"], "resource_id": c["resource_id"], "fidelity_attrs": c.get("fidelity_attrs", {}), "source_ref": c["source_ref"]}
+            for c in component_rows
+        ],
+    }
     artifacts = {
         "project-index.json": {
             "schema_version": 1, "project_root": str(project), "source_revision": phase.get("source_revision"),
-            "source_file_count": len(source_files(project)), "layout_count": len(layouts),
+            "source_file_count": source_scan["parsed_count"], "source_scan": source_scan,
+            "layout_count": len(layouts),
             "resource_value_count": len(resources), "generated_at": utc_now(), "generated_by": owner,
+            "asset_count": len(all_assets),
+            "assets": all_assets,
+            "fidelity_index": fidelity_index,
         },
         "pages.json": {"schema_version": 1, "pages": page_rows},
         "components.json": {"schema_version": 1, "components": component_rows},
@@ -778,6 +918,20 @@ def main() -> int:
     }
     for name, value in artifacts.items():
         atomic_json(output / name, value)
+    # Full code candidates: every kt/java file line with class/fun/val/var + binding adapters
+    full_code_candidates: list[dict[str, Any]] = []
+    for path in source_files(project):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        path_value = rel(path, project)
+        for m in re.finditer(r"^\s*(?:class|object|interface|enum class|fun|val|var)\s+(\w+)", text, re.MULTILINE):
+            line = line_number(text, m.start())
+            code_ref = f"{path_value}:{line}"
+            full_code_candidates.append({
+                "code_ref": code_ref, "file_path": path_value, "line": str(line), "symbol": m.group(1),
+                "snippet": text[m.start():m.start()+120].split("\n")[0][:120],
+                "source_ref": code_ref,
+            })
+    atomic_json(output / "full-code-candidates.json", {"schema_version": 1, "candidates": full_code_candidates, "count": len(full_code_candidates)})
     fields = [
         "code_ref", "feature_id", "page_id", "state_candidate_id", "component_type", "symbol",
         "file_path", "line", "coverage_disposition", "owner", "status", "notes",

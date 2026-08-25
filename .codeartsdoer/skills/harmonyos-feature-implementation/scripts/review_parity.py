@@ -239,7 +239,7 @@ def main() -> int:
         android_screenshot = android_dir / "screenshot.png"
         android_layout = android_dir / "layout.json"
         harmony_screenshot = harmony_dir / "screenshot.png"
-        harmony_tree = harmony_dir / "ui-tree.json"
+        harmony_tree = harmony_dir / "ui-test-snapshot.json"
         harmony_assertions = harmony_dir / "assertions.json"
         for path in (
             android_screenshot, android_layout, harmony_screenshot, harmony_tree,
@@ -271,10 +271,22 @@ def main() -> int:
         assertion_value = load_json(harmony_assertions)
         if android_layout_value in ({}, [], None):
             raise ValueError("Android layout evidence is empty")
-        if not isinstance(harmony_tree_value, dict) or any(
-            not harmony_tree_value.get(field) for field in ("window", "root", "nodes", "bounds", "device")
+        snapshot_binding = harmony_metadata.get("ui_test_snapshot")
+        components = (
+            harmony_tree_value.get("components")
+            if isinstance(harmony_tree_value, dict) else None
+        )
+        if (
+            not isinstance(snapshot_binding, dict)
+            or snapshot_binding.get("path") != "ui-test-snapshot.json"
+            or snapshot_binding.get("sha256") != sha256_file(harmony_tree)
+            or not isinstance(harmony_tree_value, dict)
+            or harmony_tree_value.get("probe_id")
+            != f"{parity.get('page_id')}::{parity.get('state_id')}"
+            or not isinstance(components, list)
+            or not components
         ):
-            raise ValueError("Harmony UI-tree evidence is incomplete")
+            raise ValueError("Harmony UiTest component snapshot evidence is incomplete")
         generated_assertions = (
             assertion_value.get("assertions") if isinstance(assertion_value, dict) else None
         )
@@ -393,7 +405,7 @@ def main() -> int:
         "android_layout_sha256": sha256_file(android_layout),
         "harmony_manifest_sha256": sha256_file(harmony_dir / "manifest.sha256"),
         "harmony_screenshot_sha256": sha256_file(harmony_screenshot),
-        "harmony_ui_tree_sha256": sha256_file(harmony_tree),
+        "harmony_ui_test_snapshot_sha256": sha256_file(harmony_tree),
         "harmony_assertions_sha256": sha256_file(harmony_assertions),
         "reviewer_id": reviewer,
         "reviewed_at": reviewed_at,
@@ -437,7 +449,7 @@ def main() -> int:
                     "android_layout_sha256": review_record["android_layout_sha256"],
                     "harmony_manifest_sha256": review_record["harmony_manifest_sha256"],
                     "harmony_screenshot_sha256": review_record["harmony_screenshot_sha256"],
-                    "harmony_ui_tree_sha256": review_record["harmony_ui_tree_sha256"],
+                    "harmony_ui_test_snapshot_sha256": review_record["harmony_ui_test_snapshot_sha256"],
                     "harmony_assertions_sha256": review_record["harmony_assertions_sha256"],
                     "comparison_sha256": sha256_file(review_path),
                     "reviewer_id": reviewer,

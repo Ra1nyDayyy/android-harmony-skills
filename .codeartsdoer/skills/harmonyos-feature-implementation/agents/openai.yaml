@@ -1,6 +1,6 @@
 interface:
   display_name: "HarmonyOS Feature Implementation"
-  short_description: "Implement and verify Android feature parity on HarmonyOS"
-  default_prompt: "Use $harmonyos-feature-implementation to implement frozen Android features in HarmonyOS and verify every state on the emulator."
+  short_description: "Implement and prove page-owned Android-to-ArkUI parity"
+  default_prompt: "Use $harmonyos-feature-implementation after approved Gate 3. Assign one UI_UNDERSTANDING_AND_CONVERSION_AGENT per Page-ID to consume frozen Phase 2 JSON, CSV, and evidence, produce arkts-page-plan, and convert it to ArkTS without cross-page reuse or deleting components, states, transitions, or changing carrier. Issue one PAGE_WORK_ORDER per Page-ID and separate CAPABILITY_WORK_ORDER records; verify with emulator screenshots, UiTest interactions and component queries, functional and side-effect assertions, then stop at WAITING_HUMAN_REVIEW."
 policy:
   allow_implicit_invocation: true

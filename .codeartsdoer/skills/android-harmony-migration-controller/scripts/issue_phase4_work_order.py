@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from _human_gate import require_current_human_approval
+
 from _team_execution import validate_order_receipts
 
 
@@ -194,6 +196,10 @@ def main() -> int:
     if recheck.returncode != 0:
         detail = recheck.stderr.strip() or recheck.stdout.strip()
         parser.error(f"Gate 3 baseline changed after its recorded PASS: {detail[:800]}")
+    try:
+        human_review = require_current_human_approval(run_dir, 3, gate_path)
+    except ValueError as exc:
+        parser.error(f"Current human approval is required after Gate 3 recheck: {exc}")
 
     controller_ownership = scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {}
     controller_id = controller_ownership.get("migration_controller_id")
@@ -350,6 +356,9 @@ def main() -> int:
         "scope_sha256": scope_sha256,
         "controller_gate3_snapshot_relative_path": gate_snapshot_relative,
         "controller_gate3_sha256": gate_sha256,
+        "human_review_id": human_review["review_id"],
+        "human_review_decision": human_review["decision"],
+        "human_review_gate_sha256": human_review["gate_report_sha256"],
         "upstream_phase3_work_order_id": phase3_order.get("work_order_id"),
         "upstream_phase3_work_order_relative_path": active_phase3[0].get("relative_path"),
         "upstream_phase3_work_order_sha256": sha256_file(phase3_order_path),

@@ -1,7 +1,7 @@
 interface:
   display_name: "Android-Harmony Migration Controller"
   short_description: "Govern a complete Android-to-HarmonyOS migration"
-  default_prompt: "Use $android-harmony-migration-controller to run Phases 1-4 continuously and stop only on a canonical blocking gate."
+  default_prompt: "Use $android-harmony-migration-controller to run Phases 1-4 in one governed task, stopping at WAITING_HUMAN_REVIEW after every machine gate."
 compatibility:
   canonical_format: "agent-skills"
   adapter_targets: ["openai", "claude", "agent-skills", "vscode", "generic"]

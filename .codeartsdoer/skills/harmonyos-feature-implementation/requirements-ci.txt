@@ -1,1 +1,2 @@
 # Standard-library production scripts; PyYAML is required only by external YAO validation tooling.
+Pillow>=10.4,<12

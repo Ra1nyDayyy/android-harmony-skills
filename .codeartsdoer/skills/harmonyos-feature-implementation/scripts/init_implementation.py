@@ -35,6 +35,8 @@ from _common import (
     validate_id,
     write_csv,
 )
+from page_acceptance_contract import compile_page_contracts, publish_page_contracts
+from prepare_uitest_probe import prepare_uitest_probe
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -117,12 +119,12 @@ BASE_CATEGORY_MAP = {
 SERIAL_CATEGORIES = {
     "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET",
     "NETWORK_PROFILE", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE",
-    "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
+    "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 }
 BUNDLE_CATEGORIES = {
     "BUNDLE_CHECK", "SIGNING_CHECK", "CLEAN_INSTALL", "SEED_RESET", "PERMISSION_PROFILE",
     "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE",
-    "UI_TREE_CAPTURE",
+    "UITEST_SNAPSHOT_CAPTURE",
 }
 BUSINESS_PROFILE_FIELDS = (
     "account_id", "account_role", "seed_data_id", "seed_reset_ref",
@@ -1585,6 +1587,16 @@ def main() -> int:
                 csv_fieldnames(ASSETS / "feature-work-order-registry.template.csv"),
                 [],
             )
+            write_csv(
+                temp_dir / "page-work-order-registry.csv",
+                csv_fieldnames(ASSETS / "page-work-order-registry.template.csv"),
+                [],
+            )
+            write_csv(
+                temp_dir / "capability-work-order-registry.csv",
+                csv_fieldnames(ASSETS / "capability-work-order-registry.template.csv"),
+                [],
+            )
             write_csv(temp_dir / "parity-map.csv", csv_fieldnames(ASSETS / "parity-map.template.csv"), parity_rows)
             write_csv(
                 temp_dir / "visual-elements.csv",
@@ -1614,17 +1626,56 @@ def main() -> int:
                 temp_dir / "migration-unit-contracts.json",
                 {"schema_version": 1, "units": migration_units},
             )
-
-            inspector_bridge = temp_dir / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
-            inspector_bridge.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(
-                ASSETS / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets",
-                inspector_bridge,
+            page_contracts = compile_page_contracts(phase2, phase3, tuple(sorted(h4env_ids)))
+            page_contract_registry = publish_page_contracts(page_contracts, temp_dir)
+            if [str(row["page_id"]) for row in page_contract_registry] != sorted(
+                {row["page_id"] for row in inventory}
+            ):
+                raise ValueError("Published page contracts do not exactly cover active Phase 2 pages")
+            page_contract_by_id = {str(contract["page_id"]): contract for contract in page_contracts}
+            write_csv(
+                temp_dir / "page-implementation-ledger.csv",
+                csv_fieldnames(ASSETS / "page-implementation-ledger.template.csv"),
+                [
+                    {
+                        "page_id": row["page_id"],
+                        "work_order_id": "",
+                        "owner_id": "",
+                        "ui_understanding_agent_id": "",
+                        "codearts_task_id": "",
+                        "contract_sha256": row["contract_sha256"],
+                        "state_ids": join_multi(
+                            str(state["state_id"])
+                            for state in page_contract_by_id[str(row["page_id"])]["states"]
+                        ),
+                        "exclusive_code_paths": "[]",
+                        "status": "NOT_STARTED",
+                        "updated_at": "",
+                    }
+                    for row in page_contract_registry
+                ],
             )
+            page_contract_lock_records = [
+                {
+                    "page_id": row["page_id"],
+                    "relative_path": row["relative_path"],
+                    "sha256": row["contract_sha256"],
+                }
+                for row in page_contract_registry
+            ]
+
+            probe_generation = prepare_uitest_probe(temp_dir)
+            probe_manifest = temp_dir / "ui-test-snapshot-generation-manifest.json"
+            if Path(probe_generation["manifest"]) != probe_manifest:
+                raise ValueError("UiTest snapshot generation returned a non-canonical manifest path")
 
             make_tree_read_only(temp_dir / "inputs")
             make_tree_read_only(temp_dir / "environments")
-            make_tree_read_only(temp_dir / "tools")
+            if (temp_dir / "tools").is_dir():
+                make_tree_read_only(temp_dir / "tools")
+            make_tree_read_only(temp_dir / "page-contracts")
+            make_tree_read_only(temp_dir / "arkts-page-plans")
+            (temp_dir / "page-contract-registry.csv").chmod(0o444)
             input_lock = {
                 "schema_version": "1.0",
                 "stage": 4,
@@ -1647,10 +1698,19 @@ def main() -> int:
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
                 "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                 "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
-                "arkui_inspector_bridge": {
-                    "relative_path": "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets",
-                    "sha256": sha256_file(inspector_bridge),
-                    "contract": "arkui-inspector-bridge-v1",
+                "page_contract_registry": {
+                    "relative_path": "page-contract-registry.csv",
+                    "sha256": sha256_file(temp_dir / "page-contract-registry.csv"),
+                    "schema_sha256": sha256_file(ASSETS / "page-acceptance-contract.schema.json"),
+                },
+                "page_contracts": page_contract_lock_records,
+                "ui_test_snapshot_generation": {
+                    "relative_path": "ui-test-snapshot-generation-manifest.json",
+                    "sha256": sha256_file(probe_manifest),
+                    "generation_id": probe_generation["generation_id"],
+                    "page_ids": probe_generation["page_ids"],
+                    "probe_count": probe_generation["probe_count"],
+                    "contract": "ui-test-snapshot-generation-v1",
                     "production_packaging": "FORBIDDEN",
                 },
             }
@@ -1680,6 +1740,7 @@ def main() -> int:
                     "initial_project_snapshot_sha256": initial_snapshot["snapshot_sha256"],
                     "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                     "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
+                    "page_contract_registry_sha256": sha256_file(temp_dir / "page-contract-registry.csv"),
                     "formal_evidence_device_type": "emulator",
                     "mp4_allowed": False,
                     "source_first_assets_required": True,
@@ -1691,6 +1752,8 @@ def main() -> int:
                 temp_dir / "initial-project-snapshot.json",
                 temp_dir / "asset-conversion-contracts.json",
                 temp_dir / "migration-unit-contracts.json",
+                temp_dir / "page-contract-registry.csv",
+                temp_dir / "ui-test-snapshot-generation-manifest.json",
             ):
                 frozen_record.chmod(0o444)
             temp_dir.rename(phase_dir)

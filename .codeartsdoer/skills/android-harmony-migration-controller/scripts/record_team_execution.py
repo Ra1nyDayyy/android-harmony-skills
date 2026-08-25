@@ -17,13 +17,24 @@ from _team_execution import ID_RE, expected_actors, load_json, read_registry, sa
 
 
 FIELDS = [
-    "receipt_id", "phase", "work_order_id", "role_key", "actor_id",
-    "platform_task_id", "relative_path", "receipt_sha256", "status", "recorded_at",
+    "receipt_id", "phase", "work_order_id", "work_order_sha256", "role_key", "actor_id",
+    "platform_task_id", "started_at", "ended_at", "terminal_task_state",
+    "relative_path", "receipt_sha256", "status", "recorded_at",
 ]
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_instant(value: str, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"{label} must be an ISO-8601 timestamp with timezone") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must include a timezone")
+    return parsed
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -84,6 +95,9 @@ def main() -> int:
     parser.add_argument("--role-key", required=True)
     parser.add_argument("--actor-id", required=True)
     parser.add_argument("--platform-task-id", required=True, help="Real CodeArts worker/task execution ID")
+    parser.add_argument("--started-at", required=True, help="CodeArts task start timestamp")
+    parser.add_argument("--ended-at", required=True, help="CodeArts task terminal timestamp")
+    parser.add_argument("--terminal-task-state", required=True, choices=("SUCCEEDED",))
     parser.add_argument("--artifact", action="append", required=True, help="Run-relative file produced or reviewed by this worker")
     args = parser.parse_args()
 
@@ -98,6 +112,14 @@ def main() -> int:
             parser.error("Role and actor do not match the immutable work order")
         if not ID_RE.fullmatch(args.platform_task_id):
             parser.error("Platform task ID is invalid")
+        if order.get("schema_version") in {"page-work-order-v1", "capability-work-order-v1"}:
+            if args.platform_task_id != order.get("codearts_task_id"):
+                parser.error("Platform task ID differs from the page/capability order binding")
+        started_at = parse_instant(args.started_at, "started-at")
+        ended_at = parse_instant(args.ended_at, "ended-at")
+        if ended_at < started_at:
+            parser.error("ended-at must not precede started-at")
+        work_order_sha256 = sha256_file(order_path)
         artifact_records = []
         for relative in args.artifact:
             artifact_path = safe_file(run_dir, relative, "worker artifact")
@@ -127,9 +149,13 @@ def main() -> int:
             "receipt_id": receipt_id,
             "phase": phase,
             "work_order_id": work_order_id,
+            "work_order_sha256": work_order_sha256,
             "role_key": args.role_key,
             "actor_id": args.actor_id,
             "platform_task_id": args.platform_task_id,
+            "started_at": args.started_at,
+            "ended_at": args.ended_at,
+            "terminal_task_state": args.terminal_task_state,
             "status": "COMPLETED",
             "recorded_at": recorded_at,
             "artifacts": artifact_records,
@@ -140,9 +166,13 @@ def main() -> int:
             "receipt_id": receipt_id,
             "phase": str(phase),
             "work_order_id": work_order_id,
+            "work_order_sha256": work_order_sha256,
             "role_key": args.role_key,
             "actor_id": args.actor_id,
             "platform_task_id": args.platform_task_id,
+            "started_at": args.started_at,
+            "ended_at": args.ended_at,
+            "terminal_task_state": args.terminal_task_state,
             "relative_path": relative,
             "receipt_sha256": sha256_file(receipt_path),
             "status": "COMPLETED",

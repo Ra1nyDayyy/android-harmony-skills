@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deterministic page-state comparison verdict",
+  "type": "object",
+  "required": ["schema_version", "page_id", "state_id", "source_env_id", "page_contract_sha256", "page_contract_registry_sha256", "input_lock_sha256", "evidence_manifest_sha256", "machine_verdict", "results"],
+  "properties": {
+    "schema_version": {"const": "comparison-result-v1"},
+    "page_id": {"type": "string", "minLength": 1},
+    "state_id": {"type": "string", "minLength": 1},
+    "source_env_id": {"type": "string", "minLength": 1},
+    "page_contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "page_contract_registry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "machine_verdict": {"enum": ["PASS", "FAIL"]},
+    "results": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["comparison_id", "category", "passed", "expected_sha256", "actual_sha256", "metrics", "differences"],
+        "properties": {
+          "comparison_id": {"type": "string", "minLength": 1},
+          "category": {"enum": ["carrier", "component-tree", "geometry", "screenshot", "behavior", "side-effect", "navigation"]},
+          "passed": {"type": "boolean"},
+          "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "actual_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "metrics": {"type": "object"},
+          "differences": {"type": "array", "items": {"type": "object"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

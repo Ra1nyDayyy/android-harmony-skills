@@ -44,9 +44,12 @@ from _stage4_audit import (
     verify_sealed_package,
     verify_upstream_closure,
 )
+from page_acceptance_contract import REGISTRY_FIELDS, canonical_contract_sha256, validate_page_id
+from stage4_work_orders import _page_contracts, _registered_orders, validate_order_coverage
 
 
 PHASE_NAME = "phase-04-harmony-implementation"
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
 ROLE_KEYS = {
     "implementation_lead_id",
     "visual_asset_agent_id",
@@ -60,9 +63,10 @@ INPUT_LOCK_KEYS = {
     "phase3_work_order_sha256", "inputs", "android_evidence",
     "phase2_asset_files", "h4envs", "asset_conversion_contracts_sha256",
     "migration_unit_contracts_sha256",
+    "page_contract_registry", "page_contracts",
     "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
     "phase3_source_snapshot_sha256",
-    "arkui_inspector_bridge",
+    "ui_test_snapshot_generation",
 }
 INPUT_RECORD_KEYS = {"label", "source_path", "snapshot_path", "sha256", "size"}
 ANDROID_RECORD_KEYS = {
@@ -127,7 +131,7 @@ HREV_KEYS = {
     "inventory_id", "android_evidence_id", "harmony_evidence_id",
     "android_manifest_sha256", "android_screenshot_sha256",
     "android_layout_sha256", "harmony_manifest_sha256",
-    "harmony_screenshot_sha256", "harmony_ui_tree_sha256",
+    "harmony_screenshot_sha256", "harmony_ui_test_snapshot_sha256",
     "harmony_assertions_sha256", "reviewer_id", "reviewed_at", "decision",
     "attestations",
 }
@@ -453,22 +457,75 @@ def validate_upstream_and_work_order(
     manifest = object_json(workspace / "phase-manifest.json", "Phase 4 manifest")
     input_lock = object_json(workspace / "stage-04-input-lock.json", "Phase 4 input lock")
     require(set(input_lock) == INPUT_LOCK_KEYS, "Phase 4 input-lock root keys differ")
-    bridge = input_lock.get("arkui_inspector_bridge")
-    bridge_path = workspace / "tools" / "arkui-inspector-bridge" / "ArkUIInspectorBridge.ets"
+    generation = input_lock.get("ui_test_snapshot_generation")
+    generation_path = workspace / "ui-test-snapshot-generation-manifest.json"
     require(
-        isinstance(bridge, dict)
-        and set(bridge) == {"relative_path", "sha256", "contract", "production_packaging"}
-        and bridge.get("relative_path")
-        == "tools/arkui-inspector-bridge/ArkUIInspectorBridge.ets"
-        and bridge.get("contract") == "arkui-inspector-bridge-v1"
-        and bridge.get("production_packaging") == "FORBIDDEN"
-        and bridge_path.is_file()
-        and bridge.get("sha256") == sha256_file(bridge_path)
-        and not bridge_path.stat().st_mode & 0o222,
-        "Phase 4 ArkUI Inspector bridge is missing, mutable, or hash-mismatched",
+        isinstance(generation, dict)
+        and set(generation) == {
+            "relative_path", "sha256", "generation_id", "page_ids", "probe_count",
+            "contract", "production_packaging",
+        }
+        and generation.get("relative_path") == "ui-test-snapshot-generation-manifest.json"
+        and generation.get("contract") == "ui-test-snapshot-generation-v1"
+        and generation.get("production_packaging") == "FORBIDDEN"
+        and generation_path.is_file()
+        and generation.get("sha256") == sha256_file(generation_path)
+        and not generation_path.stat().st_mode & 0o222,
+        "Phase 4 UiTest generation manifest is missing, mutable, or hash-mismatched",
     )
     require(input_lock.get("schema_version") == "1.0" and input_lock.get("stage") == 4,
             "Phase 4 input-lock schema/stage differs")
+    page_registry_lock = input_lock.get("page_contract_registry")
+    require(
+        isinstance(page_registry_lock, dict)
+        and set(page_registry_lock) == {"relative_path", "sha256", "schema_sha256"}
+        and page_registry_lock.get("relative_path") == "page-contract-registry.csv"
+        and page_registry_lock.get("schema_sha256") == sha256_file(
+            ASSETS / "page-acceptance-contract.schema.json"
+        ),
+        "Phase 4 page-contract registry lock differs",
+    )
+    registry_path = workspace / "page-contract-registry.csv"
+    require(
+        registry_path.is_file() and not registry_path.stat().st_mode & 0o222
+        and page_registry_lock.get("sha256") == sha256_file(registry_path),
+        "Phase 4 page-contract registry is missing, mutable, or hash-mismatched",
+    )
+    with registry_path.open(encoding="utf-8", newline="") as stream:
+        registry_rows = list(csv.DictReader(stream))
+    require(registry_rows and list(registry_rows[0]) == REGISTRY_FIELDS,
+            "Phase 4 page-contract registry header differs")
+    lock_rows = input_lock.get("page_contracts")
+    require(isinstance(lock_rows, list) and lock_rows, "Phase 4 page-contract lock records are missing")
+    contract_locks: dict[str, dict[str, Any]] = {}
+    for raw in lock_rows:
+        require(isinstance(raw, dict) and set(raw) == {"page_id", "relative_path", "sha256"},
+                "Phase 4 page-contract lock record differs")
+        page_id = str(raw.get("page_id", ""))
+        relative = str(raw.get("relative_path", ""))
+        try:
+            validate_page_id(page_id)
+            path = (workspace / relative).resolve()
+            path.relative_to((workspace / "page-contracts").resolve())
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid page-contract lock path: {page_id}") from exc
+        require(page_id not in contract_locks and relative == f"page-contracts/{page_id}.json",
+                f"Invalid or duplicate page-contract lock: {page_id}")
+        require(path.is_file() and not path.stat().st_mode & 0o222,
+                f"Phase 4 page contract is missing or mutable: {page_id}")
+        contract = object_json(path, f"page acceptance contract {page_id}")
+        require(contract.get("page_id") == page_id and canonical_contract_sha256(contract) == raw.get("sha256"),
+                f"Phase 4 page contract hash differs: {page_id}")
+        contract_locks[page_id] = raw
+    require(
+        [row.get("page_id") for row in registry_rows] == sorted(contract_locks)
+        and all(
+            row.get("relative_path") == contract_locks[str(row.get("page_id", ""))]["relative_path"]
+            and row.get("contract_sha256") == contract_locks[str(row.get("page_id", ""))]["sha256"]
+            for row in registry_rows
+        ),
+        "Phase 4 page-contract registry differs from its locks",
+    )
     require(manifest.get("phase") == 4 and manifest.get("status") == "IN_PROGRESS",
             "Phase 4 manifest is not IN_PROGRESS")
     require(manifest.get("run_id") == scope.get("run_id") == input_lock.get("run_id"),
@@ -936,6 +993,33 @@ def validate_mapping_and_feature_orders(
     included = set(scope.get("migration_scope", {}).get("included_features", []))
     require(included and {row.get("feature_id", "") for row in inventory.values()} == included,
             "Included feature scope differs from active inventory")
+
+    page_registry_path = workspace / "page-work-order-registry.csv"
+    if page_registry_path.is_file():
+        validate_order_coverage(workspace)
+        page_contracts = _page_contracts(workspace)
+        orders = _registered_orders(workspace, page_contracts)
+        page_orders = {
+            str(order["page_id"]): order for order in orders if order.get("page_id")
+        }
+        ledger = rows_by(
+            workspace / "page-implementation-ledger.csv", "page_id",
+            "page implementation ledger",
+        )
+        require(set(ledger) == set(page_contracts) == set(page_orders),
+                "Page work-order/ledger/contract coverage differs")
+        for page_id, row in ledger.items():
+            order = page_orders[page_id]
+            require(
+                row.get("work_order_id") == order.get("work_order_id")
+                and row.get("owner_id") == order.get("owner_id")
+                and row.get("ui_understanding_agent_id") == order.get("ui_understanding_agent_id")
+                and row.get("codearts_task_id") == order.get("codearts_task_id")
+                and row.get("contract_sha256") == order.get("page_contract_sha256")
+                and row.get("status") == "ACCEPTED",
+                f"Page implementation ledger differs from frozen page work order: {page_id}",
+            )
+        return page_orders, ledger, parity
 
     registry_path = workspace / "feature-work-order-registry.csv"
     require_csv_header(

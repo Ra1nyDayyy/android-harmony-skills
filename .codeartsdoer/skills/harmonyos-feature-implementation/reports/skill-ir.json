@@ -2,152 +2,31 @@
   "schema_version": "2.0.0",
   "name": "harmonyos-feature-implementation",
   "title": "HarmonyOS Feature Implementation",
-  "job_to_be_done": "Implement and verify real HarmonyOS NEXT business features from frozen Android inventory and an accepted HarmonyOS scaffold, with source-first visual assets, state-level emulator evidence, native-capability adapters, and independent parity acceptance. Use only after migration Phases 1–3 pass; do not use it for scaffold creation, Android discovery, or release-store submission.",
+  "job_to_be_done": "Implement and verify HarmonyOS NEXT pages from frozen Android page contracts and an approved scaffold, using a per-page UI understanding and conversion agent, page-owned work orders, shared capability orders, emulator screenshots, UiTest interaction and component evidence, functional and side-effect assertions, bounded repair, and human review. Use only after approved Gate 3.",
   "trigger_surface": {
-    "description": "Implement and verify real HarmonyOS NEXT business features from frozen Android inventory and an accepted HarmonyOS scaffold, with source-first visual assets, state-level emulator evidence, native-capability adapters, and independent parity acceptance. Use only after migration Phases 1–3 pass; do not use it for scaffold creation, Android discovery, or release-store submission.",
-    "should_trigger": [
-      "阶段3已通过，按 Android 清单实现所有 ArkUI 功能和视觉一致性。",
-      "修复鸿蒙页面把 Android 新页面错误做成 Dialog 的一致性问题。",
-      "在模拟器逐状态验证 UI、跳转、运算、剪贴板和异常状态。"
-    ],
-    "should_not_trigger": [
-      "分析 Android 项目有哪些页面和控件。",
-      "只创建鸿蒙工程基座。",
-      "协调并执行完整的阶段1到4。"
-    ],
-    "edge_cases": [
-      "重新设计这个鸿蒙应用，让交互更原生。",
-      "修复一个与 Android 迁移无关的鸿蒙 bug。",
-      "准备鸿蒙应用商店截图和发布说明。"
-    ]
+    "description": "Implement and verify HarmonyOS NEXT pages from frozen Android page contracts and an approved scaffold, using a per-page UI understanding and conversion agent, page-owned work orders, shared capability orders, emulator screenshots, UiTest interaction and component evidence, functional and side-effect assertions, bounded repair, and human review. Use only after approved Gate 3.",
+    "should_trigger": ["Implement approved Android Page-ID contracts as ArkTS pages after Gate 3."],
+    "should_not_trigger": ["Discover Android pages.", "Build only the non-business scaffold."]
   },
   "workflow": {
     "steps": [
-      "Verify Gates 1-3, freeze Phase 4 environments, and copy the accepted scaffold plus Android evidence and assets.",
-      "Issue one immutable feature work order with exclusive paths and distinct UI, business/data, native, verification, and acceptance roles.",
-      "Implement every migration unit without changing its carrier, components, functions, transitions, data effects, system effects, or source assets.",
-      "Build the exact snapshot and capture each required state with emulator commands, assertions, Inspector bindings, PNG, and side-effect evidence.",
-      "Route mismatches through bounded repair, obtain independent parity acceptance, and close only with canonical Gate 4 PASS."
+      "Verify current machine and human approval for Gate 3 and freeze Phase 2 inputs plus the accepted scaffold.",
+      "Issue one PAGE_WORK_ORDER for each Page-ID and separate CAPABILITY_WORK_ORDER records for shared native capabilities.",
+      "Assign one UI_UNDERSTANDING_AND_CONVERSION_AGENT per Page-ID; it consumes only that page's frozen Phase 2 JSON, CSV, and evidence, writes an arkts-page-plan, then converts that plan to ArkTS.",
+      "Forbid cross-page implementation reuse, component or state deletion, transition deletion, and carrier changes unless a named human-approved deviation exists.",
+      "Verify the final HAP with emulator screenshots, UiTest automated interactions and component queries, functional assertions, side-effect assertions, test identifiers or component snapshots, and build evidence.",
+      "Route mismatches through bounded repair, recompute the machine gate, then stop at WAITING_HUMAN_REVIEW."
     ],
-    "decision_points": [
-      "A page cannot become a Dialog and UI/function simplification is forbidden without explicit controller-approved parity difference.",
-      "Contradictory Android facts return to Phase 2; wrong scaffold placement returns to Phase 3.",
-      "Build success alone never grants parity; every seeded state and environment requires final evidence and review."
-    ],
-    "failure_modes": [
-      "The model optimizes for native appearance by changing carriers, omitting controls, merging flows, or simplifying behavior.",
-      "Fake data, no-op adapters, placeholders, or unimplemented branches reach a passing build.",
-      "An implementer, verifier, or model self-approves a small page or state.",
-      "Assertions trust an external PASS string instead of comparing actual and expected observable behavior."
-    ]
+    "decision_points": ["Contradictory frozen Android facts return to Phase 2.", "Shared native behavior uses a capability order but page ownership remains separate.", "Build success alone never proves UI or functional parity."],
+    "failure_modes": ["A page is simplified, merged, omitted, or changes carrier.", "One agent implements several pages from memory instead of page-scoped evidence.", "A model declares parity without screenshot, interaction, assertion, component, build, and side-effect evidence."]
   },
   "resources": {
-    "references": [
-      "references\\arkui-inspector-evidence.md",
-      "references\\asset-and-visual-parity.md",
-      "references\\emulator-evidence.md",
-      "references\\feature-workflow.md",
-      "references\\governed-execution-contract.md",
-      "references\\input-contract.md",
-      "references\\observable-consistency-contract.md",
-      "references\\review-and-rework.md",
-      "references\\roles-and-authority.md"
-    ],
-    "scripts": [
-      "scripts\\_common.py",
-      "scripts\\_stage4_audit.py",
-      "scripts\\arkui_inspector.py",
-      "scripts\\capture_state.py",
-      "scripts\\convert_asset.py",
-      "scripts\\init_implementation.py",
-      "scripts\\issue_feature_work_order.py",
-      "scripts\\manage_stage4_rework.py",
-      "scripts\\review_parity.py",
-      "scripts\\run_build.py",
-      "scripts\\tests\\strict_fake_phase4.py",
-      "scripts\\tests\\test_asset_conversion.py",
-      "scripts\\tests\\test_phase4_common.py",
-      "scripts\\tests\\test_review_parity.py",
-      "scripts\\tests\\test_stage4_workflow.py",
-      "scripts\\validate_stage4.py"
-    ],
-    "assets": [
-      "assets\\acceptance-ledger.template.csv",
-      "assets\\arkui-inspector-bridge\\ArkUIInspectorBridge.ets",
-      "assets\\asset-conversion-contracts.template.json",
-      "assets\\asset-migration.template.csv",
-      "assets\\asset-policy.template.json",
-      "assets\\attempt-ledger.template.csv",
-      "assets\\build-plan.template.json",
-      "assets\\capability-implementation.template.csv",
-      "assets\\evidence-index.template.csv",
-      "assets\\feature-work-order-registry.template.csv",
-      "assets\\feature-work-order.template.json",
-      "assets\\h4env-registry.template.csv",
-      "assets\\implementation-ledger.template.csv",
-      "assets\\nativeization-decisions.template.csv",
-      "assets\\parity-map.template.csv",
-      "assets\\parity-review.template.json",
-      "assets\\phase4-environment.template.json",
-      "assets\\rework-tickets.template.csv",
-      "assets\\state-verification-plan.template.json",
-      "assets\\visual-elements.template.csv"
-    ],
-    "reports": [
-      "reports/output-risk-profile.json",
-      "reports/output-risk-profile.md",
-      "reports/artifact-design-profile.json",
-      "reports/artifact-design-profile.md",
-      "reports/output_quality_scorecard.json",
-      "reports/output_quality_scorecard.md",
-      "reports/output_execution_runs.json",
-      "reports/output_execution_runs.md",
-      "reports/output_blind_review_pack.json",
-      "reports/output_blind_review_pack.md",
-      "reports/output_blind_answer_key.json",
-      "reports/conformance_matrix.json",
-      "reports/conformance_matrix.md",
-      "reports/security_trust_report.json",
-      "reports/security_trust_report.md"
-    ]
+    "references": ["references/asset-and-visual-parity.md", "references/emulator-evidence.md", "references/governed-execution-contract.md", "references/input-contract.md", "references/observable-consistency-contract.md", "references/review-and-rework.md", "references/roles-and-authority.md"],
+    "scripts": ["scripts/_common.py", "scripts/_stage4_audit.py", "scripts/capture_state.py", "scripts/convert_asset.py", "scripts/init_implementation.py", "scripts/issue_capability_work_order.py", "scripts/issue_page_work_order.py", "scripts/manage_stage4_rework.py", "scripts/page_acceptance_contract.py", "scripts/review_parity.py", "scripts/run_build.py", "scripts/stage4_work_orders.py", "scripts/validate_stage4.py", "scripts/tests/strict_fake_phase4.py", "scripts/tests/test_asset_conversion.py", "scripts/tests/test_page_acceptance_contract.py", "scripts/tests/test_phase4_common.py", "scripts/tests/test_review_parity.py", "scripts/tests/test_stage4_work_orders.py", "scripts/tests/test_stage4_workflow.py"],
+    "assets": ["assets/acceptance-ledger.template.csv", "assets/asset-conversion-contracts.template.json", "assets/asset-migration.template.csv", "assets/asset-policy.template.json", "assets/attempt-ledger.template.csv", "assets/build-plan.template.json", "assets/capability-implementation.template.csv", "assets/capability-work-order-registry.template.csv", "assets/capability-work-order.template.json", "assets/evidence-index.template.csv", "assets/page-acceptance-contract.schema.json", "assets/page-contract-registry.template.csv", "assets/page-implementation-ledger.template.csv", "assets/page-work-order-registry.template.csv", "assets/page-work-order.template.json", "assets/parity-map.template.csv", "assets/parity-review.template.json", "assets/state-verification-plan.template.json", "assets/visual-elements.template.csv"],
+    "reports": ["reports/output-risk-profile.json", "reports/output_quality_scorecard.json", "reports/security_trust_report.json", "reports/conformance_matrix.json"]
   },
-  "eval_plan": {
-    "trigger": [
-      "evals\\history\\2026-08-24-yao-refactor.json",
-      "evals\\output\\cases.jsonl",
-      "evals\\output\\fixture.md",
-      "evals\\semantic_config.json",
-      "evals\\trigger_cases.json"
-    ],
-    "output": [
-      "evals\\output\\cases.jsonl",
-      "evals\\output\\fixture.md"
-    ],
-    "adversarial": [],
-    "baseline": "without_skill"
-  },
-  "risk": {
-    "output_risk": "high",
-    "execution_risk": "medium",
-    "trust_boundary": "external"
-  },
-  "governance": {
-    "owner": "Android-Harmony Migration Maintainers",
-    "maturity": "governed",
-    "review_cadence": "per-release",
-    "review_due": "2026-11-24"
-  },
-  "targets": [
-    "openai",
-    "claude",
-    "agent-skills",
-    "vscode",
-    "generic"
-  ],
-  "source_files": [
-    "SKILL.md",
-    "manifest.json",
-    "agents/interface.yaml",
-    "reports/output-risk-profile.json"
-  ]
+  "risk": {"output_risk": "high", "execution_risk": "medium", "trust_boundary": "external"},
+  "targets": ["openai", "claude", "agent-skills", "vscode", "generic"],
+  "source_files": ["SKILL.md", "manifest.json", "agents/interface.yaml", "agents/openai.yaml", "reports/output-risk-profile.json"]
 }

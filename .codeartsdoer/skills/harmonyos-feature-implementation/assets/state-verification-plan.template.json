@@ -3,6 +3,7 @@
   "parity_id": "PAR-001",
   "hbuild_id": "HBUILD-001",
   "h4env_id": "H4ENV-001",
+  "test_hap_path": "__FILL_WORKSPACE_RELATIVE_OHOSTEST_HAP__",
   "supersedes_evidence_id": "",
   "implemented_by": "__FILL_FEATURE_IMPLEMENTER_ID__",
   "executed_by": "__FILL_FROZEN_VERIFICATION_EXECUTOR_ID__",
@@ -63,10 +64,10 @@
       "argv": ["__FROZEN_SCREENSHOT_EXECUTABLE__", "screenshot", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__", "--target", "__EXACT_PHASE3_TARGET_ID__", "--output", "{SCREENSHOT}"]
     },
     {
-      "command_id": "CMD-UI-TREE",
-      "category": "UI_TREE_CAPTURE",
+      "command_id": "CMD-UITEST-SNAPSHOT",
+      "category": "UITEST_SNAPSHOT_CAPTURE",
       "cwd": ".",
-      "argv": ["__FROZEN_UI_TREE_EXECUTABLE__", "arkui-inspector-tree", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__", "--target", "__EXACT_PHASE3_TARGET_ID__", "--output", "{UI_TREE}"]
+      "argv": ["__FROZEN_UITEST_EXECUTABLE__", "uitest-snapshot", "--serial", "__EXACT_FROZEN_SERIAL__", "--bundle", "__FROZEN_BUNDLE_NAME__", "--target", "__EXACT_PHASE3_TARGET_ID__", "--test-hap", "{TEST_HAP}", "--output", "{UITEST_RESULT}"]
     }
   ],
   "assertions": [

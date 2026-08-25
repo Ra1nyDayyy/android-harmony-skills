@@ -27,9 +27,8 @@ from _common import (  # noqa: E402
     validate_hap,
 )
 from capture_state import (  # noqa: E402
-    ATTEMPT_LEDGER_FIELDS, reserve_execution, validate_assertion_result, validate_ui_tree,
+    ATTEMPT_LEDGER_FIELDS, reserve_execution, validate_assertion_result,
 )
-from arkui_inspector import validate_normalized  # noqa: E402
 from _common import write_csv  # noqa: E402
 
 
@@ -84,7 +83,7 @@ class Phase4CommonTest(unittest.TestCase):
         normalized = frozen_category_contracts(environment)
         self.assertEqual(set(normalized), set(PHASE4_CATEGORY_ORDER))
         missing = json.loads(json.dumps(environment))
-        del missing["category_contracts"]["UI_TREE_CAPTURE"]
+        del missing["category_contracts"]["UITEST_SNAPSHOT_CAPTURE"]
         with self.assertRaises(ValueError):
             frozen_category_contracts(missing)
         changed = json.loads(json.dumps(environment))
@@ -192,6 +191,7 @@ class Phase4CommonTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Generated assertion differs"):
                 validate_assertion_result(path, plan, bindings)
 
+    @unittest.skip("legacy tree fixture removed; UiTest carrier rejection is covered by test_uitest_evidence")
     def test_runtime_carrier_substitution_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "ui-tree.json"
@@ -212,6 +212,7 @@ class Phase4CommonTest(unittest.TestCase):
                     path, "com.example.fixture", "HDEVICE-001", "device-1", contract
                 )
 
+    @unittest.skip("legacy tree fixture removed; UiTest trace rejection is covered by test_uitest_evidence")
     def test_event_ids_without_raw_operation_trace_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "ui-tree.json"
@@ -231,6 +232,7 @@ class Phase4CommonTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "operation trace differs"):
                 validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
 
+    @unittest.skip("legacy tree fixture removed; production no longer accepts tree evidence")
     def test_plain_script_declared_nodes_cannot_impersonate_inspector(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "ui-tree.json"
@@ -251,6 +253,7 @@ class Phase4CommonTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Inspector envelope"):
                 validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
 
+    @unittest.skip("legacy tree fixture removed; UiTest hash rejection is covered by test_uitest_evidence")
     def test_inspector_hash_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "ui-tree.json"
@@ -271,6 +274,7 @@ class Phase4CommonTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "raw_tree hash differs"):
                 validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
 
+    @unittest.skip("legacy tree fixture removed; UiTest locator binding is covered by test_uitest_evidence")
     def test_component_binding_is_derived_from_inspector_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "ui-tree.json"

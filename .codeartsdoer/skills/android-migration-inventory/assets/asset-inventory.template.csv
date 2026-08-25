@@ -1,1 +1,6 @@
 asset_id,source_path,archive_path,sha256,asset_type,feature_ids,page_ids,state_ids,created_by,created_at,reviewed_by,reviewed_at,status,notes
+# === 候选驱动：先跑 candidates/asset-mapping.candidates.csv，每行 fidelity 已抽好，只需1:1确认 ===
+# 规则：每可视组件必有资产，禁止全量贴牌（一个asset贴6feature/4page视为FAIL）
+# 样例：
+# ASSET-ROWBG,app/src/main/res/drawable/item_background.xml,asset-package/files/ASSET-ROWBG/item_background.xml,<sha>,XML_RESOURCE,"[""TODO-LIST""]","[""PAGE-LISTFRAGMENT-9A225EE2""]","[""STATE-LIST-DATA""]",CODEMAP-001,2026-08-25T00:00:00Z,,,ARCHIVED,row_layout 背景 white+lightGray 1dp radius16dp @row_layout.xml:17
+# ASSET-CUSTOMINPUT,app/src/main/res/drawable/custom_input.xml,asset-package/files/ASSET-CUSTOMINPUT/custom_input.xml,<sha>,XML_RESOURCE,"[""TODO-ADD""]","[""PAGE-ADDFRAGMENT-7FA01628""]","[""STATE-ADD-DEFAULT""]",CODEMAP-001,2026-08-25T00:00:00Z,,,ARCHIVED,输入框 selector 聚焦#03a9f4 @fragment_add.xml:15

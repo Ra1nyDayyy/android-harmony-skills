@@ -13,7 +13,7 @@ Formal evidence is captured only after installing the sealed `HBUILD-ID` artifac
 7. Navigate by the documented user intent.
 8. Run business/data/interaction assertions.
 9. Capture a PNG from the emulator.
-10. Use the test-only Bridge to capture an ArkUI `UIContext` Inspector tree.
+10. Run the generated test-only UiTest probe imported from `@kit.TestKit` and persist its component-query and action results.
 
 Every device-bound command contains the frozen selector tokens. Preview, design canvas, static render, manually resized image, or a screenshot from another device is invalid.
 
@@ -22,7 +22,8 @@ Every device-bound command contains the frozen selector tokens. Preview, design 
 Each immutable `evidence/<H4ENV-ID>/<Feature-ID>/<Page-ID>/<State-ID>/<HEVD-ID>/` contains:
 
 - `screenshot.png`;
-- `ui-tree.json`;
+- `ui-test-snapshot.json`;
+- `ui-test-snapshot.png`;
 - `steps.md`;
 - `assertions.json`;
 - sanitized command logs;
@@ -33,6 +34,6 @@ Metadata binds Phase 1 scope, Android Inventory/Evidence IDs, Phase 3 target, H4
 
 Screenshot comparison covers existence, source asset, shape, color, geometry, spacing, typography, and state. Functional assertions cover business outcome, interaction, data result, error/offline behavior, permissions, and every frozen semantic obligation. Each assertion declares a deterministic operator such as `EQUALS`, `CONTAINS`, `REGEX`, `JSON_EQUALS`, or `NUMERIC_RANGE`; the capture script recomputes the verdict and rejects a false external `PASS`.
 
-The plan also contains exactly one `ANDROID_EXPECTED_OBSERVABLE` assertion whose expected value and Inventory-ID come directly from the migration-unit contract. Follow [arkui-inspector-evidence.md](arkui-inspector-evidence.md): the external adapter supplies the raw `UIContext` Inspector tree, while the repository derives `root`, `nodes`, geometry, and source-component bindings. Every required event or transition has one `operation_trace` record whose before/after values are also Inspector envelopes. A hand-written node list or self-declared event ID cannot satisfy the gate. Missing controls, wrong page/dialog/sheet shape, lost navigation, or uncovered side effects fail before visual review. A screenshot alone never proves functional parity.
+The plan also contains exactly one `ANDROID_EXPECTED_OBSERVABLE` assertion whose expected value and Inventory-ID come directly from the migration-unit contract. Follow [ui-test-snapshot-evidence.md](ui-test-snapshot-evidence.md): the generated probe uses frozen stable tags or unique text locators and records the queried component properties. Every required event or transition has one `operation_trace` with before/after results plus deterministic navigation, business, and side-effect assertions. A hand-written component list or self-declared event ID cannot satisfy the gate. Missing controls, non-unique locators, wrong page/dialog/sheet shape, lost navigation, or uncovered side effects fail before visual review. A screenshot alone never proves functional parity.
 
 Executables located in a Skill `tests` directory, including `fake_harmony.py`, are rejected for formal evidence. `ANDROID_HARMONY_TEST_FIXTURES=1` exists only for this repository's offline unit tests; never set it during a migration run.

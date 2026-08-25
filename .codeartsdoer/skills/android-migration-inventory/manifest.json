@@ -1,8 +1,8 @@
 {
   "name": "android-migration-inventory",
-  "version": "2.0.0",
+  "version": "2.1.0-generic",
   "owner": "Android-Harmony Migration Maintainers",
-  "updated_at": "2026-08-24",
+  "updated_at": "2026-08-26",
   "review_due": "2026-11-24",
   "review_cadence": "per-release",
   "status": "active",
@@ -11,6 +11,8 @@
   "context_budget_tier": "production",
   "skill_archetype": "evidence-backed-analyzer",
   "skill_ir_source": "reports/skill-ir.json",
+  "capability_scope": "phase-2-android-inventory",
+  "resource_policy": "current-capabilities-only",
   "target_platforms": ["openai", "claude", "agent-skills", "vscode", "generic"],
   "factory_components": ["references", "scripts", "assets", "evals", "reports"]
 }
