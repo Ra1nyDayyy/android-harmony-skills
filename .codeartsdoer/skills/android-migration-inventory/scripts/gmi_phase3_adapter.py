@@ -252,13 +252,26 @@ def main() -> int:
         "summary": {"generated_by": "gmi-phase3-adapter"},
     }
     import re as _re
+    # 关联 feature：page_id → page_symbol → 该页 feature（page_to_feature），
+    # 全局风险（无页面命中时）回退到 APP-NAVIGATION（在 included 集合内）。
+    # 同时从 risk-probes 的 page_id 取 page 的 feature 关联。
+    risk_feature_by_page: Dict[str, str] = {}
+    for r in read_rows(cands / "risk-probes.candidates.csv"):
+        pid = (r.get("page_id") or "").strip()
+        if pid in pid_to_sym:
+            sym = pid_to_sym[pid]
+            if sym in page_to_feature:
+                risk_feature_by_page[pid] = page_to_feature[sym]
+    fallback_feat = "APP-NAVIGATION" if "APP-NAVIGATION" in feature_list else (feature_list[0] if feature_list else "MAIN")
     for r in read_rows(cands / "risk-probes.candidates.csv")[:200]:
         rid = (r.get("probe_id") or "").strip()
         if not rid or not _re.match(r"^[A-Z0-9][A-Z0-9._-]{2,95}$", rid):
             continue
+        feat = risk_feature_by_page.get((r.get("page_id") or "").strip(), fallback_feat)
         adv["dynamic_risks"].append({
             "risk_id": rid, "risk_type": r.get("category", ""),
             "severity": r.get("severity", ""), "detail": r.get("signal", ""),
+            "candidate_feature_ids": [feat],
         })
     write_json(phase2 / "static-analysis" / "advanced-analysis.json", adv)
     write_json(phase2 / "runtime-observations.json",
