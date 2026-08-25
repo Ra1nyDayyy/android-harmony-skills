@@ -5,6 +5,8 @@
   "device_id": "HDEVICE-001",
   "device_serial": "__FILL_EXACT_FROZEN_SERIAL__",
   "bundle_name": "__FILL_FROZEN_BUNDLE_NAME__",
+  "screen_resolution": "__FILL_WxH_MUST_EQ_ANDROID__",
+  "screen_density": "__FILL_DPI_MUST_EQ_ANDROID__",
   "created_by": "__FILL_IMPLEMENTATION_LEAD_ID__",
   "required": true,
   "device_selector_tokens": ["--serial", "__FILL_EXACT_FROZEN_SERIAL__"],

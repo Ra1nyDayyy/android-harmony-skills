@@ -106,6 +106,14 @@ def compare_screenshot(
     minimum_ssim = float(policy.get("application_region_ssim", 0.98))
     maximum_changed = float(policy.get("changed_pixel_ratio", 0.02))
     with Image.open(expected_path) as expected_source, Image.open(actual_path) as actual_source:
+        # 分辨率硬校验：Android 与 Harmony 截图必须同分辨率/同方向；不一致即 BLOCKED。
+        # （不允许 resize 强行对齐——那会掩盖真实几何差异）
+        if expected_source.size != actual_source.size:
+            raise ValueError(
+                f"Screenshot resolution mismatch: Android={expected_source.size} Harmony={actual_source.size}; "
+                "both emulators must use the same frozen resolution/density (see phase-2 evidence_index resolution and "
+                "H4ENV screen_resolution). Fix the environment instead of resizing."
+            )
         source = _geometry_root(contract)
         expected, actual, differences, source_density = _aligned_regions(
             expected_source.convert("RGB"), actual_source.convert("RGB"), source, snapshot
@@ -136,9 +144,9 @@ def compare_screenshot(
                     mask_failures += 1
                     differences.append({"kind": "REQUIRED_ELEMENT_MASK_MISMATCH", "component_id": str(row["component_id"]), "ssim": round(mask_ssim, 8), "minimum_ssim": mask_minimum_ssim, "changed_pixel_ratio": round(mask_changed, 8), "maximum_changed_pixel_ratio": mask_maximum_changed})
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        diff = ImageChops.difference(expected, actual) if expected.size == actual.size else Image.new("RGB", expected.size, (255, 0, 0))
+        diff = ImageChops.difference(expected, actual)
         diff.save(artifact_dir / "diff.png")
-        Image.blend(expected, actual.resize(expected.size), 0.5).save(artifact_dir / "overlay.png")
+        Image.blend(expected, actual, 0.5).save(artifact_dir / "overlay.png")
     return comparison_result(
         "CMP-SCREENSHOT", "screenshot", {"sha256": file_sha256(expected_path)}, {"sha256": file_sha256(actual_path)},
         {"ssim": round(ssim, 8), "changed_pixel_ratio": round(changed, 8), "mask_failures": mask_failures, "color_threshold": COLOR_THRESHOLD}, differences,

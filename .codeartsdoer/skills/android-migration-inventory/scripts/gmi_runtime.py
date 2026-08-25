@@ -200,12 +200,23 @@ def snapshot(serial: str, tag: str, out_dir: Path, page_id: str,
     fg = adb(serial, "shell", "dumpsys", "activity", "activities")
     m = re.search(r"topResumedActivity=.*?u0 (\S+)", fg)
     fg_comp = m.group(1) if m else ""
+    # 固定屏幕参数（分辨率/密度），记录到证据，供 P4 对齐校验
+    screen_size = ""
+    screen_density = ""
+    if pkg:
+        size_out = adb(serial, "shell", "wm", "size")
+        dm = re.search(r"(\d+x\d+)", size_out)
+        screen_size = dm.group(1) if dm else ""
+        dens_out = adb(serial, "shell", "wm", "density")
+        dm2 = re.search(r"(\d+)", dens_out)
+        screen_density = dm2.group(1) if dm2 else ""
     in_pkg = (pkg in fg_comp) if pkg else True
     return {
         "page_id": page_id, "tag": tag,
         "ui_sha256": sha256f(d / "ui.xml") if (d / "ui.xml").exists() else "",
         "png_sha256": sha256f(d / "screenshot.png") if (d / "screenshot.png").exists() else "",
         "foreground": fg_comp, "in_pkg": in_pkg,
+        "screen_resolution": screen_size, "screen_density": screen_density,
         "xml": ui_xml or "",
     }
 
@@ -318,6 +329,10 @@ def main() -> int:
                     help="先 pm clear 再启动（抓首启流程页 Guide/Welcome）")
     ap.add_argument("--explore", action="store_true",
                     help="探索模式：对无文本可点节点逐级点击（图标按钮），指纹去重防死循环")
+    ap.add_argument("--screen-size", default="1080x2400",
+                    help="固定模拟器分辨率（默认 1080x2400，与 Harmony 侧一致）")
+    ap.add_argument("--screen-density", default="440",
+                    help="固定模拟器密度 dpi（默认 440，与 Harmony 侧一致）")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -329,6 +344,17 @@ def main() -> int:
     if args.grant_perms:
         n = grant_permissions(serial, Path(args.project), pkg)
         print(f"[perms] granted {n} permissions for {pkg}")
+
+    # 固定屏幕分辨率/密度（Phase 3/4 屏幕一致性基准）
+    if args.screen_size:
+        adb(serial, "shell", "wm", "size", args.screen_size)
+        time.sleep(0.8)
+    if args.screen_density:
+        adb(serial, "shell", "wm", "density", args.screen_density)
+        time.sleep(1.5)
+    cur_size = adb(serial, "shell", "wm", "size").strip().replace("\n", " ")
+    cur_den = adb(serial, "shell", "wm", "density").strip().replace("\n", " ")
+    print(f"[screen] fixed to {cur_size} / {cur_den}")
 
     if args.pm_clear:
         pm_clear_and_relaunch(serial, pkg, act)
@@ -541,7 +567,7 @@ def main() -> int:
             cur_xml = snap["xml"]
 
     write_csv(out_dir / "evidence-index.csv",
-              ["page_id", "tag", "foreground", "ui_sha256", "png_sha256"], ev)
+              ["page_id", "tag", "foreground", "ui_sha256", "png_sha256", "screen_resolution", "screen_density"], ev)
     write_csv(out_dir / "runtime-gate.csv",
               ["page_id", "symbol", "status", "evidence"], gate_rows)
 

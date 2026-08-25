@@ -10,6 +10,8 @@ Each environment must include:
 - Seed-data ID and reset procedure or reference.
 - Network profile and whether a controlled offline/weak-network switch is available.
 - Emulator/device serial, model, resolution, density, Android/API level, and orientation where relevant.
+
+**Frozen screen parity (required):** the evidence device's `resolution` and `density` are **frozen once and reused for every Page-ID's captures** — they are the canonical screen basis for Phase 3 baseline devices and Phase 4 H4ENV parity. Phase 2 attestation must record exact `wm size`/`wm density` values, and every evidence row (runtime-evidence evidence-index) includes that resolution/density. Any emulator whose resolution/density is later changed invalidates all prior captures unless a new ENV-ID is created; Phase 4 compares screenshots against this exact `WxH/dpi` and raises `BLOCKED` on mismatch (no rescaling).
 - Locale, timezone, theme, font scale, and permission profile.
 - Seed reset reference, network-condition reference, and orientation.
 

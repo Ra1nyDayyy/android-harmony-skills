@@ -30,6 +30,8 @@ H4ENV-ID = source ENV-ID + base HENV-ID + HDEVICE-ID + exact serial + exact Bund
 
 The selected device must be a required screenshot emulator. Account, role, seed, reset reference, network profile/conditions/toggle, locale, theme, font scale, timezone, permissions, and orientation must all be nonempty frozen business inputs. Device/toolchain/application identity comes from Phase 3. Root `category_contracts` must cover exactly all 14 Phase 4 categories and bind canonical executable paths/hashes, required argv tokens, success markers, and error markers.
 
+**Fixed screen parity (required):** `H4ENV.screen_resolution` and `H4ENV.screen_density` must be **byte-identical** to the frozen Android environment profile (`ENV-ID.resolution / density`) used by the same Page-ID during Phase 2 evidence capture. Phase 4 initialization rejects any H4ENV whose resolution/density differs; `compare_screenshot.py` re-verifies at image load and raises `BLOCKED` on mismatch (no resize fallback — resizing would mask real geometry drift). Changing either side creates a new ID pair.
+
 Any changed input or environment creates a new ID. Missing asset handoff, missing Gate PASS, or upstream hash drift is `BLOCKED`, never inferred.
 
 
