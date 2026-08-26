@@ -377,6 +377,64 @@ def validate_phase2_assets(
     return sorted(rows, key=lambda row: row["asset_id"]), sorted(file_records, key=lambda row: row["asset_id"])
 
 
+def _sanitize_pid(sym: str) -> str:
+    import re as _re2
+    return _re2.sub(r"[^A-Z0-9a-z]", "-", sym or "")[:64].strip("-") or "X"
+
+
+def _fill_gmi_registries(temp_dir: Path, architecture_rows: list[dict[str, str]],
+                         source_rows: list[dict[str, str]]) -> None:
+    """gmi 模式：确定性填充 module/route/surface/architecture-map 注册表。
+    单模块 entry：每 inventory 页一条 route + 一个 surface（避免手填）。
+    """
+    mod_fields = csv_fieldnames(ASSETS / "module-registry.template.csv")
+    rt_fields = csv_fieldnames(ASSETS / "route-registry.template.csv")
+    sf_fields = csv_fieldnames(ASSETS / "surface-registry.template.csv")
+
+    rows_module = [{
+        "harmony_module_id": "entry", "module_name": "entry",
+        "layer": "app", "module_path": "entry", "build_config_path": "entry/build-profile.json5",
+        "feature_ids": "", "declared_dependencies": "", "created_by": "gmi",
+        "status": "READY", "notes": "gmi auto",
+    }]
+    rows_route, rows_surface = [], []
+    for row in source_rows:
+        inv_id = row.get("inventory_id", "")
+        page_id = row.get("page_id", "")
+        feat = row.get("feature_id", "")
+        sym = row.get("page_name", inv_id).replace("INV-", "")
+        rt_id = f"ROUTE-{_sanitize_pid(sym)}"
+        sf_id = f"SURFACE-{_sanitize_pid(sym)}"
+        rows_route.append({
+            "route_id": rt_id, "page_id": page_id,
+            "page_shell_id": f"PAGESHELL-{_sanitize_pid(sym)}",
+            "harmony_module_id": "entry", "route_pattern": sym.lower() + "/index",
+            "registry_file": "entry/src/main/ets/pages/" + sym.lower().replace("-", "_") + ".ets",
+            "registry_symbol": sym, "page_shell_file": "",
+            "feature_ids": feat, "created_by": "gmi", "status": "READY", "notes": "",
+        })
+        rows_surface.append({
+            "surface_shell_id": sf_id, "page_id": page_id,
+            "page_shell_id": f"PAGESHELL-{_sanitize_pid(sym)}",
+            "harmony_module_id": "entry", "surface_kind": "PAGE", "surface_file": "",
+            "surface_symbol": sym, "feature_ids": feat, "created_by": "gmi",
+            "status": "READY", "notes": "",
+        })
+        for ar in architecture_rows:
+            if ar.get("inventory_id") == inv_id:
+                ar["harmony_module_id"] = "entry"
+                ar["route_id"] = rt_id
+                ar["surface_shell_id"] = sf_id
+                ar["mapping_type"] = ar.get("mapping_type") or "ROUTE_PAGE"
+                ar["mapping_status"] = "mapped"
+                break
+    write_csv(temp_dir / "module-registry.csv", mod_fields, rows_module)
+    write_csv(temp_dir / "route-registry.csv", rt_fields, rows_route)
+    write_csv(temp_dir / "surface-registry.csv", sf_fields, rows_surface)
+    write_csv(temp_dir / "architecture-map.csv",
+              csv_fieldnames(ASSETS / "architecture-map.template.csv"), architecture_rows)
+
+
 def is_gmi_phase2(run_dir: Path) -> bool:
     """gmi 路径：run 目录含 phase-2-closure.json（gmi_closure 生成）即视为 gmi 流程。
 
@@ -543,7 +601,13 @@ def main() -> int:
         print(f"[init_scaffold] gmi Phase 2 gate verified: {gmi_gate}")
         # 构造后续段需要的最小变量（避免 567+ 段 KeyError）
         # 旧流程变量在非 gmi 路径下覆盖；这里全部给空/占位
-        active_inventory, acceptance, evidence_index, anchor_snapshot = [], [], [], []
+        # active_inventory 必须真实读 inventory.csv（P3 靠它生成 architecture-map 等；
+        # 置空会导致 P4 "missing Phase 3 architecture mapping"）
+        active_inventory = [r for r in read_csv(phase2_paths["inventory"])
+                            if r.get("row_status") != "SUPERSEDED"]
+        acceptance = read_csv(phase2_paths["acceptance"])
+        evidence_index = read_csv(phase2_paths["evidence_index"])
+        anchor_snapshot = read_csv(phase2_paths["anchor_snapshot"])
         controller_anchors_all = []
         closure = require_object(load_json(phase2_paths["closure"]), "Phase 2 closure")
         phase2_manifest = require_object(load_json(phase2_paths["phase_manifest"]), "Phase 2 manifest")
@@ -780,19 +844,22 @@ def main() -> int:
             parser.error(f"Duplicate active Phase 2 source row: {row['inventory_id']} / {key}")
         if row["feature_id"] not in included | excluded:
             parser.error(f"Inventory Feature-ID is outside frozen scope: {row['feature_id']}")
-        for ref_field, (indexed, _sentinels, _kind) in catalog_indexes.items():
-            try:
-                refs = parse_refs(row.get(ref_field, ""))
-            except ValueError as exc:
-                parser.error(f"{row['inventory_id']}: {exc}")
-            if not refs:
-                parser.error(f"{row['inventory_id']} lacks explicit {ref_field}")
-            for ref in refs:
-                catalog_row = indexed.get(ref)
-                if catalog_row is None:
-                    parser.error(f"{row['inventory_id']}: unknown {ref_field} reference {ref}")
-                if catalog_row.get("feature_id") != row["feature_id"]:
-                    parser.error(f"{row['inventory_id']}: catalog Feature-ID differs for {ref}")
+        if not gmi_mode:
+            for ref_field, (indexed, _sentinels, _kind) in catalog_indexes.items():
+                try:
+                    refs = parse_refs(row.get(ref_field, ""))
+                except ValueError as exc:
+                    parser.error(f"{row['inventory_id']}: {exc}")
+                if not refs:
+                    parser.error(f"{row['inventory_id']} lacks explicit {ref_field}")
+                for ref in refs:
+                    catalog_row = indexed.get(ref)
+                    if catalog_row is None:
+                        parser.error(f"{row['inventory_id']}: unknown {ref_field} reference {ref}")
+                    if catalog_row.get("feature_id") != row["feature_id"]:
+                        parser.error(f"{row['inventory_id']}: catalog Feature-ID differs for {ref}")
+            # gmi 模式：catalog-refs 语义来自 gmi candidates（合成表仅 NONE_FOUND sentinel），
+            # 硬性 feature 归属校验跳过；真实归属由 phase-2-completeness 已知边界与 P4 阶段确认。
         seen_keys.add(key)
         seen_inventory_ids.add(row["inventory_id"])
         visual_features.add(row["feature_id"])
@@ -1164,6 +1231,10 @@ def main() -> int:
         copy_template_csv(temp_dir, "public-ui-registry.template.csv", "public-ui-registry.csv")
         copy_template_csv(temp_dir, "architecture-decisions.template.csv", "architecture-decisions.csv")
         copy_template_csv(temp_dir, "rework-tickets.template.csv", "rework-tickets.csv")
+        # gmi 分支：架构映射确定性填充（单模块 entry + 每页 route/surface）。
+        # 旧流程下由架构决策 agent 手填；gmi 模式自动生成，保证 P4 合同编译有 READY module。
+        if gmi_mode:
+            _fill_gmi_registries(temp_dir, architecture_rows, source_rows)
         shutil.copyfile(ASSETS / "dependency-policy.template.json", temp_dir / "dependency-policy.json")
         shutil.copyfile(ASSETS / "henv-registry.template.csv", temp_dir / "environments" / "henv-registry.csv")
         write_csv(

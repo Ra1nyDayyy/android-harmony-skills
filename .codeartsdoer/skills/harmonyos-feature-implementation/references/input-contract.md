@@ -48,6 +48,17 @@ Any changed input or environment creates a new ID. Missing asset handoff, missin
 | closure report / `CLOSED` | `phase-2-closure.json`（gmi 闭包，含 gate 字段与 artifact_hashes，见 P3 input-mapping-contract.md 适配节） |
 | `advanced-analysis.json` / 动态风险 | `candidates/risk-probes.candidates.csv` |
 
+**gmi 语义表（P4 页面合同权威增强，`page_acceptance_contract.py` 消费）**：
+
+| 语义输入 | gmi 来源 | 用途 |
+|---|---|---|
+| 页面字段清单（顺序/类型/标签/图标） | `candidates/page-fields.candidates.csv` | 合同 `gmi_fields`：页面 UI 字段按源顺序 |
+| 字段/选项子项 | `candidates/field-options.candidates.csv` | 合同 `gmi_options`：开关/下拉可选值 |
+| 跳转+返回 | `candidates/navigation-relations.candidates.csv` | 合同 `gmi_navigation`：点击目标与返回链 |
+| 动效/行为 | `candidates/motion.candidates.csv` | 合同 `gmi_motion`：滚动折叠/虚化/状态切换 |
+| 颜色真值 | `candidates/color-palette.candidates.csv` | 合同 assets 颜色解析（hex+alpha） |
+| 10 类缺口矩阵 | `candidates/phase-2-completeness.csv` | P4 前置：逐页 `MISSING` 为"已知边界"，不得静默补 |
+
 **Phase 4 前置校验**（取代旧 REVIEWED 链）：`audit-replay.csv` 全 `discrepancy=no` +
 `coverage-ledger.csv` `GAP 0` + `phase-2-closure.json` 哈希闭环；任一失败即 `BLOCKED`，
 不得以旧流程工件替代（旧流程兼容路径仍有效，但 gmi 工程一律走本节）。

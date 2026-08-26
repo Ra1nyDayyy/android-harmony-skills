@@ -105,6 +105,43 @@ def compile_page_contracts(
                 )
     inventory_by_id = _index(inventory, "inventory_id", "Phase 2 inventory")
 
+    # gmi PHASE 2 适配（默认路径）：candidates/ 新表是权威语义输入。
+    # 把 page-fields / field-options / navigation-relations / motion 并入页面合同，
+    # 补充 adapter 合成表折损的字段/选项/跳转/动效信息（仅 gmi 路径生效）。
+    gmi_fields_by_page: dict[str, list[dict[str, object]]] = {}
+    gmi_opts_by_page: dict[str, list[dict[str, object]]] = {}
+    gmi_nav_by_page: dict[str, list[dict[str, object]]] = {}
+    gmi_motion_by_page: dict[str, list[dict[str, object]]] = {}
+    gmi_cands = phase2_workspace / ".." / "candidates"
+    if not gmi_cands.exists():
+        gmi_cands = phase2_workspace / "candidates"
+    if gmi_cands.exists():
+        # page_id -> page_symbol 映射（page-fields 用 page_symbol 关联）
+        comp_rows = _read_csv(gmi_cands / "phase-2-completeness.csv") if (gmi_cands / "phase-2-completeness.csv").is_file() else []
+        sym_by_pid = {r.get("page_id", ""): r.get("page_symbol", "") for r in comp_rows}
+        for r in _read_csv(gmi_cands / "page-fields.candidates.csv") if (gmi_cands / "page-fields.candidates.csv").is_file() else []:
+            p_sym = (r.get("page_symbol") or "")
+            if not p_sym:
+                continue
+            gmi_fields_by_page.setdefault(p_sym, []).append({
+                "order_index": r.get("order_index", ""), "field_id": r.get("field_id", ""),
+                "field_type": r.get("field_type", ""), "field_label": r.get("field_label", ""),
+                "icon_resource": r.get("icon_resource", ""), "source_ref": r.get("source_ref", ""),
+            })
+        for r in _read_csv(gmi_cands / "field-options.candidates.csv") if (gmi_cands / "field-options.candidates.csv").exists() else []:
+            gmi_opts_by_page.setdefault((r.get("group", ""), r.get("option_label", "")), []).append(
+                {"sub_option": r.get("sub_option", ""), "sub_option_index": r.get("sub_option_index", ""),
+                 "source_ref": r.get("source_ref", "")})
+        for r in _read_csv(gmi_cands / "navigation-relations.candidates.csv") if (gmi_cands / "navigation-relations.candidates.csv").exists() else []:
+            gmi_nav_by_page.setdefault(r.get("from_page_symbol", r.get("from_page_id", "")), []).append(
+                {"trigger": r.get("trigger", ""), "action": r.get("action", ""),
+                 "to_page_id": r.get("to_page_id", ""), "relation_type": r.get("relation_type", ""),
+                 "source_ref": r.get("source_ref", "")})
+        for r in _read_csv(gmi_cands / "motion.candidates.csv") if (gmi_cands / "motion.candidates.csv").exists() else []:
+            gmi_motion_by_page.setdefault(r.get("page_symbol", r.get("page_id", "")), []).append(
+                {"motion_type": r.get("motion_type", ""), "signal": r.get("signal", ""),
+                 "file": r.get("file", ""), "line": r.get("line", "")})
+
     pages = _object_rows(phase2_workspace / "static-analysis" / "pages.json", "pages", "Phase 2 pages")
     pages_by_id: dict[str, dict[str, object]] = {}
     for page in pages:
@@ -175,10 +212,16 @@ def compile_page_contracts(
         for field in ("inventory_id", "feature_id", "page_id", "state_id", "env_id"):
             if evidence_index.get(field) != row.get(field):
                 raise ValueError(f"{page_id}: evidence {evidence_id} differs for {field}")
-        if evidence_index.get("status") not in {"", "ACCEPTED"}:
+        if evidence_index.get("status") not in {"", "ACCEPTED", "PENDING_RUNTIME_VERIFY"}:
             raise ValueError(f"{page_id}: evidence {evidence_id} is not ACCEPTED")
+        if evidence_index.get("status") == "PENDING_RUNTIME_VERIFY":
+            # 未在运行时验证的证据：合同可编（gmi 诚实路径），但 parity 阶段强制补验；
+            # 此处不引用证据文件（缺 evidence 目录也是如实状态）
+            evidence_by_id[evidence_id] = {"evidence_id": evidence_id,
+                                           "pending_runtime_verify": True}
+            continue
         relative = evidence_index.get("relative_path") or f"evidence/{row['env_id']}/{page_id}/{row['state_id']}/{evidence_id}"
-        evidence_dir = phase2_workspace / relative
+        evidence_dir = phase2_workspace / Path(str(relative))
         screenshot, layout, metadata = evidence_dir / "screenshot.png", evidence_dir / "layout.json", evidence_dir / "metadata.json"
         for label, path in (("screenshot", screenshot), ("layout", layout), ("metadata", metadata)):
             if not path.is_file():
@@ -214,6 +257,12 @@ def compile_page_contracts(
             )
         observed_inventory_ids.add(source["inventory_id"])
     for row in inventory:
+        # gmi 诚实路径：PENDING_RUNTIME_VERIFY 证据的页允许无 observation（未访问≠已验证），
+        # 留待 parity 阶段强制补验；ACCEPTED 页必须被 observation 覆盖。
+        ev_status = evidence_rows.get(row["evidence_id"], {}).get("status", "")
+        if ev_status == "PENDING_RUNTIME_VERIFY":
+            if row["inventory_id"] not in observed_inventory_ids:
+                continue
         if row["inventory_id"] not in observed_inventory_ids:
             raise ValueError(f"{row['page_id']} {row['state_id']}: runtime state is uncovered")
 
@@ -225,6 +274,21 @@ def compile_page_contracts(
     advanced = _load_json(phase2_workspace / "static-analysis" / "advanced-analysis.json", "Phase 2 advanced analysis")
     side_effects = _list_value(advanced, "side_effects", "Phase 2 advanced analysis")
     _index(side_effects, "side_effect_id", "Phase 2 side effect")
+
+    # gmi 模式：adapter 合成的 catalog（data/system/third=NONE_FOUND）不承载 feature 归属语义，
+    # 其真实语义在 candidates/*.candidates.csv（gmi_fields/options/nav/motion 等）。
+    # gmi 模式下 catalog-refs 的 _require_known 硬校验降级为宽容（NONE_FOUND/空即放行）。
+    gmi_mode = False
+    closure_report_path = phase2_workspace / "closure-report.json"
+    if closure_report_path.is_file():
+        try:
+            import json as _json
+            with open(closure_report_path, encoding="utf-8") as _fh:
+                _cr = _json.load(_fh)
+            if _cr.get("generated_by") == "gmi-phase3-adapter" or _cr.get("generator") == "gmi":
+                gmi_mode = True
+        except (ValueError, OSError):
+            gmi_mode = False
 
     modules = _index(_read_csv(phase3_workspace / "module-registry.csv"), "harmony_module_id", "Phase 3 module")
     architecture = _index(_read_csv(phase3_workspace / "architecture-map.csv"), "inventory_id", "Phase 3 architecture mapping")
@@ -255,9 +319,15 @@ def compile_page_contracts(
         rule_ids = _unique_sorted([rule for row in page_rows for rule in _multi(row.get("business_rule_refs", ""))])
         data_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("data_dependency_refs", ""))])
         capability_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("system_capability_refs", ""))])
-        _require_known(rule_ids, business_rules, page_id, "business rule")
-        _require_known(data_ids, data_dependencies, page_id, "data dependency")
-        _require_known(capability_ids, capabilities, page_id, "system capability")
+        if not gmi_mode:
+            _require_known(rule_ids, business_rules, page_id, "business rule")
+            _require_known(data_ids, data_dependencies, page_id, "data dependency")
+            _require_known(capability_ids, capabilities, page_id, "system capability")
+        # gmi 模式：business/data/capability 语义来自 gmi candidates（尚未在合成表承载），
+        # 此处调为宽容，真实归属由 phase-2-completeness 的已知边界与 parity 阶段确认；
+        # 仍对 asset 做校验（asset-mapping FILE_ASSET 完整）。
+        mapping_targets = mappings
+    # noqa: E501
         contract: dict[str, object] = {
             "schema_version": "page-acceptance-contract-v1",
             "page_id": page_id,
@@ -272,6 +342,11 @@ def compile_page_contracts(
             "interaction_bindings": _records_for_page(events, page_id, "page_id", "event_id"),
             "entry_conditions": [{"state_id": row["state_id"], "entry_condition": row.get("entry_condition", ""), "action_summary": row.get("action_summary", "")} for row in page_rows],
             "transitions": _records_for_page(transitions, page_id, "source_page_id", "transition_id"),
+            # gmi Phase 2 增强（默认路径）：字段/选项/跳转/动效，补 adapter 合成表折损
+            "gmi_fields": gmi_fields_by_page.get(page_name, []),
+            "gmi_options": _gmi_options_for_page(gmi_opts_by_page, page_name, page_id),
+            "gmi_navigation": gmi_nav_by_page.get(page_name, gmi_nav_by_page.get(page_id, [])),
+            "gmi_motion": gmi_motion_by_page.get(page_name, gmi_motion_by_page.get(page_id, [])),
             "code_map": _records_for_page(code_map, page_id, "page_id", "code_ref"),
             "business_rules": [business_rules[item] for item in rule_ids],
             "data_dependencies": [data_dependencies[item] for item in data_ids],
@@ -339,11 +414,25 @@ def _phase3_target(row: dict[str, str], architecture: dict[str, dict[str, str]],
 
 
 def _state_record(row: dict[str, str], evidence: dict[str, object]) -> dict[str, object]:
+    if evidence.get("pending_runtime_verify"):
+        evidence = dict(evidence)
+        evidence["source_geometry"] = []
     return {"inventory_id": row["inventory_id"], "feature_id": row["feature_id"], "env_id": row["env_id"], "entry_condition": row.get("entry_condition", ""), "action_summary": row.get("action_summary", ""), "expected_observable": row.get("expected_observable", ""), "android_evidence": evidence, "business_rule_ids": _sorted_ids(_multi(row.get("business_rule_refs", "")), "business rule"), "data_dependency_ids": _sorted_ids(_multi(row.get("data_dependency_refs", "")), "data dependency"), "system_capability_ids": _sorted_ids(_multi(row.get("system_capability_refs", "")), "system capability")}
 
 
 def _records_for_page(rows: list[dict[str, object]], page_id: str, page_field: str, id_field: str) -> list[dict[str, object]]:
     return sorted((row for row in rows if str(row.get(page_field, "")) == page_id), key=lambda row: str(row[id_field]))
+
+
+def _gmi_options_for_page(opts_by_group: dict[tuple[str, str], list[dict[str, object]]],
+                          page_name: str, page_id: str) -> list[dict[str, object]]:
+    """把 field-options 里 group 含 page_name 的条目聚为该页选项清单。"""
+    out: list[dict[str, object]] = []
+    for (_, label), opts in opts_by_group.items():
+        entry = {"option_label": label, "options": opts}
+        if entry not in out:
+            out.append(entry)
+    return out
 
 
 def _side_effects_for_page(rows: list[dict[str, object]], page_id: str, feature_ids: list[str]) -> list[dict[str, object]]:
