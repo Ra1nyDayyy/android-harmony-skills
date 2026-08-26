@@ -6268,7 +6268,7 @@ def _gmi_phase2_inputs(run_dir: Path, errors: list[str]) -> tuple[dict[str, Any]
             nested / "coverage",
             nested / "runtime-evidence",
         )
-=======
+
     # 原生独立布局：closure 写在 phase-02-android-inventory 根（gmi_closure 默认输出）
     p2_closure = p2 / "phase-2-closure.json"
     if p2_closure.is_file():
