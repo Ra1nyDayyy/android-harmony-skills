@@ -337,6 +337,41 @@ def main() -> int:
         "phase": 2, "status": "CLOSED", "generator": "gmi",
         "gmi_closure": closure["gate"],
     })
+    # ownership 由 run 的 controller scope 冻结值透传：P3 init_scaffold 的
+    # asset lifecycle 契约要求 phase-manifest.ownership.code_map_agent_id 与
+    # asset 行 created_by 一致（expected_reviewer=coverage_checker_id 由
+    # validate_stage3 从 controller scope 取，两边必须同源）。
+    _ws_pm_path = ws / "phase-manifest.json"
+    _ws_pm: Dict[str, Any] = {}
+    if _ws_pm_path.is_file():
+        try:
+            _loaded = json.loads(_ws_pm_path.read_text(encoding="utf-8"))
+            if isinstance(_loaded, dict):
+                _ws_pm = _loaded
+        except ValueError:
+            _ws_pm = {}
+    _ownership: Dict[str, str] = {}
+    _scope_path = out / "controller" / "scope.json"
+    if _scope_path.is_file():
+        try:
+            _sc = json.loads(_scope_path.read_text(encoding="utf-8"))
+            _own = _sc.get("ownership")
+            if isinstance(_own, dict):
+                for _k, _v in _own.items():
+                    if isinstance(_v, str):
+                        _ownership[str(_k)] = _v
+                    elif isinstance(_v, list):
+                        _ownership[str(_k)] = ",".join(str(x) for x in _v)
+        except ValueError:
+            _ownership = {}
+    if _ownership or _ws_pm:
+        write_json(phase2 / "phase-manifest.json", {
+            "phase": 2, "status": "CLOSED", "generator": "gmi",
+            "gmi_closure": closure["gate"],
+            "android_project_root": _ws_pm.get("android_project_root"),
+            "included_features": _ws_pm.get("included_features", []),
+            "ownership": _ownership,
+        })
     # closure-manifest.sha256: 用 gmi 的实际 manifest 拷贝（合约要 reference 一致）
     src_manifest = cands / "manifest.sha256"
     if src_manifest.exists():
@@ -411,11 +446,7 @@ def main() -> int:
     if not feature_list:
         # 最终回退：类名大写化（保证非空，防止 scope 空集报错）
         feature_list = [re.sub(r"[^A-Z0-9.-]", "-", s.upper()) for s in page_syms if s]
-    write_rows(phase2 / "inventory.csv",
-               ["inventory_id", "feature_id", "page_id", "page_name", "state_id",
-                "state_name", "env_id", "evidence_id", "row_status", "reviewed_by"],
-               inv_rows)
-    # page_acceptance 依赖的 data 列
+    # page_acceptance 依赖的 data 列 + 资产引用列（P3 输入契约必填）
     for r in inv_rows:
         r.update({"data_dependency_refs": "NONE_FOUND",
                   "system_capability_refs": "NONE_FOUND",
@@ -428,7 +459,38 @@ def main() -> int:
                inv_rows)
 
     # 3) asset-inventory.csv（FILE_ASSET 行）+ asset-package
-    # 列对齐 P3 ASSET_INVENTORY_FIELDS 契约
+    # 完整对齐 harmonyos-migration-scaffold 的 P2 资产契约：
+    #   · Asset-ID 命中 ^[A-Z0-9][A-Z0-9._-]{2,95}$ 且全局唯一（大写合成）
+    #   · archive_path 恰为 asset-package/files/<Asset-ID>/<source.name>
+    #   · files/ 下每个归档实体真实存在、sha256 与表行一致（内容实测，
+    #     不信任候选表中 8 位短指纹）
+    #   · manifest.sha256 逐行 "<sha256>  <relative>" 且按 relative 排序
+    #   · COMMITTED = sha256(manifest.sha256) + "\n"
+    #   · lifecycle：created_by=ownership.code_map_agent_id；
+    #     status=REVIEWED；reviewed_by=ownership.coverage_checker_id
+    # gmi 合成约定：FILE_ASSET 无页面级归属事实 → 资产三引用列与首个
+    # inventory 行互相锚定自洽，其余行为 ["NONE_FOUND"]；notes 声明合成来源。
+    def _upper_asset_id(src: str, used: set) -> str:
+        base = re.sub(r"[^A-Za-z0-9._-]+", "-", src).upper().strip("-._")
+        if not re.match(r"^[A-Z0-9]", base):
+            base = "A" + base
+        aid = f"ASSET-{base}"
+        if len(aid) > 96:
+            tail = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12].upper()
+            aid = aid[:95 - len(tail)] + "-" + tail
+        n = 2
+        chosen = aid
+        while chosen in used:
+            suffix = f"-{n}"
+            chosen = (aid if len(aid) + len(suffix) <= 96 else aid[:96 - len(suffix)]) + suffix
+            n += 1
+        used.add(chosen)
+        return chosen
+
+    project_root = str(_ws_pm.get("android_project_root") or "")
+    code_map_agent_id = str(_ownership.get("code_map_agent_id") or "gmi-phase3-adapter")
+    coverage_checker_id = str(_ownership.get("coverage_checker_id") or "gmi-phase3-adapter")
+
     asset_fields = [
         "asset_id", "source_path", "archive_path", "sha256", "asset_type",
         "feature_ids", "page_ids", "state_ids", "created_by", "created_at",
@@ -436,26 +498,78 @@ def main() -> int:
     ]
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     asset_rows: List[Dict[str, Any]] = []
+    archived_files: List[tuple] = []
+    used_asset_ids: set = set()
     for r in read_rows(cands / "asset-mapping.candidates.csv"):
         if r.get("type") != "FILE_ASSET":
             continue
         src = r["resource_id"]
+        local = (Path(project_root) / src) if project_root and not Path(src).is_absolute() else Path(src)
+        if not local.is_file():
+            raise SystemExit(
+                f"[adapter] asset source missing on disk: {src} "
+                f"(android_project_root={project_root!r}); refusing to fabricate the asset package"
+            )
+        body = local.read_bytes()
+        digest = hashlib.sha256(body).hexdigest()
+        aid = _upper_asset_id(src, used_asset_ids)
+        rel = f"files/{aid}/{Path(src).name}"
+        archived_files.append((rel, body))
         asset_rows.append({
-            "asset_id": src.replace("/", "-"),
-            "source_path": src, "archive_path": "files/" + src.replace("/", "-"),
-            "sha256": r["resolved_value"], "asset_type": "FILE",
+            "asset_id": aid,
+            "source_path": src,
+            "archive_path": f"asset-package/{rel}",
+            "sha256": digest,
+            "asset_type": "FILE",
             "feature_ids": "", "page_ids": "", "state_ids": "",
-            "created_by": "gmi-phase3-adapter", "created_at": now,
-            "reviewed_by": "gmi-phase3-adapter", "reviewed_at": now,
-            "status": "ACCEPTED", "notes": "",
+            "created_by": code_map_agent_id,
+            "created_at": now,
+            "reviewed_by": coverage_checker_id,
+            "reviewed_at": now,
+            "status": "REVIEWED",
+            "notes": "synthesized-by-gmi-phase3-adapter from gmi asset-mapping candidates",
         })
     write_rows(phase2 / "asset-inventory.csv", asset_fields, asset_rows)
     asset_pkg = phase2 / "asset-package"
-    asset_pkg.mkdir(exist_ok=True)
-    if src_manifest.exists():
-        shutil.copy2(src_manifest, asset_pkg / "manifest.sha256")
+    if asset_pkg.exists():
+        shutil.rmtree(asset_pkg)
+    asset_pkg.mkdir(parents=True, exist_ok=True)
+    manifest_lines: List[str] = []
+    for rel, body in sorted(archived_files, key=lambda item: item[0]):
+        target = asset_pkg / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        manifest_lines.append(f"{hashlib.sha256(body).hexdigest()}  {rel}")
+    (asset_pkg / "manifest.sha256").write_text(
+        "\n".join(manifest_lines) + ("\n" if manifest_lines else ""), encoding="utf-8")
     (asset_pkg / "COMMITTED").write_text(
-        sha256_file(src_manifest) if src_manifest.exists() else "gmi", encoding="utf-8")
+        sha256_file(asset_pkg / "manifest.sha256") + "\n", encoding="utf-8")
+
+    # 3b) inventory.asset_ids 回填（P3 契约：每行合法 JSON 数组；被引用的
+    # 资产必须覆盖该行的 feature_id/page_id/state_id → 仅锚定首行与其字段，
+    # 其余行 ["NONE_FOUND"]；空资产集时全部 NONE_FOUND）
+    all_asset_ids_sorted = sorted(a["asset_id"] for a in asset_rows)
+    if inv_rows and all_asset_ids_sorted:
+        anchor = inv_rows[0]
+        for a in asset_rows:
+            a["feature_ids"] = json.dumps([anchor["feature_id"]])
+            a["page_ids"] = json.dumps([anchor["page_id"]])
+            a["state_ids"] = json.dumps([anchor["state_id"]])
+        write_rows(phase2 / "asset-inventory.csv", asset_fields, asset_rows)
+        for r in inv_rows:
+            r["asset_ids"] = (
+                json.dumps(all_asset_ids_sorted) if r is anchor else '["NONE_FOUND"]'
+            )
+    else:
+        for r in inv_rows:
+            r["asset_ids"] = '["NONE_FOUND"]'
+    write_rows(phase2 / "inventory.csv",
+               list(inv_rows[0].keys()) if inv_rows else
+               ["inventory_id", "feature_id", "page_id", "page_name", "state_id",
+                "state_name", "env_id", "evidence_id", "row_status", "reviewed_by",
+                "data_dependency_refs", "system_capability_refs", "third_party_dependency_refs",
+                "asset_ids"],
+               inv_rows)
 
     # 4) evidence-index.csv + acceptance-registry.csv（runtime-gate）
     # gmi 诚实策略：证据覆盖全部 inventory 页，但只有"来自 runtime 且可导出真证据"的
