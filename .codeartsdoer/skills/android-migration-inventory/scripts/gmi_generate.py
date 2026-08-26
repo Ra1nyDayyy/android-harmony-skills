@@ -454,6 +454,25 @@ def make_menu_option_rows(menu_when_rows: List[Dict[str, Any]]) -> List[Dict[str
     return rows
 
 
+
+
+def make_behavior_rows(behaviors: List[Dict[str, Any]],
+                       pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """behavior flow rows -> candidates（P4 行为契约消费）。"""
+    sym_by_id = {p["page_id"]: p["symbol"] for p in pages}
+    rows = []
+    for i, b in enumerate(behaviors, start=1):
+        rows.append({
+            "candidate_id": f"CAND-BEH-{i:04d}",
+            "page_id": b.get("page_id", ""),
+            "page_symbol": b.get("page_symbol", "") or sym_by_id.get(b.get("page_id", ""), ""),
+            "event": b.get("event", ""), "action": b.get("action", ""),
+            "params": b.get("params", ""), "data_target": b.get("data_target", ""),
+            "side_effect": b.get("side_effect", ""), "source_ref": b.get("source_ref", ""),
+        })
+    return rows
+
+
 def make_nav_relation_rows(rels: List[Dict[str, Any]],
                            pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
@@ -773,6 +792,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     arrays = scan.scan_string_arrays(files)
     to_branches, menu_when_rows = scan.scan_when_branches(files)
     nav_rels = scan.scan_nav_relations(files, pages)
+    behaviors = scan.scan_behaviors(files, pages)
     risk_probes = scan.scan_risk_probes(files, pages)
     palette = scan.scan_color_palette(files)
     motion = scan.scan_motion(files, pages)
@@ -785,6 +805,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     dep_rows = make_dep_rows(deps)
     opt_rows = make_field_options_rows(pref_rows, arrays, to_branches) + make_menu_option_rows(menu_when_rows)
     nav_rows = make_nav_relation_rows(nav_rels, pages)
+    behavior_rows = make_behavior_rows(behaviors, pages)
     risk_rows = make_risk_rows(risk_probes)
     pal_rows = make_palette_rows(palette)
     motion_rows = make_motion_rows(motion, pages)
@@ -823,6 +844,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
         "third-party-dependencies.candidates.csv": dep_rows,
         "field-options.candidates.csv": opt_rows,
         "navigation-relations.candidates.csv": nav_rows,
+        "behavior.candidates.csv": behavior_rows,
         "risk-probes.candidates.csv": risk_rows,
         "color-palette.candidates.csv": pal_rows,
         "motion.candidates.csv": motion_rows,
@@ -852,6 +874,9 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     _csv_write(out_cand / "navigation-relations.candidates.csv",
                ["candidate_id", "from_page_id", "from_page_symbol", "trigger", "action",
                 "to_page_id", "relation_type", "source_ref"], nav_rows)
+    _csv_write(out_cand / "behavior.candidates.csv",
+               ["candidate_id", "page_id", "page_symbol", "event", "action", "params",
+                "data_target", "side_effect", "source_ref"], behavior_rows)
     _csv_write(out_cand / "risk-probes.candidates.csv",
                ["candidate_id", "probe_id", "category", "severity", "file", "line",
                 "signal", "count", "page_id", "harmony_hint"], risk_rows)
@@ -882,6 +907,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
               "dependency_candidates": len(dep_rows),
               "field_option_candidates": len(opt_rows),
               "nav_relation_candidates": len(nav_rows),
+              "behavior_candidates": len(behavior_rows),
               "risk_probe_candidates": len(risk_rows),
               "color_palette_candidates": len(pal_rows),
               "motion_candidates": len(motion_rows),
@@ -935,6 +961,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
           f" fields={counts['page_field_candidates']} deps={counts['dependency_candidates']}"
           f" options={counts['field_option_candidates']} nav={counts['nav_relation_candidates']}"
           f" risk={counts['risk_probe_candidates']} colors={counts['color_palette_candidates']}"
+          f" beh={counts['behavior_candidates']}"
           f" motion={counts['motion_candidates']} completeness={counts['completeness_rows']}")
     print(f"[gmi] coverage covered={covered} out_of_scope={ack} unmapped={len(unmapped)}")
 

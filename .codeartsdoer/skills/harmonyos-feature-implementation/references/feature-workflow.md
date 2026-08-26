@@ -46,3 +46,13 @@ State merge, split, removal, carrier replacement, missing UI, and extra or compr
 Before editing, read the parity row's immutable `migration-unit-contracts.json` record. Treat its component, event, transition, expected-observable, business-rule, data, capability, dependency, and advanced-obligation IDs as the minimum implementation checklist. Do not mark a feature complete while any migration unit lacks a runtime proof for one of these IDs.
 
 The first failed execution starts an automatic repair loop. Rebuild and recapture after each repair. The gate permits no more than two automatic repair attempts for one migration unit; on exhaustion, stop autonomous edits and produce a grouped error report instead of accumulating unrelated changes.
+
+## Functional behavior obligation (gmi path)
+
+`page-contract.behavior_bindings` carries the P2 behavior flow (event → action → data_target → side_effect). It is **mandatory implementation input**, not advisory:
+
+- Every interactive component with a `behavior_bindings` record **must** implement its event handler: the real action (data write / query / state change) plus the recorded side effect. Empty handlers (`onClick = {}`) are unacceptable and count as a functional defect.
+- If a behavior cannot be implemented (dependency on a unavailable Harmony capability, external service, complex AI flow, system-level permission): implement the UI, mark the event handler with `// DEFERRED-BEHAVIOR: <reason>` and the file:line of the Android source that defines the behavior, and add a row to `page-implementation-ledger` (status `DEFERRED_BEHAVIOR`). Never silently drop.
+- Data channel basics: Room DAO `@Insert/@Update/@Delete/@Query` map to ArkUI RelationalStore (preference/relational) equivalents; `business_rules` SQL (LIKE / ORDER BY / CASE WHEN) is the query contract.
+- Functional parity check (when Harmony emulator available): after visual parity, execute a behavior probe on each risky binding (click → assert observable change such as list update / navigation / dialog) and record evidence; a probe that fails returns the unit to repair, same ≤2 attempts rule.
+- Complex flows (swipe-delete + undo, AI extraction cascade, share-to-other-app, system permissions) are the "difficult cases" bucket: expected to be `DEFERRED_BEHAVIOR` in autonomous mode, reviewed by human later. Do not fabricate a partial behavior to look complete.

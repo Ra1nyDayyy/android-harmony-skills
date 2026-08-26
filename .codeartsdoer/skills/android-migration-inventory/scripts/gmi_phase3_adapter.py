@@ -122,6 +122,12 @@ def infer_page_kind(sym: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="gmi phase-2 -> phase3/4 adapter")
+    import re as _feat_re
+    _FEAT_RE_OK = _feat_re.compile(r"^[A-Z0-9][A-Z0-9._-]{2,95}$")
+    def _feat_clean(v: str) -> str:
+        v = (v or "").strip().upper()
+        return v if _FEAT_RE_OK.match(v) else "MAIN"
+
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--out", default=None, help="输出 run 目录（默认 workspace 同级 <name>-run）")
     args = ap.parse_args()
@@ -198,7 +204,7 @@ def main() -> int:
         if not sym or sym in page_syms:
             continue
         page_syms.append(sym)
-        feat = page_to_feature.get(sym) or "MAIN"
+        feat = _feat_clean(page_to_feature.get(sym) or "MAIN")
         inv_rows.append({
             "inventory_id": f"INV-{sanitize(sym).upper()}",
             "feature_id": feat, "page_id": pid, "page_name": sym,
@@ -222,14 +228,16 @@ def main() -> int:
             import json as _j
             mm = _j.loads(pm.read_text(encoding="utf-8"))
             for f in mm.get("included_features", []):
-                if f and f not in feature_list:
-                    feature_list.append(f)
+                f2 = _feat_clean(f)
+                if f2 and f2 not in feature_list:
+                    feature_list.append(f2)
         except ValueError:
             feature_list = []
     # 补充 inventory feature 列（页面级 primary feature；可能含 manifest 没有的）
     for feat in sorted(set(page_to_feature.values())):
-        if feat and feat not in feature_list:
-            feature_list.append(feat)
+        f2 = _feat_clean(feat)
+        if f2 and f2 not in feature_list:
+            feature_list.append(f2)
     if not feature_list:
         # 最终回退：类名大写化（保证非空，防止 scope 空集报错）
         feature_list = [re.sub(r"[^A-Z0-9.-]", "-", s.upper()) for s in page_syms if s]

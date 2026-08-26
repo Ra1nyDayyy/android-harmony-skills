@@ -112,6 +112,7 @@ def compile_page_contracts(
     gmi_opts_by_page: dict[str, list[dict[str, object]]] = {}
     gmi_nav_by_page: dict[str, list[dict[str, object]]] = {}
     gmi_motion_by_page: dict[str, list[dict[str, object]]] = {}
+    gmi_beh_by_page: dict[str, list[dict[str, object]]] = {}
     gmi_cands = phase2_workspace / ".." / "candidates"
     if not gmi_cands.exists():
         gmi_cands = phase2_workspace / "candidates"
@@ -141,6 +142,11 @@ def compile_page_contracts(
             gmi_motion_by_page.setdefault(r.get("page_symbol", r.get("page_id", "")), []).append(
                 {"motion_type": r.get("motion_type", ""), "signal": r.get("signal", ""),
                  "file": r.get("file", ""), "line": r.get("line", "")})
+        for r in _read_csv(gmi_cands / "behavior.candidates.csv") if (gmi_cands / "behavior.candidates.csv").exists() else []:
+            gmi_beh_by_page.setdefault(r.get("page_symbol", r.get("page_id", "")), []).append(
+                {"event": r.get("event", ""), "action": r.get("action", ""),
+                 "params": r.get("params", ""), "data_target": r.get("data_target", ""),
+                 "side_effect": r.get("side_effect", ""), "source_ref": r.get("source_ref", "")})
 
     pages = _object_rows(phase2_workspace / "static-analysis" / "pages.json", "pages", "Phase 2 pages")
     pages_by_id: dict[str, dict[str, object]] = {}
@@ -347,6 +353,7 @@ def compile_page_contracts(
             "gmi_options": _gmi_options_for_page(gmi_opts_by_page, page_name, page_id),
             "gmi_navigation": gmi_nav_by_page.get(page_name, gmi_nav_by_page.get(page_id, [])),
             "gmi_motion": gmi_motion_by_page.get(page_name, gmi_motion_by_page.get(page_id, [])),
+            "behavior_bindings": gmi_beh_by_page.get(page_name, gmi_beh_by_page.get(page_id, [])),
             "code_map": _records_for_page(code_map, page_id, "page_id", "code_ref"),
             "business_rules": [business_rules[item] for item in rule_ids],
             "data_dependencies": [data_dependencies[item] for item in data_ids],

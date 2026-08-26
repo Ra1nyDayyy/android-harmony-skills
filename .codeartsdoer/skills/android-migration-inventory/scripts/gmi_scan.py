@@ -1612,3 +1612,77 @@ def scan_shape_details(nodes: List[Dict[str, Any]]) -> None:
             items = re.findall(r"0x[0-9A-Fa-f]{8}|[A-Za-z]+500", gm.group(2))
             attrs["gradient"] = " > ".join("#" + i[2:] if i.startswith("0x") else "token:" + i for i in items)
         n["attributes"] = attrs
+
+# ---------------------------------------------------------------------------
+# behaviors: 行为流（onClick/onXxx -> action -> data_target -> side_effect）
+# P4 功能还原核心：按钮/开关/查询 的事件处理要落到数据通道，而非只有 UI。
+# ---------------------------------------------------------------------------
+
+_BEHAVIOR_EVENT_RE = re.compile(
+    r"(?:onClick|onCheckedChange|onLongClick|onValueChange|onDismiss|onConfirm|onSave|onDelete|onAdd|onSelect|onToggle|onSearch|onSubmit)\s*=\s*\{([^}]{0,220})", re.S)
+_BEHAVIOR_CALL_RE = re.compile(
+    r"(?:\bviewModel(?:\s*\?)?\.|\b(?:dao|repository|repo|database)\s*\.|\bauthStore\s*\.|\binventory\s*\.)"
+    r"([A-Za-z0-9_]+)\s*\(")
+_BEHAVIOR_ALT_RE = re.compile(r"\b(?:insert|update|delete|remove|add|save|submit|toggle|switch|select|search|query|filter|load|refresh|navigate|launch|show|hide|open|close|clear|copy|share|export)\w*\s*\(")
+_BEHAVIOR_LAMBDA_REF_RE = re.compile(r"\b(vm\.|viewModel\.|onItemClick|onAction|callback)\s*")
+
+
+def scan_behaviors(files: List[Dict[str, Any]],
+                   pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """从源码抽事件行为：page/component 的事件 handler 调用的数据方法与其目标/副作用。
+
+    一行一条：page_id | component(事件挂载点/文本) | event | action | params | data_target | side_effect
+    供 P4 contract 的 behavior_bindings 直接消费。
+    """
+    page_by_symbol = {p["symbol"]: p for p in pages}
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for f in files:
+        if f["category"] != "source":
+            continue
+        text = read_text(f["abs"])
+        rel = f["rel"]
+        stem = Path(rel).stem
+        page = page_by_symbol.get(stem)
+        pid = page["page_id"] if page else ""
+        # 找到从事件 handler 到数据方法的关系
+        for m in _BEHAVIOR_EVENT_RE.finditer(text):
+            evt = "click"
+            raw = f"onClick" if "onClick" in m.group(0)[:40] else (m.group(0)[:40])
+            handler = m.group(1)
+            line = _line_of(text, m.start())
+            # data call 搜索
+            dm = _BEHAVIOR_CALL_RE.search(handler)
+            if dm:
+                action = dm.group(1)
+                data_target = "viewModel/dao/repository"
+            else:
+                am = _BEHAVIOR_ALT_RE.search(handler)
+                action = am.group(0) if am else ""
+                data_target = "component/internal"
+            # 副作用判断
+            side = []
+            if "navigate" in handler or "navController" in handler or "backStack" in handler:
+                side.append("navigate")
+            if "refresh" in handler or "notify" in handler or "adapter" in handler or "reload" in handler:
+                side.append("refresh-list")
+            if "Toast" in handler or "snackBar" in handler or "Snackbar" in handler or "showDialog" in handler:
+                side.append("feedback")
+            if "alertDialog" in handler or "dialog" in handler.lower() or "popup" in handler.lower():
+                side.append("dialog")
+            if "dismiss" in handler.lower():
+                side.append("dismiss")
+            key = (rel, line, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "page_id": pid, "page_symbol": page["symbol"] if page else "",
+                "event": raw[:32], "target": _BEHAVIOR_EVENT_RE.pattern or "",
+                "action": action[:60],
+                "params": (dm.group(0)[:60] if dm else handler[:50]),
+                "data_target": data_target,
+                "side_effect": "+".join(side) if side else "none",
+                "source_ref": f"{rel}:{line}",
+            })
+    return rows
