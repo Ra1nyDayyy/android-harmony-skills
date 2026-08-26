@@ -336,6 +336,22 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    # Phase 1 冻结值贯通：preflight_screen.py 写入的 scope.json 若存在，
+    # 且命令行未显式指定 --screen-size/--screen-density，则用 scope 值（全程同一基准）
+    _scope_fp = Path(args.workspace).parent / "controller" / "scope.json"
+    try:
+        if _scope_fp.exists():
+            import json as _j
+            _sc = _j.loads(_scope_fp.read_text(encoding="utf-8"))
+            if _sc.get("screen_resolution") and args.screen_size == "1080x2400":
+                args.screen_size = str(_sc["screen_resolution"])
+            if _sc.get("screen_density") and args.screen_density == "440":
+                args.screen_density = str(_sc["screen_density"])
+            if _sc.get("android_serial"):
+                args.serial = str(_sc["android_serial"])
+    except (ValueError, OSError):
+        pass
+
     ws = Path(args.workspace)
     out_dir = ws / "runtime-evidence"
     pkg, serial, act = args.package, args.serial, args.activity
