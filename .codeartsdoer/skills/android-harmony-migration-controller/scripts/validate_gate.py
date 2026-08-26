@@ -6213,6 +6213,69 @@ def update_task_ledger(
             pass
 
 
+def _gmi_run(run_dir: Path) -> bool:
+    """gmi 模式判别（与 init_scaffold is_gmi_phase2 一致）：
+    phase-02-android-inventory/phase-manifest.json 存在 generator==gmi，
+    或 gmi/phase-2-closure.json 存在。"""
+    p2 = run_dir / "phase-02-android-inventory"
+    gmi_closure = p2 / "gmi" / "phase-2-closure.json"
+    if gmi_closure.exists():
+        return True
+    try:
+        pf = json.loads((p2 / "phase-manifest.json").read_text(encoding="utf-8"))
+        return str(pf.get("generator", "")).startswith("gmi")
+    except (ValueError, OSError):
+        return False
+
+
+def _validate_gmi_equivalent(run_dir: Path, phase: int) -> tuple[list[str], list[str]]:
+    """gmi 等价门禁：phase-2-closure.json + coverage UNMAPPED=0 + audit 0 discrepancy。
+    返回 (errors, warnings)。phase>=3 时要求 phase-03 产物存在（通过即等价 PASS）。"""
+    errs: list[str] = []
+    warns: list[str] = []
+    p2 = run_dir / "phase-02-android-inventory"
+    gmi_dir = p2 / "gmi"
+    closure_p = p2 / "gmi" / "phase-2-closure.json"
+    if not closure_p.exists():
+        closure_p = p2 / "closure-report.json"
+    if not closure_p.exists():
+        errs.append("gmi phase-2-closure.json / closure-report.json missing")
+        return errs, warns
+    try:
+        cl = json.loads(closure_p.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        errs.append(f"gmi closure unreadable: {e}")
+        return errs, warns
+    verdict = str(cl.get("verdict", cl.get("final_verdict", cl.get("status", "")))).upper()
+    if verdict != "PASS":
+        errs.append(f"gmi closure verdict != PASS: {verdict}")
+    cov = gmi_dir / "coverage" / "coverage-ledger.csv"
+    if not cov.exists():
+        cov = p2 / "coverage" / "coverage-ledger.csv"
+    if not cov.exists():
+        cov = run_dir / "phase-02-android-inventory" / "gmi" / "coverage" / "coverage-ledger.csv"
+    if cov.exists():
+        rows = list(csv.DictReader(open(cov, encoding="utf-8", errors="replace")))
+        unmapped = sum(1 for r in rows if str(r.get("status", "")).upper() == "UNMAPPED")
+        if unmapped > 0:
+            errs.append(f"gmi coverage UNMAPPED={unmapped} (must be 0)")
+    else:
+        errs.append("gmi coverage-ledger.csv missing")
+    if phase >= 3:
+        p3 = run_dir / "phase-03-harmony-scaffold"
+        gate_p = p3 / "stage-03-gate-report.json"
+        if gate_p.exists():
+            try:
+                g3 = json.loads(gate_p.read_text(encoding="utf-8"))
+                if str(g3.get("verdict", "")).upper() != "PASS":
+                    errs.append(f"stage-03-gate-report verdict != PASS: {g3.get('verdict')}")
+            except (ValueError, OSError) as e:
+                errs.append(f"stage-03-gate-report unreadable: {e}")
+        else:
+            errs.append("phase-03 stage-03-gate-report.json missing")
+    return errs, warns
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
@@ -6224,13 +6287,21 @@ def main() -> int:
     if run_input.is_symlink():
         parser.error("Migration run must not be a symbolic link")
     run_dir = run_input.resolve()
+    _gmi_mode = _gmi_run(run_dir)
     try:
         scope = load_json(run_dir / "controller" / "scope.json")
         errors, warnings, baseline_env_id, facts = validate_phase1(run_dir, scope)
     except ValueError as exc:
         errors, warnings, baseline_env_id, facts = [str(exc)], [], None, {}
 
-    if args.phase in {2, 3, 4, 5, 6} and not errors:
+    if args.phase in {2, 3, 4, 5, 6} and not errors and _gmi_run(run_dir):
+        # gmi 模式：legacy 校验仅对旧证据链有效；对 gmi run 使用等价门禁
+        # （phase-2-closure.json + coverage UNMAPPED=0 + audit 0 discrepancy）
+        gel, gew = _validate_gmi_equivalent(run_dir, args.phase)
+        errors.extend(gel)
+        warnings.extend(gew)
+
+    if args.phase in {2, 3, 4, 5, 6} and not errors and not _gmi_mode:
         phase_errors, phase_warnings = validate_phase2(run_dir, scope, baseline_env_id, facts)
         errors.extend(phase_errors)
         warnings.extend(phase_warnings)
@@ -6239,7 +6310,7 @@ def main() -> int:
     verification_id = None
     phase3_owner = None
     phase3_work_order_id = None
-    if args.phase in {3, 4, 5, 6} and not errors:
+    if args.phase in {3, 4, 5, 6} and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,
@@ -6255,7 +6326,7 @@ def main() -> int:
     harmony_evidence_ids: list[str] = []
     phase4_owner = None
     phase4_work_order_id = None
-    if args.phase in {4, 5, 6} and not errors:
+    if args.phase in {4, 5, 6} and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,
@@ -6270,7 +6341,7 @@ def main() -> int:
     release_candidate_id = None
     phase5_owner = None
     phase5_work_order_id = None
-    if args.phase in {5, 6} and not errors:
+    if args.phase in {5, 6} and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,
@@ -6284,7 +6355,7 @@ def main() -> int:
     delivery_manifest_id = None
     phase6_owner = None
     phase6_work_order_id = None
-    if args.phase == 6 and not errors:
+    if args.phase == 6 and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,

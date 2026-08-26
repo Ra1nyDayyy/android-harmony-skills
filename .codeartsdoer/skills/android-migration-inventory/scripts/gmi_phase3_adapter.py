@@ -555,34 +555,41 @@ def main() -> int:
     }
     wo_root = ctl / "work-orders"
     wo_root.mkdir(exist_ok=True)
-    write_json(wo_root / f"PHASE3-GMI-{ws.name}.json", work_order)
-    write_json(ctl / "scope.json", {
-        "run_id": "RUN-%s" % ws.name,
-        "project_id": "PRJ-%s" % ws.name,
-        "migration_scope": {
-            "included_features": feature_list or list(dict.fromkeys(page_syms)),
-            "excluded_features": [],
-        },
-        "ownership": {
-            "code_map_agent_id": "CODEMAP-001",
-            "migration_controller_id": "team-leader",
-            "coverage_checker_id": "gmi",
-        },
-        "android": {"application_id": find_application_id(ws), "package": find_application_id(ws)},
-        "generated_by": "gmi-phase3-adapter",
-    })
-    write_json(ctl / "gate-report.json", {"phase": 2, "verdict": "PASS",
-                                          "generated_by": "gmi-phase3-adapter"})
-    (ctl / "evidence-anchor-registry.csv").write_text("evidence_id\n", encoding="utf-8")
-    (ctl / "work-order-registry.csv").write_text(
-        "work_order_id,status\nPHASE3-GMI-%s,OPEN\n" % ws.name, encoding="utf-8")
-    write_json(out / "run-manifest.json", {
-        "run_id": "RUN-%s" % ws.name,
-        "project_id": "PRJ-%s" % (Path(args.project).name if hasattr(args, "project") else (ws.name or "gmi")),
-        "id": ws.name, "generated_by": "gmi-phase3-adapter",
-        "ownership": {"code_map_agent_id": "CODEMAP-001", "migration_controller_id": "team-leader"},
-        "phase2_closure_gate": closure["gate"],
-    })
+    # 目标目录已是运行中 run（已有 controller/scope.json 与 run-manifest.json）时，
+    # 绝不写/覆盖 controller 身份文件（scope/gate-report/registries/run-manifest/工单）。
+    # adapter 只对全新独立 run 生成完整 controller；对接已有 run 时只产出 phase-02 布局。
+    _existing_run = (ctl / "scope.json").exists() and (out / "run-manifest.json").exists()
+    if _existing_run:
+        print(f"[adapter] existing run detected at {out}: controller identity PRESERVED (no writes)")
+    else:
+        write_json(wo_root / f"PHASE3-GMI-{ws.name}.json", work_order)
+        write_json(ctl / "scope.json", {
+            "run_id": "RUN-%s" % ws.name,
+            "project_id": "PRJ-%s" % ws.name,
+            "migration_scope": {
+                "included_features": feature_list or list(dict.fromkeys(page_syms)),
+                "excluded_features": [],
+            },
+            "ownership": {
+                "code_map_agent_id": "CODEMAP-001",
+                "migration_controller_id": "team-leader",
+                "coverage_checker_id": "gmi",
+            },
+            "android": {"application_id": find_application_id(ws), "package": find_application_id(ws)},
+            "generated_by": "gmi-phase3-adapter",
+        })
+        write_json(ctl / "gate-report.json", {"phase": 2, "verdict": "PASS",
+                                              "generated_by": "gmi-phase3-adapter"})
+        (ctl / "evidence-anchor-registry.csv").write_text("evidence_id\n", encoding="utf-8")
+        (ctl / "work-order-registry.csv").write_text(
+            "work_order_id,status\nPHASE3-GMI-%s,OPEN\n" % ws.name, encoding="utf-8")
+        write_json(out / "run-manifest.json", {
+            "run_id": "RUN-%s" % ws.name,
+            "project_id": "PRJ-%s" % (Path(args.project).name if hasattr(args, "project") else (ws.name or "gmi")),
+            "id": ws.name, "generated_by": "gmi-phase3-adapter",
+            "ownership": {"code_map_agent_id": "CODEMAP-001", "migration_controller_id": "team-leader"},
+            "phase2_closure_gate": closure["gate"],
+        })
 
     print(f"[adapter] out={out}")
     print(f"[adapter] pages={len(inv_rows)} assets={len(asset_rows)} evidence={len(ev_rows)}")

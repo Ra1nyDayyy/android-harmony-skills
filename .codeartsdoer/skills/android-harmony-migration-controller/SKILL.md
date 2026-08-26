@@ -32,6 +32,12 @@ Initialize with `scripts/init_migration.py`, complete `controller/scope.json`, t
 - SDK/工具链（SDK find）：扫描并锁定 Android（ANDROID_HOME/adb/emulator/java）+ Harmony（hdc/DevEcoStudio/node/ohpm/hvigor）路径与版本，全量写入 scope.json `sdk_toolchain` 块；缺失项输出 `[WARN] missing xxx` 先行暴露（P3/P4 构建门禁会据此硬卡，补齐后重跑）。
 - 冻结值写入 scope.json（`screen_resolution/screen_density/serial` + `sdk_toolchain`），P2 gmi_runtime（`--screen-size/--screen-density`）、P3/P4 构建与 H4ENV 直接复用，全程不改基准。
 
+**gmi 模式 Gate 2/3/4 判定规则**（gmi 流程下 controller 机器复核）：
+- 判别：`phase-02-android-inventory/gmi/phase-2-closure.json` 存在（或 phase-manifest `generator: gmi`）即为 gmi run；`validate_gate.py` 自动走等价门禁（P2: closure PASS + UNMAPPED=0；P3: + stage-03-gate-report PASS），legacy 证据链校验对 gmi run 不再适用。
+- 工单签发：gmi run 的 P3/P4 工单可手工签发（照 `issue_phase3/4_work_order.py` 的结构），**work_order_id 一律大写**（后缀取 scope_sha256 前 12 位大写，如 `WO-PHASE-04-F2CF8BB31CF6`），必须符合 `^[A-Z0-9][A-Z0-9._-]{2,95}$`；签完后 registry 记录 `work_order_sha256` 并追加 decision-log。
+- adapter 防覆盖：`gmi_phase3_adapter.py --out` 指向**已有 controller 的 run** 时不会写 controller/scope.json、run-manifest.json、registries（只产出 phase-02 正式布局）——绝不可因错误 `--out` 覆盖 run 身份；若已误覆盖，从 `phase-02-android-inventory/controller-scope.snapshot.json` 恢复 scope.json（并按决策日志留痕）。
+- 中文路径约束：hvigor 拒绝非 ASCII 工作区路径（00306003 Invalid project path）。若 run 位于中文路径，构建/验证改在 ASCII 载体（如 `/tmp/...`）执行，结果 seal 回正式 run 并在决策日志记录载体差异；原则上 run 路径应全程 ASCII。
+
 ## Phase state machine
 
 For each phase:

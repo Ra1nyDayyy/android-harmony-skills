@@ -91,13 +91,41 @@ def current_size_density(dev: str, serial: str) -> tuple[str, str]:
     return (m.group(1) if m else ""), (m2.group(1) if m2 else "")
 
 
-def set_resolution(dev: str, serial: str, size: str, density: str) -> None:
+def set_resolution(dev: str, serial: str, size: str, density: str) -> bool:
     if dev == "android":
         adb(serial, "shell", "wm", "size", size)
         adb(serial, "shell", "wm", "density", density)
-    else:
-        hdc(serial, "shell", "wm", "size", size)
-        hdc(serial, "shell", "wm", "density", density)
+        return True
+    out = hdc(serial, "shell", "wm", "size", size) + hdc(serial, "shell", "wm", "density", density)
+    if "wm" in out or "__ERR__" in out:
+        return False
+    return True
+
+
+def _harmony_size_density(serial: str, config_hint: str = "") -> tuple[str, str]:
+    """Harmony 模拟器无 wm 命令（Mac/部分镜像）时：
+    优先 hidumper 渲染分辨率（真实证据），密度回退模拟器 config.ini（hw.lcd.density）。"""
+    size_out = hdc(serial, "shell", "hidumper", "-s", "10", "-a", "screen")
+    m = re.search(r"(\d+x\d+)", size_out)
+    size = m.group(1) if m else ""
+    den = ""
+    hid = hdc(serial, "shell", "param", "get", "const.product.density")
+    m2 = re.search(r"(\d+)", hid)
+    if m2:
+        den = m2.group(1)
+    hm = re.search(r"(\d+x\d+)", size_out.lower().replace("render resolution", "render-resolution", 1) if False else size_out)
+    if not size:
+        # 从模拟器部署 config.ini 兜底（仅用于人工复核场景，须显式传入 config_hint）
+        if config_hint and Path(config_hint).exists():
+            txt = Path(config_hint).read_text(encoding="utf-8", errors="replace")
+            mw = re.search(r"hw\.lcd\.single\.width=(\d+)", txt)
+            mh = re.search(r"hw\.lcd\.single\.height=(\d+)", txt)
+            md = re.search(r"hw\.lcd\.density=(\d+)", txt)
+            if mw and mh:
+                size = f"{mw.group(1)}x{mh.group(1)}"
+            if md:
+                den = md.group(1)
+    return size, den
 
 
 def main() -> int:
@@ -131,10 +159,12 @@ def main() -> int:
         if args.harmony_serial not in targets:
             errors.append(f"harmony simulator offline: {args.harmony_serial} (hdc list targets)")
         else:
-            set_resolution("harmony", args.harmony_serial, size, str(args.density))
-            got = current_size_density("harmony", args.harmony_serial)
-            if got[0] != size or got[1] != str(args.density):
-                errors.append(f"harmony screen mismatch: want {size}/{args.density}, got {got}")
+            ok = set_resolution("harmony", args.harmony_serial, size, str(args.density))
+            harm_size, harm_den = _harmony_size_density(args.harmony_serial)
+            if not ok:
+                warns.append("harmony wm unavailable: 分辨率已在模拟器配置层设置，preflight 改为只读探测")
+            if harm_size != size or harm_den != str(args.density):
+                errors.append(f"harmony screen mismatch: want {size}/{args.density}, got {harm_size}/{harm_den}")
     else:
         warns.append("harmony-serial not provided -> Harmony simulator not verified (P4 parity may DEFERRED)")
 
