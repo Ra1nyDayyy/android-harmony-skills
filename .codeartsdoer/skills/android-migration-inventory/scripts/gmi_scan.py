@@ -32,12 +32,15 @@ BINARY_EXTS = {
 # categories that are allowed to be OUT_OF_SCOPE without any candidate
 OUT_OF_SCOPE_CATEGORIES = {"test", "build", "metadata", "binary", "other", "empty"}
 
-FRAGMENT_BASES = ("Fragment",)
+FRAGMENT_BASES = ("Fragment", "DialogFragment", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet")
 ACTIVITY_BASES = (
     "android.app.Activity", "androidx.appcompat.app.AppCompatActivity",
     "androidx.activity.ComponentActivity", "android.app.AppCompatActivity",
     "androidx.fragment.app.FragmentActivity", "Activity",
 )
+# Dialog 承载独立布局时是页面级 UI 承载（如 FileInfoDialog、SearchAndReplaceTextDialog）。
+# 只要基类名是 Dialog/Sheet 语义且该 class 缩进 inflate 布局，就按页面发现。
+DIALOG_BASES = ("Dialog", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet", "Sheet", "DialogFragment", "AppDialog", "ZebraDialog")
 
 XML_ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"")
 TAG_RE = re.compile(r"<([A-Za-z][\w.-]*)\b([^>]*?)(/?)>")
@@ -56,7 +59,7 @@ _DATABINDING_RE = re.compile(r"@\{[^}]*\}")
 _ONCLICK_RE = re.compile(r"android:onClick\s*=\s*\"([^\"]+)\"")
 _INFLATE_RE = re.compile(r"R\.layout\.([A-Za-z0-9_]+)")
 _FRAG_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|data\s+|sealed\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:]*:\s*([A-Za-z0-9_.]+)")
-_ACT_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:]*:\s*([A-Za-z0-9_.]+)")
+_ACT_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:{}]*?(?:extends\s+|\:\s*)([A-Za-z0-9_.]+)")
 _DAO_IFACE_RE = re.compile(r"^\s*(?:@\w+\s*)*\binterface\s+([A-Za-z0-9_]+)\b")
 _DB_CLASS_RE = re.compile(r"@Database")
 
@@ -89,8 +92,11 @@ def classify(rel: str) -> str:
     if rel.endswith("AndroidManifest.xml"):
         return "manifest"
     if rel.endswith((".kt", ".java")):
+        # 生成/实验/补丁类源码（experiments/, *.patch, *.txt.java）不算应用主体，计入 other
         if "/test/" in low or "/androidtest/" in low or rel.endswith(("Test.kt", "Test.java")):
             return "test"
+        if "/experiments/" in low or "/patches/" in low or low.endswith(".txt.java") or low.endswith(".patch"):
+            return "other"
         return "source"
     if "/res/layout/" in low:
         return "layout"
@@ -238,12 +244,16 @@ def discover_pages(project: Path, files: List[Dict[str, Any]]) -> List[Dict[str,
                 continue
             cls, base = cm.group(1), cm.group(2)
             base_short = base.rsplit(".", 1)[-1]
-            if base_short.endswith(FRAGMENT_BASES) or base_short.endswith(ACTIVITY_BASES):
+            # Dialog/Sheet 承载独立布局 = 页面级 UI 承载（按页面发现）；
+            # 纯逻辑 Dialog 工具（不 inflate 布局）仍不算页面。
+            inflates_layout = bool(_INFLATE_RE.search(text))
+            is_dialog_page = base_short in DIALOG_BASES and inflates_layout
+            if base_short.endswith(FRAGMENT_BASES) or base_short.endswith(ACTIVITY_BASES) or is_dialog_page:
                 p = pages.setdefault(cls, {
                     "symbol": cls, "kinds": [], "source_refs": [], "layout_names": [],
                     "is_start": False, "features": [],
                 })
-                kind = "Fragment" if base_short.endswith(FRAGMENT_BASES) else "Activity"
+                kind = "Fragment" if base_short.endswith(FRAGMENT_BASES) else ("Dialog" if is_dialog_page else "Activity")
                 if kind not in p["kinds"]:
                     p["kinds"].append(kind)
                 if f["rel"] not in p["source_refs"]:
@@ -338,6 +348,10 @@ def scan_layout_components(files: List[Dict[str, Any]], pages: List[Dict[str, An
         text = read_text(f["abs"])
         layout_name = Path(f["rel"]).stem
         pid = page_by_layout.get(layout_name, "")
+        # 复用布局（list_item/Adapter 项/dialog item）无页面直接归属时，
+        # 用显式虚拟页 PAGE-NONE 承载，避免下游 P4 丢失字段或全量注入。
+        if not pid:
+            pid = "PAGE-NONE"
         for idx, m in enumerate(TAG_RE.finditer(text), start=1):
             tag, attrs_txt, selfclose = m.groups()
             attrs = dict(XML_ATTR_RE.findall(attrs_txt))
@@ -1626,6 +1640,18 @@ def scan_shape_details(nodes: List[Dict[str, Any]]) -> None:
 
 _BEHAVIOR_EVENT_RE = re.compile(
     r"(?:onClick|onCheckedChange|onLongClick|onValueChange|onDismiss|onConfirm|onSave|onDelete|onAdd|onSelect|onToggle|onSearch|onSubmit)\s*=\s*\{([^}]{0,220})", re.S)
+# Java listener 注册：setXxxListener( (view) -> {...} ) / new Xxx.OnXxx() { public void onXxx(...) {...} }
+_JAVA_LISTENER_RE = re.compile(
+    r"\.setOn(?:Click|CheckedChange|LongClick|ItemClick|ItemLongClick|EditorAction|Touch|FocusChange|Key|CreateContextMenu)"
+    r"Listener\s*\(\s*(?:new\s+[A-Za-z0-9_.<>]+\s*\([^)]*\)\s*\{\s*(?:@Override\s*)?public\s+[A-Za-z0-9_]+\s*(?:on[A-Za-z0-9_]*)\s*\([^)]*\)\s*\{|"
+    r"\([^)]*\)\s*->\s*\{?|"
+    r"[A-Za-z0-9_]+\.\s*\w+\s*->\s*\w+\s*\{|"
+    r"[A-Za-z0-9_]+::[A-Za-z0-9_]+|"
+    r"[A-Za-z0-9_.]*\s*\([^)]*\)\s*->\s*\{)",
+    re.S)
+_BEHAVIOR_EVENT_JAVA_RE = re.compile(
+    r"(?:onClick|onCheckedChange|onLongClick|onItemClick|onItemLongClick|onEditorAction|onTouch|onFocusChange|onKey|onCreateContextMenu)"
+    r"\s*\(\s*([A-Za-z0-9_.,\s<>\[\]{}():@$+-]*?)\s*\)\s*(?:\{|\{)")
 _BEHAVIOR_CALL_RE = re.compile(
     r"(?:\bviewModel(?:\s*\?)?\.|\b(?:dao|repository|repo|database)\s*\.|\bauthStore\s*\.|\binventory\s*\.)"
     r"([A-Za-z0-9_]+)\s*\(")
@@ -1689,6 +1715,45 @@ def scan_behaviors(files: List[Dict[str, Any]],
                 "params": (dm.group(0)[:60] if dm else handler[:50]),
                 "data_target": data_target,
                 "side_effect": "+".join(side) if side else "none",
+                "source_ref": f"{rel}:{line}",
+            })
+        # Java listener 注册（markor 等纯 Java 项目）
+        for lm in _JAVA_LISTENER_RE.finditer(text):
+            reg = lm.group(0)
+            line = _line_of(text, lm.start())
+            # Java 方法引用 `this::onClickFab` / ambda `v -> doSomething()` / 匿名类内部方法
+            action = ""
+            for pat in (
+                r"this::([A-Za-z0-9_]+)", r"([A-Za-z0-9_]+)::([A-Za-z0-9_]+)",
+                r"->\s*([A-Za-z0-9_\.]+)\s*\(", r"public\s+void\s+([A-Za-z0-9_]+)\s*\(",
+            ):
+                mm = re.search(pat, reg)
+                if mm:
+                    action = mm.group(1) if pat.endswith("::([A-Za-z0-9_]+)") else (mm.group(2) if mm.lastindex == 2 else mm.group(1))
+                    break
+            dm = None
+            if not action:
+                dm = _BEHAVIOR_CALL_RE.search(reg)
+                if dm:
+                    action = dm.group(1)
+            data_target = "viewModel/dao/repository" if dm else "component/internal"
+            side = []
+            for marker, label in (("navigate", "navigate"), ("refresh", "refresh-list"),
+                                  ("Toast", "feedback"), ("dialog", "dialog"), ("dismiss", "dismiss"),
+                                  ("search", "search"), ("delete", "delete"), ("update", "update")):
+                if marker in reg.lower():
+                    side.append(label)
+            key = (rel, line, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "page_id": pid, "page_symbol": page["symbol"] if page else "",
+                "event": "listener@" + reg[:24].strip(), "target": "java-listener",
+                "action": action[:60],
+                "params": reg[max(0, reg.find("(")):reg.find("(") + 60],
+                "data_target": data_target,
+                "side_effect": "+".join(sorted(set(side))) if side else "none",
                 "source_ref": f"{rel}:{line}",
             })
     return rows

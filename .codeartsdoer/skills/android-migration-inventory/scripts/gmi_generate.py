@@ -381,8 +381,12 @@ def _page_for_source_hint(source: str, pages: List[Dict[str, Any]]) -> str:
     stem = Path((source or "").split(":", 1)[0]).stem
     hint_tokens = {
         token for token in re.findall(r"[a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1 \2", stem).lower())
-        if token not in {"preference", "preferences", "activity", "fragment", "screen", "page", "xml", "menu"}
+        if token not in {"activity", "fragment", "screen", "page", "xml", "menu"}
     }
+    # preferences*.xml 属于设置语义：补 settings token（使 SettingsActivity/SettingsFragment 能匹配），
+    # 不影响其它来源（menu/when 分支）原有行为。
+    if "preference" in stem.lower() or "ettings" in stem.lower():
+        hint_tokens.add("settings")
     ranked: List[tuple[int, str]] = []
     for page in pages:
         symbol = str(page.get("symbol", ""))
@@ -394,10 +398,10 @@ def _page_for_source_hint(source: str, pages: List[Dict[str, Any]]) -> str:
         if score:
             ranked.append((score, str(page.get("page_id", ""))))
     if not ranked:
-        return ""
+        return "PAGE-NONE"
     ranked.sort(reverse=True)
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
-        return ""
+        return "PAGE-NONE"
     return ranked[0][1]
 
 

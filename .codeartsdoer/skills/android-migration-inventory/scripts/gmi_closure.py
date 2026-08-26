@@ -72,6 +72,7 @@ def main() -> int:
     # CodeArts must not guess page ownership later. Unbound fields/options otherwise
     # disappear from P4 contracts or leak into every page.
     known_pages = {r.get("page_id", "") for r in comp_rows if r.get("page_id")}
+    known_pages.add("PAGE-NONE")
     for name in ("page-fields.candidates.csv", "field-options.candidates.csv"):
         rows = read_rows(cands / name)
         unbound = [r for r in rows if not r.get("page_id") or r.get("page_id") not in known_pages]
