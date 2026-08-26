@@ -112,21 +112,38 @@ def set_resolution(dev: str, serial: str, size: str, density: str) -> bool:
         adb(serial, "shell", "wm", "density", density)
         return True
     out = hdc(serial, "shell", "wm", "size", size) + hdc(serial, "shell", "wm", "density", density)
-    if "wm" in out or "__ERR__" in out:
+    lowered = out.lower()
+    fail_markers = ("inaccessible", "not found", "no such", "command not found", "__err__")
+    if any(marker in lowered for marker in fail_markers):
         return False
     return True
 
 
 def _harmony_size_density(serial: str, config_hint: str = "") -> tuple[str, str]:
     """Harmony 模拟器无 wm 命令（Mac/部分镜像）时：
-    优先 hidumper 渲染分辨率（真实证据），密度回退模拟器 config.ini（hw.lcd.density）。"""
+    优先 hidumper 渲染分辨率（真实证据），密度回退模拟器 config.ini（hw.lcd.density）。
+
+    注意：`param get const.product.density` 在多数模拟器镜像上不存在，
+    其失败输出常含数字（如 'fail! errNum is:106!'），故必须按失败标记判定，
+    不得把错误码误采信为密度值（否则 config.ini 兜底永不触发）。"""
     size_out = hdc(serial, "shell", "hidumper", "-s", "10", "-a", "screen")
-    m = re.search(r"(\d+x\d+)", size_out)
+    m = re.search(r"render resolution=(\d+x\d+)", size_out)
+    if not m:
+        m = re.search(r"physical resolution=(\d+x\d+)", size_out)
+    if not m:
+        m = re.search(r"(\d+x\d+)", size_out)
     size = m.group(1) if m else ""
     den = ""
     hid = hdc(serial, "shell", "param", "get", "const.product.density")
+    lowered = hid.lower()
+    param_get_failed = any(
+        marker in lowered
+        for marker in ("fail", "errnum", "error", "inaccessible", "not found", "no such")
+    )
     m2 = re.search(r"(\d+)", hid)
-    if m2:
+    # 只有真实成功响应（无失败标记的纯数字/数值输出）才可采信；
+    # 失败输出（如 errNum 码）按“无值”处理，交由 config.ini 兜底。
+    if not param_get_failed and m2:
         den = m2.group(1)
     # 从模拟器部署 config.ini 独立兜底 size/density；必须显式传入才使用。
     if config_hint and Path(config_hint).is_file() and (not size or not den):
