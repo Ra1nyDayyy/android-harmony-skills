@@ -246,17 +246,24 @@ def main() -> int:
         row for row in registry_rows
         if row.get("phase") == "2" and row.get("status", "").upper() != "SUPERSEDED"
     ]
-    if len(active_phase2) != 1:
+    # gmi run：无控制器 Phase-2 工单（gmi_closure 证据链替代），跳过该前置检查；
+    # 其等效门禁由 validate_gate --phase 2 的 gmi 等价校验承担。
+    gmi_run = (run_dir / "phase-02-android-inventory" / "gmi" / "phase-2-closure.json").is_file() \
+        or (run_dir / "phase-02-android-inventory" / "phase-2-closure.json").is_file()
+    if len(active_phase2) != 1 and not gmi_run:
         parser.error("Exactly one active Phase 2 work order is required")
-    try:
-        phase2_order_path = safe_run_file(
-            run_dir, active_phase2[0].get("relative_path", ""), "Phase 2 work order"
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
-    receipt_errors = validate_order_receipts(run_dir, phase2_order_path)
-    if receipt_errors:
-        parser.error("Phase 2 worker dispatch is incomplete: " + "; ".join(receipt_errors[:8]))
+    if not active_phase2 and gmi_run:
+        phase2_order_path = None
+    else:
+        try:
+            phase2_order_path = safe_run_file(
+                run_dir, active_phase2[0].get("relative_path", ""), "Phase 2 work order"
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        receipt_errors = validate_order_receipts(run_dir, phase2_order_path)
+        if receipt_errors:
+            parser.error("Phase 2 worker dispatch is incomplete: " + "; ".join(receipt_errors[:8]))
 
     phase3_ledger = [row for row in ledger_rows if row.get("phase") == "3"]
     if len(phase3_ledger) != 1:
