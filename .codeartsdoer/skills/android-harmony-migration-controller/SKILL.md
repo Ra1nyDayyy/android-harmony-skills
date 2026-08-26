@@ -27,10 +27,10 @@ Read [human-review-gates.md](references/human-review-gates.md) before running a 
 
 Initialize with `scripts/init_migration.py`, complete `controller/scope.json`, then compute Gate 1 with `scripts/validate_gate.py --phase 1 --write`.
  
-**Phase 1 环境前置（必做，先于 phase state machine）：** 屏幕 + SDK 一起冻结，`scripts/preflight_env.py --serial emulator-5554 --width 1080 --height 2400 --density 440 --scope controller/scope.json`。要求：
+**Phase 1 环境前置（必做，先于 phase state machine）：** 屏幕 + SDK 一起冻结，`scripts/preflight_env.py --serial <ANDROID_SERIAL> --harmony-serial <HARMONY_SERIAL> --harmony-config <HARMONY_CONFIG_INI> --width <WIDTH> --height <HEIGHT> --density <DPI> --scope controller/scope.json`。占位符每次按实际环境填写：`<ANDROID_SERIAL>`（如 emulator-5554，以 `adb devices` 实测为准）、`<HARMONY_SERIAL>`（如 127.0.0.1:5557，以 `hdc list targets` 实测为准）、`<HARMONY_CONFIG_INI>`（鸿蒙模拟器部署目录的真实 config.ini 路径，若无则空并注明）、`<WIDTH>x<HEIGHT>@<DPI>`（两端一致的分辨率，如 1080x2400@440）。要求：
 - 屏幕（screen parity）：Android 模拟器在线且 `wm size/density` 固定为 WxH/dpi（P2 运行时证据以它为准）；离线/不符 → 先解决环境，P1 不放行。Harmony 模拟器（hdc serial）在线且同参数（P4 H4ENV 与截图对比基准）；离线 → 明确记录「Harmony 模拟器不可用」进 scope（P4 的 parity 将 DEFERRED，不得虚构）。
 - SDK/工具链（SDK find）：扫描并锁定 Android（ANDROID_HOME/adb/emulator/java）+ Harmony（hdc/DevEcoStudio/node/ohpm/hvigor）路径与版本，全量写入 scope.json `sdk_toolchain` 块；缺失项输出 `[WARN] missing xxx` 先行暴露（P3/P4 构建门禁会据此硬卡，补齐后重跑）。
-- 冻结值写入 scope.json（`screen_resolution/screen_density/serial` + `sdk_toolchain`），P2 gmi_runtime（`--screen-size/--screen-density`）、P3/P4 构建与 H4ENV 直接复用，全程不改基准。
+- 冻结值写入 scope.json（`screen_resolution/screen_density/serial` + `sdk_toolchain`），P2 gmi_runtime（`--screen-size/--screen-density`，默认读取 scope 冻结值）、P3/P4 构建与 H4ENV 直接复用，全程不改基准。
 
 **gmi 模式 Gate 2/3/4 判定规则**（gmi 流程下 controller 机器复核）：
 - 判别：`phase-02-android-inventory/gmi/phase-2-closure.json` 存在（或 phase-manifest `generator: gmi`）即为 gmi run。Gate 2 重算 13 表、closure、UNMAPPED 与 audit；Gate 3 叠加架构映射和 stage-03 seal；Gate 4 叠加全页合同、行为绑定、非空组件和 stage-04 seal。不得用 Gate 3 代替 Gate 4。CodeArts 模式下 Gate 4 还必须独立重算全页 `ACCEPTED` 实现、ArkTS 代码路径、非占位页、parity、封存模拟器/UiTest 证据、验收记录、截图唯一性和完整 closure manifest，禁止只信 PASS 报告。
