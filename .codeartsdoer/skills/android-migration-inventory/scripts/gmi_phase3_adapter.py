@@ -440,9 +440,16 @@ def main() -> int:
         if r.get("type") != "FILE_ASSET":
             continue
         src = r["resource_id"]
+        # Asset-ID 必须匹配 ^[A-Z0-9][A-Z0-9._-]{2,95}$（validate_stage3 门禁），
+        # 小写路径串违规。用确定性大写 ID：ASSET-<sha256(src)[:12] 大写>-<文件名大写缩略> 保证唯一且溯源。
+        _aid_digest = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12].upper()
+        _aid_stem = ""
+        _base = src.rsplit("/", 1)[-1]
+        _aid_stem = re.sub(r"[^A-Z0-9]+", "-", re.sub(r"[^A-Za-z0-9]+", "-", _base).upper()).strip("-")[:40]
+        _asset_id = "ASSET-" + _aid_digest + ("-" + _aid_stem if _aid_stem else "")
         asset_rows.append({
-            "asset_id": src.replace("/", "-"),
-            "source_path": src, "archive_path": "files/" + src.replace("/", "-"),
+            "asset_id": _asset_id,
+            "source_path": src, "archive_path": "files/" + _asset_id,
             "sha256": r["resolved_value"], "asset_type": "FILE",
             "feature_ids": "", "page_ids": "", "state_ids": "",
             "created_by": "gmi-phase3-adapter", "created_at": now,

@@ -219,7 +219,45 @@ def main() -> int:
     if overlaps:
         parser.error(f"Phase 3 actors must differ from all frozen Phase 1/2 actors: {overlaps}")
 
-    input_relatives = {
+    # gmi run：legacy 九件套在 gmi 路径上不存在；改用 gmi 等价证据（closure/candidates manifest/coverage/runtime）。
+    # legacy 键保留但映射为 gmi 等价文件（存在者绑定 hash，不存在者留空字符），保证下游校验与 SKILL.md
+    # "gmi run 工单可签发" 条款一致且全部 hash 真实可复核。
+    # 两种 gmi 布局：嵌套(gmi/) 或 原生(phase-02 根)——按实际存在者选择相对路径
+    _gmi_prefix = ""
+    _gmi_cand = run_dir / "phase-02-android-inventory"
+    _next_cand = _gmi_cand / "gmi"
+    for _p in (_next_cand, _gmi_cand):
+        if (_p / "candidates" / "manifest.sha256").is_file():
+            _gmi_prefix = "phase-02-android-inventory/gmi/" if _p == _next_cand else "phase-02-android-inventory/"
+            break
+    _gmi_closure_rel = (
+        _gmi_prefix + "phase-2-closure.json"
+        if (run_dir / _gmi_prefix / "phase-2-closure.json").is_file()
+        else ("phase-02-android-inventory/gmi/phase-2-closure.json"
+              if (run_dir / "phase-02-android-inventory/gmi/phase-2-closure.json").is_file()
+              else "phase-02-android-inventory/phase-2-closure.json")
+    )
+    _gmi_cand_manifest = _gmi_prefix + "candidates/manifest.sha256"
+    _gmi_coverage = _gmi_prefix + "coverage/coverage-ledger.csv"
+    _gmi_runtime = _gmi_prefix + "runtime-evidence/runtime-gate.csv"
+    # gmi 等价 input 绑定：<key>: <gmi 文件相对路径 or "" 空串（该证据在 gmi 路径无等价）>
+    gmi_run = (run_dir / "phase-02-android-inventory" / "gmi" / "phase-2-closure.json").is_file() \
+        or (run_dir / "phase-02-android-inventory" / "phase-2-closure.json").is_file()
+
+    _gmi_equiv = {
+        "phase2_closure_sha256": _gmi_closure_rel,
+        "phase2_closure_manifest_sha256": _gmi_cand_manifest,
+        "phase2_closed_sha256": "",
+        "phase2_inventory_sha256": _gmi_prefix + "candidates/inventory.candidates.csv",
+        "phase2_asset_inventory_sha256": "",
+        "phase2_asset_manifest_sha256": "",
+        "phase2_asset_committed_sha256": "",
+        "phase2_anchor_snapshot_sha256": "",
+        "controller_anchor_registry_sha256": "",
+        "gmi_coverage_ledger_sha256": _gmi_coverage,
+        "gmi_runtime_gate_sha256": _gmi_runtime,
+    }
+    input_relatives = _gmi_equiv if gmi_run else {
         "phase2_closure_sha256": "phase-02-android-inventory/closure-report.json",
         "phase2_closure_manifest_sha256": "phase-02-android-inventory/closure-manifest.sha256",
         "phase2_closed_sha256": "phase-02-android-inventory/CLOSED",
@@ -234,6 +272,7 @@ def main() -> int:
         input_paths = {
             digest_key: safe_run_file(run_dir, relative, digest_key)
             for digest_key, relative in input_relatives.items()
+            if relative
         }
         registry_path = run_dir / "controller" / "work-order-registry.csv"
         registry_fields, registry_rows = load_csv(registry_path)
@@ -248,8 +287,6 @@ def main() -> int:
     ]
     # gmi run：无控制器 Phase-2 工单（gmi_closure 证据链替代），跳过该前置检查；
     # 其等效门禁由 validate_gate --phase 2 的 gmi 等价校验承担。
-    gmi_run = (run_dir / "phase-02-android-inventory" / "gmi" / "phase-2-closure.json").is_file() \
-        or (run_dir / "phase-02-android-inventory" / "phase-2-closure.json").is_file()
     if len(active_phase2) != 1 and not gmi_run:
         parser.error("Exactly one active Phase 2 work order is required")
     if not active_phase2 and gmi_run:
@@ -340,8 +377,13 @@ def main() -> int:
         ],
     }
     for digest_key, relative in input_relatives.items():
-        work_order[digest_key] = sha256_file(input_paths[digest_key])
-        work_order[digest_key.removesuffix("_sha256") + "_relative_path"] = relative
+        if relative:
+            work_order[digest_key] = sha256_file(input_paths[digest_key])
+            work_order[digest_key.removesuffix("_sha256") + "_relative_path"] = relative
+        else:
+            # gmi 路径无等价 legacy 证据：绑定为空留痕（下游校验按 gmi 分支读取等价键）
+            work_order[digest_key] = ""
+            work_order[digest_key.removesuffix("_sha256") + "_relative_path"] = ""
 
     missing_registry_fields = {
         "work_order_id", "phase", "relative_path", "scope_sha256", "work_order_sha256",
