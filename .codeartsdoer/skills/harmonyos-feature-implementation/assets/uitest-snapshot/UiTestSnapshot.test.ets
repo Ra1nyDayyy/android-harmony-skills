@@ -3,11 +3,36 @@ import { Component, Driver, ON } from '@kit.TestKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { abilityDelegatorRegistry } from '@kit.TestKit';
 import { UI_TEST_PAGE_PROBES, UiTestPageProbe, UiTestRequiredComponent } from './UiTestPageProbeRegistry';
-import { UI_TEST_RUN_BINDING } from './UiTestRunBinding';
+import { UiTestRunBinding } from './UiTestRunBinding';
 
-function requireFrozenHash(value: string): void {
+const RUN_BINDING_PARAMETER_KEYS = [
+  'ui_test_test_hap_sha256',
+  'ui_test_final_hap_sha256',
+  'ui_test_device_identity_sha256',
+  'ui_test_command_sha256'
+] as const;
+
+// The host harness computes the four frozen runner hashes before invoking
+// `aa test`, then passes them as hypium `-s` parameters (one per key below).
+// Compile-time constants cannot carry test_hap_sha256 because it would make
+// the artifact reference its own digest; injecting at run time keeps every
+// value verifiable against the host-measured file while staying fail-closed:
+// any missing or malformed parameter still throws here.
+function frozenRunBinding(): UiTestRunBinding {
+  const parameters = abilityDelegatorRegistry.getArguments().parameters;
+  const values = RUN_BINDING_PARAMETER_KEYS.map((key): string => {
+    const raw = parameters ? (parameters as Record<string, Object>)[key] : undefined;
+    return typeof raw === 'string' ? raw : '';
+  });
+  const [test_hap_sha256, final_hap_sha256, device_identity_sha256, command_sha256] = values;
+  return {
+    test_hap_sha256, final_hap_sha256, device_identity_sha256, command_sha256
+  };
+}
+
+function requireFrozenHash(value: string, label: string): void {
   if (!/^[0-9a-f]{64}$/.test(value) || /^0+$/.test(value)) {
-    throw new Error('UiTest run binding is not frozen');
+    throw new Error(`UiTest run binding is not frozen: ${label}`);
   }
 }
 
@@ -76,10 +101,11 @@ async function executeDeclaredActions(driver: Driver, probe: UiTestPageProbe,
 }
 
 async function captureProbe(probe: UiTestPageProbe): Promise<void> {
-  requireFrozenHash(UI_TEST_RUN_BINDING.test_hap_sha256);
-  requireFrozenHash(UI_TEST_RUN_BINDING.final_hap_sha256);
-  requireFrozenHash(UI_TEST_RUN_BINDING.device_identity_sha256);
-  requireFrozenHash(UI_TEST_RUN_BINDING.command_sha256);
+  const binding = frozenRunBinding();
+  requireFrozenHash(binding.test_hap_sha256, 'test_hap_sha256');
+  requireFrozenHash(binding.final_hap_sha256, 'final_hap_sha256');
+  requireFrozenHash(binding.device_identity_sha256, 'device_identity_sha256');
+  requireFrozenHash(binding.command_sha256, 'command_sha256');
   const driver = Driver.create();
   const root = resultRoot(probe);
   fileIo.mkdirSync(root, true);
@@ -115,10 +141,10 @@ async function captureProbe(probe: UiTestPageProbe): Promise<void> {
   writeJson(`${root}/ui-test-snapshot-metadata.json`, {
     probe_id: probe.probe_id, page_id: probe.page_id, state_id: probe.state_id,
     screenshot_path: 'ui-test-snapshot.png', result_path: 'ui-test-snapshot.json',
-    test_hap_sha256: UI_TEST_RUN_BINDING.test_hap_sha256,
-    final_hap_sha256: UI_TEST_RUN_BINDING.final_hap_sha256,
-    device_identity_sha256: UI_TEST_RUN_BINDING.device_identity_sha256,
-    command_sha256: UI_TEST_RUN_BINDING.command_sha256
+    test_hap_sha256: binding.test_hap_sha256,
+    final_hap_sha256: binding.final_hap_sha256,
+    device_identity_sha256: binding.device_identity_sha256,
+    command_sha256: binding.command_sha256
   });
   expect(componentSnapshots.length).assertEqual(probe.required_components.length);
 }

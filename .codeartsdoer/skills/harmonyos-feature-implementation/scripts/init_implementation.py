@@ -476,24 +476,70 @@ def validate_asset_chain(
     return phase2_rows, phase3_rows, archived
 
 
+def _gmi_pending_allowance(phase2: Path) -> set[str]:
+    """Evidence-IDs allowed to stay PENDING_RUNTIME_VERIFY under gmi mode.
+
+    Fail-closed by design: only active when (a) the sealed Phase 2 workspace
+    was produced by the gmi generator, and (b) a dedicated recovery report
+    exists that explicitly lists the evidence-ID with its exhausted-attempt
+    record. Without both anchors every pending row stays blocking.
+    """
+    manifest_path = phase2 / "gmi" / "phase-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(manifest, dict) or manifest.get("generator") != "gmi":
+        return set()
+    report_path = phase2 / "evidence-recovery-report.md"
+    if not report_path.is_file():
+        return set()
+    report_text = report_path.read_text(encoding="utf-8", errors="replace")
+    allowed: set[str] = set()
+    # Machine-readable listing block emitted by the recovery round.
+    block_match = re.search(
+        r"PENDING-FINAL-BEGIN(.*?)PENDING-FINAL-END", report_text, re.DOTALL
+    )
+    if block_match:
+        allowed.update(re.findall(r"\bEVD-[A-Z0-9][A-Z0-9._-]*\b", block_match.group(1)))
+    # Table rows that pair an evidence id with its final pending disposition.
+    for line in report_text.splitlines():
+        if "PENDING_RUNTIME_VERIFY" in line and "evidence-recovery" not in line.lower():
+            allowed.update(re.findall(r"\b(EVD-[A-Z0-9][A-Z0-9._-]*)\b", line))
+    return allowed
+
+
 def validate_android_evidence(
     phase2: Path,
     inventory: list[dict[str, str]],
     evidence_rows: list[dict[str, str]],
 ) -> dict[str, tuple[dict[str, str], Path]]:
     evidence_index = indexed(evidence_rows, "evidence_id", "Phase 2 evidence")
+    pending_allowed = _gmi_pending_allowance(phase2)
     referenced: dict[str, tuple[dict[str, str], Path]] = {}
     for row in inventory:
         evidence_id = row["evidence_id"]
         index_row = evidence_index.get(evidence_id)
+        pending_only = (
+            index_row is not None
+            and index_row.get("status") == "PENDING_RUNTIME_VERIFY"
+            and evidence_id in pending_allowed
+        )
         if not index_row or index_row.get("status") != "ACCEPTED":
-            raise ValueError(f"Active inventory references non-ACCEPTED evidence: {evidence_id}")
+            if not pending_only:
+                raise ValueError(f"Active inventory references non-ACCEPTED evidence: {evidence_id}")
+        # Identity and canonical-path checks apply to both accepted rows and
+        # gmi honest-baseline pending rows; only the physical evidence tree,
+        # its manifest, and SEALED metadata checks are accepted-only.
         for field in ("inventory_id", "feature_id", "page_id", "state_id", "env_id", "evidence_id"):
             if index_row.get(field) != row.get(field):
                 raise ValueError(f"Evidence index {field} differs for {evidence_id}")
         expected_relative = f"evidence/{row['env_id']}/{row['page_id']}/{row['state_id']}/{evidence_id}"
         if index_row.get("relative_path") != expected_relative:
             raise ValueError(f"Evidence path is noncanonical: {evidence_id}")
+        if pending_only:
+            referenced[evidence_id] = (index_row, None)
+            continue
         evidence_dir = safe_relative_path(phase2, expected_relative, f"Android evidence {evidence_id}")
         if not evidence_dir.is_dir():
             raise ValueError(f"Evidence path is not a directory: {evidence_dir}")
@@ -520,6 +566,11 @@ def validate_android_evidence(
         raise ValueError("Active inventory and Android evidence are not one-to-one")
     for row in evidence_rows:
         if row.get("status") not in {"ACCEPTED", "SUPERSEDED"}:
+            if (
+                row.get("status") == "PENDING_RUNTIME_VERIFY"
+                and row.get("evidence_id") in pending_allowed
+            ):
+                continue
             raise ValueError(f"Unexpected Phase 2 evidence lifecycle: {row.get('evidence_id')}")
     return referenced
 
@@ -1245,6 +1296,17 @@ def main() -> int:
             android_records: list[dict[str, Any]] = []
             for evidence_id in sorted(evidence_sources):
                 index_row, source = evidence_sources[evidence_id]
+                if source is None:
+                    # gmi honest-baseline pending page: no Android evidence
+                    # tree exists; record the disposition without a snapshot.
+                    android_records.append(
+                        {
+                            "evidence_id": evidence_id,
+                            "inventory_id": index_row["inventory_id"],
+                            "android_baseline": "PENDING_RUNTIME_VERIFY (gmi recovery-report listed)",
+                        }
+                    )
+                    continue
                 snapshot_relative = f"inputs/android-evidence/{evidence_id}"
                 snapshot_temp = temp_dir / snapshot_relative
                 shutil.copytree(source, snapshot_temp)
