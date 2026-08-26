@@ -7,7 +7,8 @@
     "source_geometry", "assets", "visible_text", "interaction_bindings", "entry_conditions",
     "transitions", "code_map", "business_rules", "data_dependencies", "side_effects",
     "system_capabilities", "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
-    "comparison_policy"
+    "comparison_policy", "gmi_fields", "gmi_options", "gmi_navigation", "gmi_motion",
+    "behavior_bindings"
   ],
   "properties": {
     "schema_version": {"const": "page-acceptance-contract-v1"},
@@ -31,6 +32,11 @@
     "android_evidence_hashes": {"type": "array", "items": {"$ref": "#/$defs/androidEvidence"}},
     "phase3_targets": {"type": "array", "items": {"$ref": "#/$defs/phase3Target"}},
     "required_h4env_ids": {"$ref": "#/$defs/idArray"},
+    "gmi_fields": {"type": "array", "items": {"type": "object"}},
+    "gmi_options": {"type": "array", "items": {"type": "object"}},
+    "gmi_navigation": {"type": "array", "items": {"type": "object"}},
+    "gmi_motion": {"type": "array", "items": {"type": "object"}},
+    "behavior_bindings": {"type": "array", "items": {"type": "object"}},
     "comparison_policy": {
       "type": "object",
       "required": ["geometry_tolerance", "application_region_ssim", "changed_pixel_ratio", "required_element_masks"],

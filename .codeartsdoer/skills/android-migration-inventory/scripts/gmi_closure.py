@@ -7,7 +7,7 @@
 前置校验（任一失败 exit 1，不生成）：
   - coverage/coverage-ledger.csv  UNMAPPED=0
   - runtime-evidence/audit-replay.csv 全部 discrepancy=no（若存在 runtime）
-  - candidates/ 12 表 + manifest.sha256 存在
+  - candidates/ 13 表 + manifest.sha256 存在
 """
 from __future__ import annotations
 
@@ -69,6 +69,15 @@ def main() -> int:
     if silent_missing:
         errors.append(f"silent MISSING (no hint): {len(silent_missing)}")
 
+    # CodeArts must not guess page ownership later. Unbound fields/options otherwise
+    # disappear from P4 contracts or leak into every page.
+    known_pages = {r.get("page_id", "") for r in comp_rows if r.get("page_id")}
+    for name in ("page-fields.candidates.csv", "field-options.candidates.csv"):
+        rows = read_rows(cands / name)
+        unbound = [r for r in rows if not r.get("page_id") or r.get("page_id") not in known_pages]
+        if unbound:
+            errors.append(f"{name} has unbound/unknown page_id rows: {len(unbound)}")
+
     audit_rows = read_rows(rt_ / "audit-replay.csv")
     audit_disc = sum(1 for r in audit_rows if r.get("discrepancy") == "YES")
     if audit_disc:
@@ -89,7 +98,7 @@ def main() -> int:
     pages_total = len(comp_symbols) if comp_symbols else (visited_u + not_entered_u)
 
     if not (cands / "manifest.sha256").exists():
-        errors.append("candidates/manifest.sha256 missing (12 表未固化)")
+        errors.append("candidates/manifest.sha256 missing (13 表未固化)")
 
     if errors:
         print("CLOSURE BLOCKED:")

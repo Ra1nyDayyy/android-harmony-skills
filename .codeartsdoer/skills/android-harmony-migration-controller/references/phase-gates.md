@@ -32,6 +32,8 @@ Pass only when:
 
 The gate covers the full `included_features` set. If the user changes scope, freeze a new scope decision and issue a new work order before rerunning Phase 2.
 
+For a gmi run, the equivalent Gate 2 denominator is all 13 candidate tables plus their manifest, `coverage-ledger.csv` with no `GAP`/`UNMAPPED`, `audit-replay.csv` with zero discrepancy, and `phase-2-closure.json` reporting `unmapped=0` and `audit_discrepancy=0`.
+
 ## Phase 3: HarmonyOS project scaffold
 
 Pass only when:
@@ -56,6 +58,8 @@ Pass only when:
 
 Phase 3 does not authorize business implementation by itself; it only opens the next phase for a separately issued work order.
 
+For a gmi run, Gate 3 additionally requires complete inventory-to-architecture mappings, READY modules, a passing Stage 3 report, and a valid Stage 3 `CLOSED` binding. Gate 2 alone is never an equivalent Gate 3.
+
 ## Phase 4: HarmonyOS feature parity implementation
 
 Pass only when:
@@ -71,3 +75,5 @@ Pass only when:
 - Local and controller Phase 4 rework ledgers contain the same closed tickets and fields; any non-closed ticket blocks the gate.
 - The final report contains both `verdict: PASS` and `final_verdict: PASS`, identifies the frozen reviewer, work order, input lock, builds, source snapshot, artifact hashes, and exact counts.
 - `stage-04-closure-manifest.sha256` exactly covers the closed workspace except the report, manifest, marker, locks/staging, caches, and generated project output; `CLOSED` contains the final report SHA-256.
+
+For a gmi run, Gate 4 additionally requires one contract per inventory Page-ID, non-empty components for every non-deferred page, retained behavior bindings wherever behavior candidates exist, no remaining `PENDING_RUNTIME_VERIFY`, a passing Stage 4 report, and a valid Stage 4 `CLOSED` binding. For CodeArts output, the controller also recomputes exact `ACCEPTED` page implementation coverage, canonical ArkTS paths, placeholder-shell rejection, parity coverage, sealed emulator/UiTest packages, one accepted review per parity row, screenshot uniqueness, and the complete closure manifest. A model-authored PASS or a passing Stage 3 report cannot satisfy Gate 4.

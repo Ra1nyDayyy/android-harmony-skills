@@ -42,7 +42,7 @@ Any changed input or environment creates a new ID. Missing asset handoff, missin
 | 旧工件 | gmi 来源 |
 |---|---|
 | `inventory.csv`（REVIEWED 行） | `candidates/inventory.candidates.csv` + `page-fields.candidates.csv`（页面级合成行；缺失 REVIEWED 状态以"审计+覆盖"等价替代） |
-| `asset-inventory.csv` + `asset-package/manifest.sha256` + `COMMITTED` | `candidates/asset-mapping.candidates.csv`（`FILE_ASSET` 行）+ `candidates/manifest.sha256`（覆盖 12 表，含 asset 表哈希） |
+| `asset-inventory.csv` + `asset-package/manifest.sha256` + `COMMITTED` | `candidates/asset-mapping.candidates.csv`（`FILE_ASSET` 行）+ `candidates/manifest.sha256`（覆盖 13 表，含 asset/behavior 表哈希） |
 | evidence index / acceptance registry | `runtime-evidence/evidence-index.csv` + `runtime-gate.csv`（VISITED=ACCEPTED；NOT_ENTERED 须有 reason） |
 | evidence packages（PNG+layout-tree） | `runtime-evidence/<page_id>/ui.xml` + `screenshot.png` |
 | closure report / `CLOSED` | `phase-2-closure.json`（gmi 闭包，含 gate 字段与 artifact_hashes，见 P3 input-mapping-contract.md 适配节） |
@@ -55,7 +55,8 @@ Any changed input or environment creates a new ID. Missing asset handoff, missin
 | 页面字段清单（顺序/类型/标签/图标） | `candidates/page-fields.candidates.csv` | 合同 `gmi_fields`：页面 UI 字段按源顺序 |
 | 字段/选项子项 | `candidates/field-options.candidates.csv` | 合同 `gmi_options`：开关/下拉可选值 |
 | 跳转+返回 | `candidates/navigation-relations.candidates.csv` | 合同 `gmi_navigation`：点击目标与返回链 |
-| 动效/行为 | `candidates/motion.candidates.csv` | 合同 `gmi_motion`：滚动折叠/虚化/状态切换 |
+| 动效 | `candidates/motion.candidates.csv` | 合同 `gmi_motion`：滚动折叠/虚化/状态切换 |
+| 事件/行为 | `candidates/behavior.candidates.csv` | 合同 `behavior_bindings`，并转为可验证 interaction binding |
 | 颜色真值 | `candidates/color-palette.candidates.csv` | 合同 assets 颜色解析（hex+alpha） |
 | 10 类缺口矩阵 | `candidates/phase-2-completeness.csv` | P4 前置：逐页 `MISSING` 为"已知边界"，不得静默补 |
 

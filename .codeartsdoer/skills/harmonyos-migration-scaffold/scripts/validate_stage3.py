@@ -1229,6 +1229,7 @@ def main() -> int:
             errors.append(str(exc))
 
     screenshot_by_id: dict[str, dict[str, str]] = {}
+    screenshot_hash_targets: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for row in screenshot_index:
         screenshot_id = row.get("screenshot_id", "")
         try:
@@ -1269,6 +1270,9 @@ def main() -> int:
             if row.get("width") != str(width) or row.get("height") != str(height):
                 errors.append(f"{screenshot_id}: screenshot index dimensions differ from PNG")
             png_hash = sha256_file(screenshot_png)
+            screenshot_hash_targets.setdefault(
+                (str(row.get("device_id", "")), png_hash), set()
+            ).add((str(row.get("target_kind", "")), str(row.get("target_id", ""))))
             if row.get("png_sha256") != png_hash or metadata.get("png_sha256") != png_hash:
                 errors.append(f"{screenshot_id}: PNG hash differs from index or metadata")
             for field in (
@@ -1324,6 +1328,13 @@ def main() -> int:
                 for field in ("device_id", "target_kind", "target_id", "page_id", "page_shell_id"):
                     if str(smoke.get(field, "")) != str(row.get(field, "")):
                         errors.append(f"{screenshot_id}: {field} differs from its ROUTE_SMOKE command")
+
+    for (device_id, png_hash), targets in screenshot_hash_targets.items():
+        if len(targets) > 1:
+            errors.append(
+                f"Screenshot PNG reused across distinct route/surface targets on {device_id}: "
+                f"sha256={png_hash}, targets={sorted(targets)}"
+            )
 
     if set(verification.get("screenshot_ids", [])) != set(screenshot_by_id):
         errors.append("HVER screenshot ID set differs from screenshot-index.csv")

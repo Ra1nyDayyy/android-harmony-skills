@@ -29,7 +29,8 @@ CONTRACT_KEYS = {
     "source_geometry", "assets", "visible_text", "interaction_bindings", "entry_conditions",
     "transitions", "code_map", "business_rules", "data_dependencies", "side_effects",
     "system_capabilities", "android_evidence_hashes", "phase3_targets", "required_h4env_ids",
-    "comparison_policy",
+    "comparison_policy", "gmi_fields", "gmi_options", "gmi_navigation", "gmi_motion",
+    "behavior_bindings",
 }
 CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "carrier_type", "comparison_policy"}
 PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
@@ -130,7 +131,8 @@ def compile_page_contracts(
                 "icon_resource": r.get("icon_resource", ""), "source_ref": r.get("source_ref", ""),
             })
         for r in _read_csv(gmi_cands / "field-options.candidates.csv") if (gmi_cands / "field-options.candidates.csv").exists() else []:
-            gmi_opts_by_page.setdefault((r.get("group", ""), r.get("option_label", "")), []).append(
+            owner = r.get("page_id") or r.get("group", "")
+            gmi_opts_by_page.setdefault((owner, r.get("option_label", "")), []).append(
                 {"sub_option": r.get("sub_option", ""), "sub_option_index": r.get("sub_option_index", ""),
                  "source_ref": r.get("source_ref", "")})
         for r in _read_csv(gmi_cands / "navigation-relations.candidates.csv") if (gmi_cands / "navigation-relations.candidates.csv").exists() else []:
@@ -334,6 +336,9 @@ def compile_page_contracts(
         # 仍对 asset 做校验（asset-mapping FILE_ASSET 完整）。
         mapping_targets = mappings
     # noqa: E501
+        page_components = _records_for_page(components, page_id, "page_id", "component_id")
+        if gmi_mode and not page_components:
+            page_components = _components_from_gmi_fields(page_id, gmi_fields_by_page.get(page_name, []))
         contract: dict[str, object] = {
             "schema_version": "page-acceptance-contract-v1",
             "page_id": page_id,
@@ -341,10 +346,10 @@ def compile_page_contracts(
             "carrier_type": _android_carrier_type(page, page_id),
             "feature_ids": feature_ids,
             "states": state_records,
-            "components": _records_for_page(components, page_id, "page_id", "component_id"),
+            "components": page_components,
             "source_geometry": [record["android_evidence"]["source_geometry"] for state in state_records for record in state["records"]],
             "assets": [assets[asset_id] for asset_id in asset_ids],
-            "visible_text": sorted({str(component.get("text", "")) for component in components if component.get("page_id") == page_id and component.get("text")}),
+            "visible_text": sorted({str(component.get("text", "")) for component in page_components if component.get("text")}),
             "interaction_bindings": _records_for_page(events, page_id, "page_id", "event_id"),
             "entry_conditions": [{"state_id": row["state_id"], "entry_condition": row.get("entry_condition", ""), "action_summary": row.get("action_summary", "")} for row in page_rows],
             "transitions": _records_for_page(transitions, page_id, "source_page_id", "transition_id"),
@@ -431,11 +436,50 @@ def _records_for_page(rows: list[dict[str, object]], page_id: str, page_field: s
     return sorted((row for row in rows if str(row.get(page_field, "")) == page_id), key=lambda row: str(row[id_field]))
 
 
+def _components_from_gmi_fields(page_id: str, fields: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Deterministically bridge gmi field facts into the legacy component contract."""
+    def ark_source_type(raw: object) -> str:
+        low = str(raw or "").casefold()
+        if any(token in low for token in ("input", "edit", "field", "textarea")):
+            return "TextInput"
+        if "button" in low or "action" in low:
+            return "Button"
+        if "image" in low or "icon" in low:
+            return "Image"
+        if "list" in low or "recycler" in low:
+            return "List"
+        if "switch" in low or "toggle" in low:
+            return "Toggle"
+        if "check" in low:
+            return "Checkbox"
+        if "radio" in low:
+            return "Radio"
+        return "Text"
+
+    out: list[dict[str, object]] = []
+    for index, field in enumerate(fields):
+        identity = str(field.get("field_id") or field.get("field_label") or index)
+        digest = hashlib.sha256(f"{page_id}|{identity}".encode("utf-8")).hexdigest()[:12].upper()
+        out.append({
+            "component_id": f"COMP-{digest}",
+            "page_id": page_id,
+            "resource_id": str(field.get("field_id", "")),
+            "text": str(field.get("field_label", "")),
+            "type": ark_source_type(field.get("field_type")),
+            "source_type": str(field.get("field_type", "")),
+            "source_ref": str(field.get("source_ref") or f"gmi-field:{identity}"),
+            "generated_by": "page-acceptance-contract-gmi",
+        })
+    return out
+
+
 def _gmi_options_for_page(opts_by_group: dict[tuple[str, str], list[dict[str, object]]],
                           page_name: str, page_id: str) -> list[dict[str, object]]:
     """把 field-options 里 group 含 page_name 的条目聚为该页选项清单。"""
     out: list[dict[str, object]] = []
-    for (_, label), opts in opts_by_group.items():
+    for (owner, label), opts in opts_by_group.items():
+        if owner and owner not in {page_id, page_name}:
+            continue
         entry = {"option_label": label, "options": opts}
         if entry not in out:
             out.append(entry)
@@ -482,6 +526,9 @@ def _validate_contract(contract: dict[str, object]) -> None:
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain IDs")
     for field, required_fields in RECORD_REQUIREMENTS.items():
         _validate_record_array(str(contract["page_id"]), field, contract[field], required_fields)
+    for field in ("gmi_fields", "gmi_options", "gmi_navigation", "gmi_motion", "behavior_bindings"):
+        if any(not isinstance(record, dict) for record in contract[field]):
+            raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
     _validate_geometry_array(str(contract["page_id"]), contract["source_geometry"])
     for state in contract["states"]:
         if set(state) != {"state_id", "state_name", "records"}:

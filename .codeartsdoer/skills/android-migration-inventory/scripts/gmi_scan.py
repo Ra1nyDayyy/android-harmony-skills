@@ -903,11 +903,12 @@ _WHEN_MENU_OPT_RE = re.compile(r"R\.id\.([A-Za-z0-9_]+)\s*->\s*\{")
 _MENU_BRANCH_RE = re.compile(r"([A-Za-z0-9_.@]+)\s*->\s*\{")
 
 
-def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]], Dict[str, str], List[Dict[str, Any]]]:
     """when(destination) branches -> option map {arg: [options]}
     + menu when-branches -> rows {menu_id, target_block} (子选项/跳转来源).
     Brace-aware: walks from 'when(' and matches the whole when block."""
     out: Dict[str, List[str]] = {}
+    sources: Dict[str, str] = {}
     menu_rows: List[Dict[str, Any]] = []
     for f in files:
         if f["category"] not in ("source",):
@@ -923,6 +924,11 @@ def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]
             branches = _WHEN_OPT_RE.findall(body)
             if len(branches) >= 2:
                 out[argname] = [b[0] for b in branches]
+                source = f"{f['rel']}:{_line_of(text, m.start())}"
+                if argname not in sources:
+                    sources[argname] = source
+                elif sources[argname].split(":", 1)[0] != f["rel"]:
+                    sources[argname] = ""
             for mm in _WHEN_MENU_OPT_RE.finditer(body):
                 b_start = mm.end() - 1
                 b_end = _brace_match(body, b_start, "{", "}")
@@ -932,7 +938,7 @@ def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]
                     "menu_id": mm.group(1), "block": body[b_start:b_end][:600],
                     "file": f["rel"], "line": _line_of(text, m.start()) + body[:mm.start()].count("\n"),
                 })
-    return out, menu_rows
+    return out, sources, menu_rows
 
 
 def scan_nav_relations(files: List[Dict[str, Any]],

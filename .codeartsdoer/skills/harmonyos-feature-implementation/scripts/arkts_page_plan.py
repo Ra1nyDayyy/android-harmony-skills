@@ -52,7 +52,8 @@ CARRIERS = {
 CONSERVATION_FIELDS = (
     "source_geometry", "visible_text", "assets", "states", "events_actions",
     "entry_conditions", "transitions", "business_rules", "data_dependencies",
-    "side_effects", "capability_dependencies", "source_refs",
+    "side_effects", "capability_dependencies", "source_refs", "gmi_fields", "gmi_options",
+    "gmi_navigation", "gmi_motion", "behavior_bindings",
 )
 
 
@@ -162,6 +163,11 @@ def compile_arkts_page_plan(
         "data_dependencies": copy.deepcopy(contract.get("data_dependencies", [])),
         "side_effects": copy.deepcopy(contract.get("side_effects", [])),
         "capability_dependencies": copy.deepcopy(contract.get("system_capabilities", [])),
+        "gmi_fields": copy.deepcopy(contract.get("gmi_fields", [])),
+        "gmi_options": copy.deepcopy(contract.get("gmi_options", [])),
+        "gmi_navigation": copy.deepcopy(contract.get("gmi_navigation", [])),
+        "gmi_motion": copy.deepcopy(contract.get("gmi_motion", [])),
+        "behavior_bindings": copy.deepcopy(contract.get("behavior_bindings", [])),
         "source_refs": source_refs,
         "required_h4env_ids": sorted(str(value) for value in contract.get("required_h4env_ids", [])),
         "comparison_policy": copy.deepcopy(contract.get("comparison_policy", {})),

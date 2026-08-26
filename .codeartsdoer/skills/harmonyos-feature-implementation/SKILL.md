@@ -20,7 +20,7 @@ Translate the frozen Android semantics into ArkUI. Phase 2 page contracts are th
 
 Consume the controller Phase 4 order (legacy) or **gmi Phase 2 handoff** (`runtime-gate.csv` VISITED=ACCEPTED + `audit-replay` 0 discrepancy + `phase-2-closure.json`), frozen Phase 2 page acceptance contracts, accepted Phase 3 project, asset package/landing map, and required `H4ENV-ID` configurations. Run `scripts/init_implementation.py`; it copies the scaffold, locks every input hash, creates one canonical contract per Page-ID, and seeds parity/evidence registries.
 
-Missing or contradictory Android facts return to Phase 2. Wrong module, route, carrier, shell, contract, or asset landing returns to Phase 3. Do not guess around upstream defects.
+Missing or contradictory Android facts return to Phase 2. In gmi mode, page contracts must retain `gmi_fields`, `gmi_navigation`, `gmi_motion`, and `behavior_bindings`; components come from aligned static facts, accepted runtime UI trees, or deterministic page-field conversion. A non-deferred page with no components is blocking. Wrong module, route, carrier, shell, contract, or asset landing returns to Phase 3. Do not guess around upstream defects.
 
 ## Page-owned implementation
 
@@ -41,6 +41,8 @@ The machine comparison binds Android and Harmony evidence hashes and computes ca
 Agents may diagnose and repair. Each page or capability gets attempt 0 plus at most two automatic repairs. Keep failed packages append-only. On the next failure, return upstream when the contract is wrong or enter `MANUAL_TAKEOVER` when implementation remains unresolved.
 
 Run the deterministic Stage 4 validator only after every page and shared capability closes against one final HAP. Open differences, missing states, stale evidence, invented native symbols without build/runtime effect proof, and unmatched assets block the machine Gate.
+
+For CodeArts runs, `INPUT_LOCKED`, a successful build, generated contracts, or a model-written PASS file never counts as implementation completion. Every page ledger row must be `ACCEPTED`, every parity row must have one sealed emulator/UiTest evidence package and one accepted review, and the controller independently rejects Route-ID/Page-ID/Back-only ArkTS shells and reused screenshots. After Gate 4 passes, publish the closed source project with `scripts/publish_harmony_project.py --workspace <run>/phase-04-harmony-implementation --target <requested arkts directory>`. The target must be explicit and empty; temporary ASCII build carriers are never the final delivery directory.
 
 Return the sealed workspace to the controller. It recomputes Gate 4 and shows Android, Harmony, and difference cards plus red/yellow exceptions and sampled green results. Status becomes `WAITING_HUMAN_REVIEW`; human approval never edits the machine result.
 

@@ -10,7 +10,7 @@ P1 (scope)
         │
         ▼
 P2 (gmi 盘点)
-  → candidates/ 12表
+  → candidates/ 13表
       inventory.candidates        (页面列表+feature+state)
       page-fields.candidates      (页面字段/顺序/图标)      ★ P4 合同语义
       field-options.candidates    (字段可选值/子项)          ★ P4 合同语义
@@ -44,7 +44,7 @@ P4 (实现 + 验证)
 | 阶段 | 必产 | 必验（否则阻断） |
 |---|---|---|
 | P1 | phase-manifest.json 的 `included_features`（大写合法） | 非空 + 正则 `^[A-Z0-9][A-Z0-9._-]{2,95}$` |
-| P2 | candidates/ 12 表 + runtime-evidence + audit-replay | UNMAPPED=0 + audit DISCREPANCY=0 + closure 哈希 |
+| P2 | candidates/ 13 表 + runtime-evidence + audit-replay | UNMAPPED=0 + audit DISCREPANCY=0 + closure 哈希 |
 | P3 | run/phase-02...+phase-03 契约 + harmony-project | gmi gate verified (init_scaffold) + 首屏构建 |
 | P4 | 每页 page-contract + .ets + parity | 截图真源 + SSIM/几何达标 + DEFERRED 带原因 |
 

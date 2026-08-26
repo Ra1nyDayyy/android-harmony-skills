@@ -149,6 +149,35 @@ class PageAcceptanceContractTest(unittest.TestCase):
             state["state_id"] for state in first[0]["states"]
         ])
 
+    def test_gmi_fields_bridge_empty_legacy_components_and_keep_behavior(self) -> None:
+        write_json(self.phase2 / "closure-report.json", {"generated_by": "gmi-phase3-adapter"})
+        components = read_json(self.phase2 / "static-analysis" / "components.json")
+        components["components"] = [
+            row for row in components["components"] if row["page_id"] != "PAGE-CALCULATOR"
+        ]
+        write_json(self.phase2 / "static-analysis" / "components.json", components)
+        write_json(self.phase2 / "static-analysis" / "events.json", {"events": []})
+        write_json(self.phase2 / "static-analysis" / "transitions.json", {"transitions": []})
+        candidates = self.root / "candidates"
+        write_csv(candidates / "phase-2-completeness.csv", [{
+            "page_id": "PAGE-CALCULATOR", "page_symbol": "Calculator",
+        }])
+        write_csv(candidates / "page-fields.candidates.csv", [{
+            "page_id": "PAGE-CALCULATOR", "page_symbol": "Calculator", "order_index": "1",
+            "field_id": "expression", "field_type": "TextInput", "field_label": "Expression",
+            "icon_resource": "", "layout_ref": "calculator.xml", "source_ref": "calculator.xml:1",
+        }])
+        write_csv(candidates / "behavior.candidates.csv", [{
+            "candidate_id": "BEH-CALC", "page_id": "PAGE-CALCULATOR", "page_symbol": "Calculator",
+            "event": "SUBMIT", "action": "CALCULATE", "params": "expression",
+            "data_target": "result", "side_effect": "", "source_ref": "Calculator.kt:42",
+        }])
+
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        calculator = next(row for row in contracts if row["page_id"] == "PAGE-CALCULATOR")
+        self.assertEqual("TextInput", calculator["components"][0]["type"])
+        self.assertEqual("CALCULATE", calculator["behavior_bindings"][0]["action"])
+
     def test_rejects_unsafe_page_ids_before_contract_path_construction(self) -> None:
         pages = read_json(self.phase2 / "static-analysis" / "pages.json")
         pages["pages"][0]["page_id"] = "../escape"

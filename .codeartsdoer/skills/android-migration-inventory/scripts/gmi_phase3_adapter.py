@@ -6,7 +6,7 @@
   python gmi_phase3_adapter.py --workspace <gmi 工作区，如 migration-runs/CRESTO-RUN1>
 
 说明：gmi 路径下已由 gmi_closure.py 生成 phase-2-closure.json；本脚本读它 +
-candidates/ (12 表) + runtime-evidence/，合成 P3/P4 input-contract 期望的：
+candidates/ (13 表) + runtime-evidence/，合成 P3/P4 input-contract 期望的：
   phase-02-android-inventory/
     closure-report.json / closure-manifest.sha256 / CLOSED / phase-manifest.json
     inventory.csv                （REVIEWED 行 = 页面 + 状态集）
@@ -17,7 +17,7 @@ candidates/ (12 表) + runtime-evidence/，合成 P3/P4 input-contract 期望的
     runtime-observations.json / page-gate-report.json / advanced-gate-report.json
     probe-evidence-index.csv / evidence-anchors.snapshot.csv
     catalogs/{data-dependencies.csv,system-capabilities.csv,third-party-dependencies.csv}
-合成文件只用于让 P3/P4 原脚本通过输入校验；真正的信息源仍是 gmi 12 表 +
+合成文件只用于让 P3/P4 原脚本通过输入校验；真正的信息源仍是 gmi 13 表 +
 runtime-evidence。所有合成 CSV/JSON 标 `generated-by=gmi-phase3-adapter`。
 """
 from __future__ import annotations
@@ -28,9 +28,11 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -57,6 +59,166 @@ def write_rows(p: Path, fields: List[str], rows: List[Dict[str, Any]]) -> None:
 def write_json(p: Path, obj: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_json_rows(p: Path, key: str) -> List[Dict[str, Any]]:
+    if not p.is_file():
+        return []
+    try:
+        value = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = value.get(key, []) if isinstance(value, dict) else []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def stable_id(prefix: str, *parts: str) -> str:
+    raw = "|".join(str(part) for part in parts)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12].upper()
+    return f"{prefix}-{digest}"
+
+
+def normalize_symbol(value: str) -> str:
+    leaf = (value or "").rsplit(".", 1)[-1]
+    return re.sub(r"[^a-z0-9]", "", leaf.casefold())
+
+
+def component_type(raw_type: str) -> str:
+    low = (raw_type or "").rsplit(".", 1)[-1].casefold()
+    if any(token in low for token in ("edittext", "textfield", "textinput", "input")):
+        return "TextInput"
+    if "button" in low:
+        return "Button"
+    if any(token in low for token in ("image", "icon")):
+        return "Image"
+    if any(token in low for token in ("recycler", "list")):
+        return "List"
+    if "scroll" in low:
+        return "Scroll"
+    if "checkbox" in low:
+        return "Checkbox"
+    if "radio" in low:
+        return "Radio"
+    if "switch" in low or "toggle" in low:
+        return "Toggle"
+    if "progress" in low:
+        return "Progress"
+    if "webview" in low or low == "web":
+        return "Web"
+    if "text" in low or "label" in low:
+        return "Text"
+    if any(token in low for token in ("layout", "group", "container", "view")):
+        return "Column"
+    return "Text"
+
+
+def align_static_rows(
+    existing: Dict[str, List[Dict[str, Any]]],
+    pages: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Rebind legacy static rows to the authoritative gmi Page-IDs and drop orphans."""
+    new_by_symbol = {normalize_symbol(str(page.get("symbol", ""))): str(page["page_id"]) for page in pages}
+    new_ids = {str(page["page_id"]) for page in pages}
+    old_to_new: Dict[str, str] = {page_id: page_id for page_id in new_ids}
+    for page in existing.get("pages", []):
+        old_id = str(page.get("page_id", ""))
+        symbol = str(page.get("symbol") or page.get("page_name") or "")
+        new_id = new_by_symbol.get(normalize_symbol(symbol))
+        if old_id and new_id:
+            old_to_new[old_id] = new_id
+
+    components: List[Dict[str, Any]] = []
+    for row in existing.get("components", []):
+        page_id = old_to_new.get(str(row.get("page_id", "")), "")
+        if not page_id:
+            continue
+        item = dict(row)
+        item["page_id"] = page_id
+        if not item.get("component_id"):
+            item["component_id"] = stable_id("COMP", page_id, str(item.get("source_ref", "")), str(len(components)))
+        components.append(item)
+
+    component_ids = {str(row.get("component_id", "")) for row in components}
+    events: List[Dict[str, Any]] = []
+    for row in existing.get("events", []):
+        page_id = old_to_new.get(str(row.get("page_id", "")), "")
+        if not page_id:
+            continue
+        item = dict(row)
+        item["page_id"] = page_id
+        if item.get("component_id") and item["component_id"] not in component_ids:
+            item.pop("component_id", None)
+        if not item.get("event_id"):
+            item["event_id"] = stable_id("EVENT", page_id, str(item.get("source_ref", "")), str(len(events)))
+        events.append(item)
+
+    event_ids = {str(row.get("event_id", "")) for row in events}
+    transitions: List[Dict[str, Any]] = []
+    for row in existing.get("transitions", []):
+        source = old_to_new.get(str(row.get("source_page_id", "")), "")
+        target = old_to_new.get(str(row.get("target_page_id", "")), "")
+        if not source or not target:
+            continue
+        item = dict(row)
+        item["source_page_id"] = source
+        item["target_page_id"] = target
+        if item.get("event_id") and item["event_id"] not in event_ids:
+            item.pop("event_id", None)
+        if not item.get("transition_id"):
+            item["transition_id"] = stable_id("TRANSITION", source, target, str(len(transitions)))
+        transitions.append(item)
+    return components, events, transitions
+
+
+def runtime_components(page_id: str, source_dir: Optional[Path]) -> List[Dict[str, Any]]:
+    if source_dir is None or not (source_dir / "ui.xml").is_file():
+        return []
+    try:
+        root = ET.parse(source_dir / "ui.xml").getroot()
+    except (ET.ParseError, OSError):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for index, node in enumerate(root.iter()):
+        if node is root:
+            continue
+        attrs = node.attrib
+        raw_class = attrs.get("class", node.tag)
+        resource_id = attrs.get("resource-id", "").rsplit("/", 1)[-1]
+        text = attrs.get("text") or attrs.get("content-desc") or ""
+        bounds = attrs.get("bounds", "")
+        identity = resource_id or text or f"{raw_class}-{index}"
+        rows.append({
+            "component_id": stable_id("COMP", page_id, identity, str(index)),
+            "page_id": page_id,
+            "resource_id": resource_id,
+            "text": text,
+            "type": component_type(raw_class),
+            "source_type": raw_class,
+            "bounds": bounds,
+            "clickable": attrs.get("clickable", "false"),
+            "source_ref": f"runtime-evidence/{source_dir.name}/ui.xml#node-{index}",
+            "generated_by": "gmi-phase3-adapter-runtime",
+        })
+    return rows
+
+
+def field_components(page_id: str, page_symbol: str, rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if row.get("page_id") != page_id and normalize_symbol(row.get("page_symbol", "")) != normalize_symbol(page_symbol):
+            continue
+        field_id = row.get("field_id") or f"FIELD-{index + 1}"
+        out.append({
+            "component_id": stable_id("COMP", page_id, field_id),
+            "page_id": page_id,
+            "resource_id": field_id,
+            "text": row.get("field_label", ""),
+            "type": component_type(row.get("field_type", "")),
+            "source_type": row.get("field_type", ""),
+            "source_ref": row.get("source_ref", "") or row.get("layout_ref", "") or f"gmi-field:{field_id}",
+            "generated_by": "gmi-phase3-adapter-field",
+        })
+    return out
 
 
 def sanitize(sym: str) -> str:
@@ -148,6 +310,14 @@ def main() -> int:
     ph4 = out / "phase-04-harmony-implementation"
     for d in (out, phase2, ph3, ph4):
         d.mkdir(parents=True, exist_ok=True)
+    static_dir = phase2 / "static-analysis"
+    # Capture any real Phase-2 analysis before the adapter writes the formal layout.
+    existing_static = {
+        "pages": read_json_rows(static_dir / "pages.json", "pages"),
+        "components": read_json_rows(static_dir / "components.json", "components"),
+        "events": read_json_rows(static_dir / "events.json", "events"),
+        "transitions": read_json_rows(static_dir / "transitions.json", "transitions"),
+    }
 
     # 1) closure-report.json / CLOSED / phase-manifest.json / closure-manifest.sha256
     closure_report = {
@@ -351,18 +521,91 @@ def main() -> int:
                            "kinds": [infer_page_kind(sym)], "source_refs": [], "layout_names": [],
                            "is_start": sym == (page_syms[0] if page_syms else ""),
                            "candidate_feature_ids": [page_to_feature.get(sym) or "MAIN"]})
-    write_json(phase2 / "static-analysis" / "pages.json", {"pages": pages_json})
-    (phase2 / "static-analysis" / "components.json").write_text(
-        json.dumps({"components": [], "generated_by": "gmi-phase3-adapter"}, ensure_ascii=False),
-        encoding="utf-8")
-    # P4 page_acceptance_contract 消费的其它 static 文件（合法空/最小）
-    write_json(phase2 / "static-analysis" / "events.json", {"events": [], "generated_by": "gmi-phase3-adapter"})
-    write_json(phase2 / "static-analysis" / "transitions.json", {"transitions": [], "generated_by": "gmi-phase3-adapter"})
+    write_json(static_dir / "pages.json", {"pages": pages_json, "generated_by": "gmi-phase3-adapter"})
+
+    # Preserve and rebind real legacy analysis first. Missing pages are synthesized from
+    # accepted runtime UI evidence, then from gmi page-fields. Never replace real rows with [].
+    components, events, transitions = align_static_rows(existing_static, pages_json)
+    fields = read_rows(cands / "page-fields.candidates.csv")
+    component_pages = {str(row.get("page_id", "")) for row in components}
+    for page in pages_json:
+        pid = str(page["page_id"])
+        sym = str(page["symbol"])
+        if pid in component_pages:
+            continue
+        generated = runtime_components(pid, evidence_source_for(sym) if sym in accepted_syms else None)
+        if not generated:
+            generated = field_components(pid, sym, fields)
+        components.extend(generated)
+        if generated:
+            component_pages.add(pid)
+
+    page_by_symbol = {normalize_symbol(str(page["symbol"])): str(page["page_id"]) for page in pages_json}
+    page_ids = {str(page["page_id"]) for page in pages_json}
+
+    def resolve_page_id(raw_id: str, raw_symbol: str = "") -> str:
+        if raw_id in page_ids:
+            return raw_id
+        return page_by_symbol.get(normalize_symbol(raw_symbol), "")
+
+    existing_event_keys = {
+        (str(row.get("page_id", "")), str(row.get("event", "")), str(row.get("action", "")))
+        for row in events
+    }
+    for row in read_rows(cands / "behavior.candidates.csv"):
+        pid = resolve_page_id(row.get("page_id", ""), row.get("page_symbol", ""))
+        event = row.get("event", "").strip()
+        action = row.get("action", "").strip()
+        key = (pid, event, action)
+        if not pid or not event or not action or key in existing_event_keys:
+            continue
+        events.append({
+            "event_id": stable_id("EVENT", pid, row.get("candidate_id", ""), event, action),
+            "page_id": pid,
+            "event": event,
+            "action": action,
+            "params": row.get("params", ""),
+            "data_target": row.get("data_target", ""),
+            "side_effect": row.get("side_effect", ""),
+            "source_ref": row.get("source_ref", "") or f"gmi-behavior:{row.get('candidate_id', '')}",
+            "generated_by": "gmi-phase3-adapter-behavior",
+        })
+        existing_event_keys.add(key)
+
+    transition_keys = {
+        (str(row.get("source_page_id", "")), str(row.get("target_page_id", "")), str(row.get("action", "")))
+        for row in transitions
+    }
+    for row in read_rows(cands / "navigation-relations.candidates.csv"):
+        source = resolve_page_id(row.get("from_page_id", ""), row.get("from_page_symbol", ""))
+        target = resolve_page_id(row.get("to_page_id", ""))
+        key = (source, target, row.get("action", ""))
+        if not source or not target or key in transition_keys:
+            continue
+        transitions.append({
+            "transition_id": stable_id("TRANSITION", source, target, row.get("candidate_id", ""), row.get("action", "")),
+            "source_page_id": source,
+            "target_page_id": target,
+            "trigger": row.get("trigger", ""),
+            "action": row.get("action", ""),
+            "relation_type": row.get("relation_type", ""),
+            "source_ref": row.get("source_ref", "") or f"gmi-navigation:{row.get('candidate_id', '')}",
+            "generated_by": "gmi-phase3-adapter-navigation",
+        })
+        transition_keys.add(key)
+
+    write_json(static_dir / "components.json", {
+        "components": components,
+        "generated_by": "gmi-phase3-adapter",
+        "unresolved_page_ids": sorted(page_ids - component_pages),
+    })
+    write_json(static_dir / "events.json", {"events": events, "generated_by": "gmi-phase3-adapter"})
+    write_json(static_dir / "transitions.json", {"transitions": transitions, "generated_by": "gmi-phase3-adapter"})
     # state-candidates：每页默认态（与 inventory 的 STATE-<pid>-DEFAULT 对齐，避免 P4 state 校验缺失）
     state_rows = [{"expression": "DEFAULT", "source_symbol": pj["symbol"],
                    "source_ref": f"{pj['symbol']}:1", "state_id": f"STATE-{pj['page_id']}-DEFAULT",
                    "page_id": pj["page_id"]} for pj in pages_json]
-    write_json(phase2 / "static-analysis" / "state-candidates.json", {"states": state_rows, "generated_by": "gmi-phase3-adapter"})
+    write_json(static_dir / "state-candidates.json", {"states": state_rows, "generated_by": "gmi-phase3-adapter"})
     # advanced-analysis.json 从 risk-probes 映射
     # 字段名契约：dynamic_risks 每项须有 risk_id（^[A-Z0-9][A-Z0-9._-]{2,95}$），
     # 不合法/空 probe_id 直接跳过（防止校验报空值；真实风险仍保留在 risk-probes.candidates.csv）
@@ -403,7 +646,7 @@ def main() -> int:
             if not risk_seen[rid]["detail"]:
                 risk_seen[rid]["detail"] = r.get("signal", "")
     adv["dynamic_risks"] = list(risk_seen.values())
-    write_json(phase2 / "static-analysis" / "advanced-analysis.json", adv)
+    write_json(static_dir / "advanced-analysis.json", adv)
     write_json(phase2 / "runtime-observations.json",
                {"observations": [], "generated_by": "gmi-phase3-adapter"})
     write_json(phase2 / "page-gate-report.json",
@@ -519,7 +762,11 @@ def main() -> int:
     # 6d) gmi gate 依赖文件复制到 out/（coverage + audit-replay）：
     #     init_scaffold 的 verify_gmi_phase2_gate 在 run_dir/coverage 与 run_dir.parent 两处查找；
     #     新 run 目录（-run2）需要带上 workspace 的 coverage/ 与 runtime-evidence/audit-replay.csv。
-    for rel in ("coverage/coverage-ledger.csv", "runtime-evidence/audit-replay.csv"):
+    for rel in (
+        "coverage/coverage-ledger.csv",
+        "runtime-evidence/runtime-gate.csv",
+        "runtime-evidence/audit-replay.csv",
+    ):
         src_f = ws / rel
         if src_f.exists():
             dst_f = out / rel

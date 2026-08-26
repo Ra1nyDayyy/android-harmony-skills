@@ -33,10 +33,10 @@ Initialize with `scripts/init_migration.py`, complete `controller/scope.json`, t
 - 冻结值写入 scope.json（`screen_resolution/screen_density/serial` + `sdk_toolchain`），P2 gmi_runtime（`--screen-size/--screen-density`）、P3/P4 构建与 H4ENV 直接复用，全程不改基准。
 
 **gmi 模式 Gate 2/3/4 判定规则**（gmi 流程下 controller 机器复核）：
-- 判别：`phase-02-android-inventory/gmi/phase-2-closure.json` 存在（或 phase-manifest `generator: gmi`）即为 gmi run；`validate_gate.py` 自动走等价门禁（P2: closure PASS + UNMAPPED=0；P3: + stage-03-gate-report PASS），legacy 证据链校验对 gmi run 不再适用。
-- 工单签发：gmi run 的 P3/P4 工单可手工签发（照 `issue_phase3/4_work_order.py` 的结构），**work_order_id 一律大写**（后缀取 scope_sha256 前 12 位大写，如 `WO-PHASE-04-F2CF8BB31CF6`），必须符合 `^[A-Z0-9][A-Z0-9._-]{2,95}$`；签完后 registry 记录 `work_order_sha256` 并追加 decision-log。
-- adapter 防覆盖：`gmi_phase3_adapter.py --out` 指向**已有 controller 的 run** 时不会写 controller/scope.json、run-manifest.json、registries（只产出 phase-02 正式布局）——绝不可因错误 `--out` 覆盖 run 身份；若已误覆盖，从 `phase-02-android-inventory/controller-scope.snapshot.json` 恢复 scope.json（并按决策日志留痕）。
-- 中文路径约束：hvigor 拒绝非 ASCII 工作区路径（00306003 Invalid project path）。若 run 位于中文路径，构建/验证改在 ASCII 载体（如 `/tmp/...`）执行，结果 seal 回正式 run 并在决策日志记录载体差异；原则上 run 路径应全程 ASCII。
+- 判别：`phase-02-android-inventory/gmi/phase-2-closure.json` 存在（或 phase-manifest `generator: gmi`）即为 gmi run。Gate 2 重算 13 表、closure、UNMAPPED 与 audit；Gate 3 叠加架构映射和 stage-03 seal；Gate 4 叠加全页合同、行为绑定、非空组件和 stage-04 seal。不得用 Gate 3 代替 Gate 4。CodeArts 模式下 Gate 4 还必须独立重算全页 `ACCEPTED` 实现、ArkTS 代码路径、非占位页、parity、封存模拟器/UiTest 证据、验收记录、截图唯一性和完整 closure manifest，禁止只信 PASS 报告。
+- 工单签发：只用 `issue_phase3_work_order.py` / `issue_phase4_work_order.py`；它们会重算 gmi Gate 并生成大写 ID。禁止手工改 gate-report 或手工组工单。
+- adapter 防覆盖：`gmi_phase3_adapter.py --out` 指向已有 run 时保留 controller 身份与真实 static-analysis，将旧 Page-ID 对齐到 gmi Page-ID；缺组件时只可从已验收 UI 树或 page-fields 确定性合成。
+- 路径约束：hvigor 拒绝非 ASCII 工作区（00306003）；`preflight_env.py` 必须在 P1 直接阻断，禁止中途搬运 seal 或改写路径哈希。
 
 ## Phase state machine
 
