@@ -6228,52 +6228,327 @@ def _gmi_run(run_dir: Path) -> bool:
         return False
 
 
-def _validate_gmi_equivalent(run_dir: Path, phase: int) -> tuple[list[str], list[str]]:
-    """gmi 等价门禁：phase-2-closure.json + coverage UNMAPPED=0 + audit 0 discrepancy。
-    返回 (errors, warnings)。phase>=3 时要求 phase-03 产物存在（通过即等价 PASS）。"""
-    errs: list[str] = []
-    warns: list[str] = []
-    p2 = run_dir / "phase-02-android-inventory"
-    gmi_dir = p2 / "gmi"
-    closure_p = p2 / "gmi" / "phase-2-closure.json"
-    if not closure_p.exists():
-        closure_p = p2 / "closure-report.json"
-    if not closure_p.exists():
-        errs.append("gmi phase-2-closure.json / closure-report.json missing")
-        return errs, warns
+GMI_REQUIRED_CANDIDATES = (
+    "code-map.candidates.full.csv", "business-rules.candidates.csv",
+    "asset-mapping.candidates.csv", "inventory.candidates.csv",
+    "page-fields.candidates.csv", "third-party-dependencies.candidates.csv",
+    "field-options.candidates.csv", "navigation-relations.candidates.csv",
+    "behavior.candidates.csv", "risk-probes.candidates.csv",
+    "color-palette.candidates.csv", "motion.candidates.csv",
+    "phase-2-completeness.csv",
+)
+
+
+def _gmi_json(path: Path, errors: list[str]) -> dict[str, Any]:
     try:
-        cl = json.loads(closure_p.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
-        errs.append(f"gmi closure unreadable: {e}")
-        return errs, warns
-    verdict = str(cl.get("verdict", cl.get("final_verdict", cl.get("status", "")))).upper()
-    if verdict != "PASS":
-        errs.append(f"gmi closure verdict != PASS: {verdict}")
-    cov = gmi_dir / "coverage" / "coverage-ledger.csv"
-    if not cov.exists():
-        cov = p2 / "coverage" / "coverage-ledger.csv"
-    if not cov.exists():
-        cov = run_dir / "phase-02-android-inventory" / "gmi" / "coverage" / "coverage-ledger.csv"
-    if cov.exists():
-        rows = list(csv.DictReader(open(cov, encoding="utf-8", errors="replace")))
-        unmapped = sum(1 for r in rows if str(r.get("status", "")).upper() == "UNMAPPED")
-        if unmapped > 0:
-            errs.append(f"gmi coverage UNMAPPED={unmapped} (must be 0)")
+        return load_json(path)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return {}
+
+
+def _gmi_seal(report: Path, closed: Path, label: str, errors: list[str]) -> None:
+    if not report.is_file() or not closed.is_file():
+        errors.append(f"{label} report/CLOSED missing")
+        return
+    expected = closed.read_text(encoding="utf-8", errors="replace").strip().split()[0]
+    if not SHA256_RE.fullmatch(expected) or expected != sha256_file(report):
+        errors.append(f"{label} CLOSED does not bind the gate report")
+
+
+def _gmi_phase2_inputs(run_dir: Path, errors: list[str]) -> tuple[dict[str, Any], Path, Path, Path]:
+    """Resolve both native p2/gmi and adapter-produced run-root GMI layouts."""
+    p2 = run_dir / "phase-02-android-inventory"
+    nested = p2 / "gmi"
+    nested_closure = nested / "phase-2-closure.json"
+    if nested_closure.is_file():
+        return (
+            _gmi_json(nested_closure, errors),
+            nested / "candidates",
+            nested / "coverage",
+            nested / "runtime-evidence",
+        )
+    # 原生独立布局：closure 写在 phase-02-android-inventory 根（gmi_closure 默认输出）
+    p2_closure = p2 / "phase-2-closure.json"
+    if p2_closure.is_file():
+        rt_dir = p2 / "runtime-evidence"
+        if not rt_dir.is_dir():
+            rt_dir = nested / "runtime-evidence"
+        return (
+            _gmi_json(p2_closure, errors),
+            p2 / "candidates",
+            p2 / "coverage",
+            rt_dir,
+        )
+
+    closure_report = _gmi_json(p2 / "closure-report.json", errors)
+    embedded = closure_report.get("gmi_closure")
+    closure = {"gate": embedded} if isinstance(embedded, dict) else {}
+    if not closure:
+        errors.append("gmi phase-2 closure is missing (neither p2/gmi certificate nor embedded adapter gate)")
+    candidates = run_dir / "candidates"
+    if not candidates.is_dir():
+        candidates = p2 / "candidates"
+    return closure, candidates, run_dir / "coverage", run_dir / "runtime-evidence"
+
+
+def _validate_gmi_phase2(run_dir: Path) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    closure, candidates, coverage_dir, runtime = _gmi_phase2_inputs(run_dir, errors)
+    gate = closure.get("gate") if isinstance(closure.get("gate"), dict) else {}
+    if not gate:
+        errors.append("gmi closure gate is missing")
     else:
-        errs.append("gmi coverage-ledger.csv missing")
-    if phase >= 3:
-        p3 = run_dir / "phase-03-harmony-scaffold"
-        gate_p = p3 / "stage-03-gate-report.json"
-        if gate_p.exists():
-            try:
-                g3 = json.loads(gate_p.read_text(encoding="utf-8"))
-                if str(g3.get("verdict", "")).upper() != "PASS":
-                    errs.append(f"stage-03-gate-report verdict != PASS: {g3.get('verdict')}")
-            except (ValueError, OSError) as e:
-                errs.append(f"stage-03-gate-report unreadable: {e}")
+        if gate.get("unmapped") != 0:
+            errors.append(f"gmi closure UNMAPPED={gate.get('unmapped')} (must be 0)")
+        if gate.get("audit_discrepancy") != 0:
+            errors.append(f"gmi closure audit_discrepancy={gate.get('audit_discrepancy')} (must be 0)")
+
+    for name in GMI_REQUIRED_CANDIDATES:
+        path = candidates / name
+        if not path.is_file() or path.stat().st_size == 0:
+            errors.append(f"gmi candidate table missing/empty: {name}")
+    if not (candidates / "manifest.sha256").is_file():
+        errors.append("gmi candidates manifest.sha256 missing")
+
+    coverage = coverage_dir / "coverage-ledger.csv"
+    if not coverage.is_file():
+        errors.append("gmi coverage-ledger.csv missing")
+    else:
+        gaps = [
+            row for row in read_csv_rows(coverage)
+            if str(row.get("status", "")).upper() in {"GAP", "UNMAPPED"}
+            or str(row.get("disposition", "")).upper() == "UNMAPPED"
+        ]
+        if gaps:
+            errors.append(f"gmi coverage has {len(gaps)} unmapped/gap rows")
+
+    for name in ("runtime-gate.csv", "audit-replay.csv"):
+        if not (runtime / name).is_file():
+            errors.append(f"gmi runtime evidence missing: {name}")
+    audit_rows = read_csv_rows(runtime / "audit-replay.csv")
+    discrepancies = [row for row in audit_rows if str(row.get("discrepancy", "")).upper() == "YES"]
+    if discrepancies:
+        errors.append(f"gmi audit replay discrepancies={len(discrepancies)}")
+    return errors, warnings
+
+
+def _validate_gmi_phase3(run_dir: Path) -> tuple[list[str], list[str]]:
+    errors, warnings = _validate_gmi_phase2(run_dir)
+    p2 = run_dir / "phase-02-android-inventory"
+    p3 = run_dir / "phase-03-harmony-scaffold"
+    report = _gmi_json(p3 / "stage-03-gate-report.json", errors)
+    if str(report.get("verdict", report.get("final_verdict", ""))).upper() != "PASS":
+        errors.append("gmi stage-03 gate is not PASS")
+    _gmi_seal(p3 / "stage-03-gate-report.json", p3 / "CLOSED", "gmi stage-03", errors)
+    if not (p3 / "stage-03-closure-manifest.sha256").is_file():
+        errors.append("gmi stage-03 closure manifest missing")
+
+    inventory_ids = {row.get("inventory_id", "") for row in read_csv_rows(p2 / "inventory.csv") if row.get("inventory_id")}
+    mapped_ids = {row.get("inventory_id", "") for row in read_csv_rows(p3 / "architecture-map.csv") if row.get("inventory_id")}
+    missing = sorted(inventory_ids - mapped_ids)
+    if missing:
+        errors.append(f"gmi stage-03 architecture mappings missing={missing[:5]}")
+    modules = read_csv_rows(p3 / "module-registry.csv")
+    if not modules or any(str(row.get("status", "")).upper() != "READY" for row in modules):
+        errors.append("gmi stage-03 module registry is missing or not READY")
+    return errors, warnings
+
+
+def _gmi_code_paths(raw: str) -> list[str]:
+    try:
+        values = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
+def _gmi_placeholder_page(path: Path, page_id: str) -> str:
+    """Detect the exact low-information shells CodeArts previously emitted as page implementations."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    compact = re.sub(r"\s+", " ", text)
+    if "ArkUI migration scaffold" in text:
+        return "generic ArkUI scaffold marker"
+    rendered_identity = bool(re.search(r"Text\s*\(\s*['\"](?:ROUTE-|PAGE-)", text))
+    ui_calls = len(re.findall(
+        r"\b(?:Text|Button|Image|TextInput|TextArea|List|Grid|Web|Checkbox|Radio|Toggle|Switch|"
+        r"Scroll|Column|Row|Stack)\s*\(", text
+    ))
+    if rendered_identity and ui_calls <= 8:
+        return "renders Route-ID/Page-ID instead of the frozen page UI"
+    if (
+        re.search(r"Button\s*\(\s*['\"]Back['\"]\s*\)", compact)
+        and ui_calls <= 8
+        and not re.search(r"\b(?:TextInput|TextArea|List|Grid|Web|Checkbox|Radio|Toggle|Switch)\s*\(", text)
+    ):
+        return "Back-only navigation shell"
+    return ""
+
+
+def _validate_gmi_phase4_outputs(run_dir: Path, inventory_rows: list[dict[str, str]]) -> list[str]:
+    """Recompute CodeArts-critical P4 invariants without trusting a model-authored PASS report."""
+    errors: list[str] = []
+    p4 = run_dir / "phase-04-harmony-implementation"
+    inventory_ids = {row.get("inventory_id", "") for row in inventory_rows if row.get("inventory_id")}
+    inventory_pages = {row.get("page_id", "") for row in inventory_rows if row.get("page_id")}
+
+    implementation = read_csv_rows(p4 / "page-implementation-ledger.csv")
+    impl_by_page = {row.get("page_id", ""): row for row in implementation if row.get("page_id")}
+    if set(impl_by_page) != inventory_pages:
+        errors.append("gmi stage-04 implementation ledger does not exactly cover inventory pages")
+    for page_id in sorted(inventory_pages):
+        row = impl_by_page.get(page_id, {})
+        if row.get("status") != "ACCEPTED":
+            errors.append(f"gmi stage-04 page implementation is not ACCEPTED: {page_id}")
+            continue
+        paths = _gmi_code_paths(row.get("exclusive_code_paths", ""))
+        if not paths:
+            errors.append(f"gmi stage-04 page has no exclusive ArkTS path: {page_id}")
+            continue
+        for relative in paths:
+            pure = PurePosixPath(relative)
+            if (
+                pure.is_absolute() or ".." in pure.parts
+                or not relative.startswith("harmony-project/")
+                or pure.suffix.lower() not in {".ets", ".ts"}
+            ):
+                errors.append(f"gmi stage-04 page has unsafe/non-ArkTS code path: {page_id}: {relative}")
+                continue
+            source = p4 / Path(*pure.parts)
+            if not source.is_file():
+                errors.append(f"gmi stage-04 page source is missing: {page_id}: {relative}")
+                continue
+            reason = _gmi_placeholder_page(source, page_id)
+            if reason:
+                errors.append(f"gmi stage-04 placeholder page rejected: {page_id}: {reason}")
+
+    parity = [row for row in read_csv_rows(p4 / "parity-map.csv") if row.get("status") != "SUPERSEDED"]
+    parity_ids = {row.get("parity_id", "") for row in parity if row.get("parity_id")}
+    if {row.get("inventory_id", "") for row in parity} != inventory_ids or any(
+        row.get("status") != "ACCEPTED" for row in parity
+    ):
+        errors.append("gmi stage-04 parity map is incomplete or not ACCEPTED")
+
+    evidence = [row for row in read_csv_rows(p4 / "evidence-index.csv") if row.get("status") == "SEALED"]
+    evidence_by_parity = {row.get("parity_id", ""): row for row in evidence if row.get("parity_id")}
+    if (
+        set(evidence_by_parity) != parity_ids
+        or {row.get("inventory_id", "") for row in evidence} != inventory_ids
+        or len(evidence_by_parity) != len(evidence)
+    ):
+        errors.append("gmi stage-04 sealed evidence does not exactly cover parity rows")
+    screenshot_targets: dict[str, set[tuple[str, str]]] = {}
+    for parity_id, row in evidence_by_parity.items():
+        relative = row.get("relative_path", "")
+        evidence_dir = safe_relative_path(p4, relative, f"gmi HEVD {row.get('evidence_id', '')}", errors)
+        if not evidence_dir or not evidence_dir.is_dir():
+            continue
+        required = (
+            "manifest.sha256", "COMMITTED", "metadata.json", "screenshot.png", "assertions.json",
+            "ui-test-snapshot.json", "ui-test-snapshot-metadata.json", "ui-test-snapshot-operation-trace.json",
+            "ui-test-snapshot.png", "uitest-test.hap",
+        )
+        missing = [name for name in required if not (evidence_dir / name).is_file()]
+        if missing:
+            errors.append(f"gmi stage-04 evidence package is incomplete: {parity_id}: {missing[:4]}")
+            continue
+        try:
+            verify_sealed_package(
+                evidence_dir, str(row.get("evidence_id", "")), "SEALED",
+                f"gmi HEVD {row.get('evidence_id', '')}", errors,
+            )
+            metadata = _gmi_json(evidence_dir / "metadata.json", errors)
+            if (
+                metadata.get("status") != "SEALED"
+                or metadata.get("evidence_id") != row.get("evidence_id")
+                or metadata.get("parity_id") != parity_id
+                or metadata.get("page_id") != row.get("page_id")
+                or metadata.get("state_id") != row.get("state_id")
+            ):
+                errors.append(f"gmi stage-04 evidence metadata is not sealed/bound: {parity_id}")
+            validate_complete_png(evidence_dir / "screenshot.png")
+            screenshot_hash = sha256_file(evidence_dir / "screenshot.png")
+            if row.get("screenshot_sha256") != screenshot_hash:
+                errors.append(f"gmi stage-04 screenshot hash differs: {parity_id}")
+            parity_row = next((item for item in parity if item.get("parity_id") == parity_id), {})
+            target = (parity_row.get("page_id", ""), parity_row.get("state_id", ""))
+            screenshot_targets.setdefault(screenshot_hash, set()).add(target)
+        except ValueError as exc:
+            errors.append(str(exc))
+    for digest, targets in screenshot_targets.items():
+        if len(targets) > 1:
+            errors.append(f"gmi stage-04 screenshot reused across page/state targets: {digest}: {sorted(targets)}")
+
+    reviews = [row for row in read_csv_rows(p4 / "acceptance-ledger.csv") if row.get("status") != "SUPERSEDED"]
+    review_parity = [row.get("parity_id", "") for row in reviews]
+    if (
+        set(review_parity) != parity_ids
+        or {row.get("inventory_id", "") for row in reviews} != inventory_ids
+        or len(review_parity) != len(set(review_parity))
+        or any(row.get("status") != "ACCEPTED" for row in reviews)
+    ):
+        errors.append("gmi stage-04 acceptance ledger lacks exactly one ACCEPTED review per parity row")
+    verify_phase4_closure(p4, errors)
+    return errors
+
+
+def _validate_gmi_phase4(run_dir: Path) -> tuple[list[str], list[str]]:
+    errors, warnings = _validate_gmi_phase3(run_dir)
+    p2 = run_dir / "phase-02-android-inventory"
+    p4 = run_dir / "phase-04-harmony-implementation"
+    report = _gmi_json(p4 / "stage-04-gate-report.json", errors)
+    if str(report.get("verdict", report.get("final_verdict", ""))).upper() != "PASS":
+        errors.append("gmi stage-04 gate is not PASS")
+    _gmi_seal(p4 / "stage-04-gate-report.json", p4 / "CLOSED", "gmi stage-04", errors)
+    if not (p4 / "stage-04-closure-manifest.sha256").is_file():
+        errors.append("gmi stage-04 closure manifest missing")
+
+    inventory_rows = read_csv_rows(p2 / "inventory.csv")
+    inventory_pages = {row.get("page_id", "") for row in inventory_rows if row.get("page_id")}
+    registry = read_csv_rows(p4 / "page-contract-registry.csv")
+    contract_pages = {row.get("page_id", "") for row in registry if row.get("page_id")}
+    if contract_pages != inventory_pages:
+        errors.append(
+            f"gmi stage-04 page contract coverage differs: "
+            f"missing={sorted(inventory_pages - contract_pages)[:5]}, extra={sorted(contract_pages - inventory_pages)[:5]}"
+        )
+    layout_errors: list[str] = []
+    _, candidates, _, _ = _gmi_phase2_inputs(run_dir, layout_errors)
+    behavior_pages = {
+        row.get("page_id", "") for row in read_csv_rows(candidates / "behavior.candidates.csv")
+        if row.get("page_id")
+    }
+    for row in registry:
+        page_id = row.get("page_id", "")
+        relative = row.get("relative_path", "")
+        expected_relative = f"page-contracts/{page_id}.json"
+        if relative != expected_relative:
+            errors.append(f"gmi stage-04 contract path differs for {page_id}: {relative}")
+            contract = {}
         else:
-            errs.append("phase-03 stage-03-gate-report.json missing")
-    return errs, warns
+            contract = _gmi_json(p4 / expected_relative, errors)
+        components = contract.get("components")
+        if not isinstance(components, list) or not components:
+            errors.append(f"gmi stage-04 contract has no components: {page_id}")
+        bindings = contract.get("behavior_bindings")
+        if page_id in behavior_pages and (not isinstance(bindings, list) or not bindings):
+            errors.append(f"gmi stage-04 contract lost behavior bindings: {page_id}")
+    pending = [row for row in read_csv_rows(p2 / "evidence-index.csv") if row.get("status") == "PENDING_RUNTIME_VERIFY"]
+    if pending:
+        errors.append(f"gmi stage-04 still has PENDING_RUNTIME_VERIFY pages={len(pending)}")
+    errors.extend(_validate_gmi_phase4_outputs(run_dir, inventory_rows))
+    return errors, warnings
+
+
+def _validate_gmi_equivalent(run_dir: Path, phase: int) -> tuple[list[str], list[str]]:
+    if phase == 2:
+        return _validate_gmi_phase2(run_dir)
+    if phase == 3:
+        return _validate_gmi_phase3(run_dir)
+    if phase >= 4:
+        return _validate_gmi_phase4(run_dir)
+    return [], []
 
 
 def main() -> int:

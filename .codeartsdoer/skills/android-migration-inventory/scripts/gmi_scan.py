@@ -1640,6 +1640,18 @@ def scan_shape_details(nodes: List[Dict[str, Any]]) -> None:
 
 _BEHAVIOR_EVENT_RE = re.compile(
     r"(?:onClick|onCheckedChange|onLongClick|onValueChange|onDismiss|onConfirm|onSave|onDelete|onAdd|onSelect|onToggle|onSearch|onSubmit)\s*=\s*\{([^}]{0,220})", re.S)
+# Java listener 注册：setXxxListener( (view) -> {...} ) / new Xxx.OnXxx() { public void onXxx(...) {...} }
+_JAVA_LISTENER_RE = re.compile(
+    r"\.setOn(?:Click|CheckedChange|LongClick|ItemClick|ItemLongClick|EditorAction|Touch|FocusChange|Key|CreateContextMenu)"
+    r"Listener\s*\(\s*(?:new\s+[A-Za-z0-9_.<>]+\s*\([^)]*\)\s*\{\s*(?:@Override\s*)?public\s+[A-Za-z0-9_]+\s*(?:on[A-Za-z0-9_]*)\s*\([^)]*\)\s*\{|"
+    r"\([^)]*\)\s*->\s*\{?|"
+    r"[A-Za-z0-9_]+\.\s*\w+\s*->\s*\w+\s*\{|"
+    r"[A-Za-z0-9_]+::[A-Za-z0-9_]+|"
+    r"[A-Za-z0-9_.]*\s*\([^)]*\)\s*->\s*\{)",
+    re.S)
+_BEHAVIOR_EVENT_JAVA_RE = re.compile(
+    r"(?:onClick|onCheckedChange|onLongClick|onItemClick|onItemLongClick|onEditorAction|onTouch|onFocusChange|onKey|onCreateContextMenu)"
+    r"\s*\(\s*([A-Za-z0-9_.,\s<>\[\]{}():@$+-]*?)\s*\)\s*(?:\{|\{)")
 _BEHAVIOR_CALL_RE = re.compile(
     r"(?:\bviewModel(?:\s*\?)?\.|\b(?:dao|repository|repo|database)\s*\.|\bauthStore\s*\.|\binventory\s*\.)"
     r"([A-Za-z0-9_]+)\s*\(")
@@ -1703,6 +1715,45 @@ def scan_behaviors(files: List[Dict[str, Any]],
                 "params": (dm.group(0)[:60] if dm else handler[:50]),
                 "data_target": data_target,
                 "side_effect": "+".join(side) if side else "none",
+                "source_ref": f"{rel}:{line}",
+            })
+        # Java listener 注册（markor 等纯 Java 项目）
+        for lm in _JAVA_LISTENER_RE.finditer(text):
+            reg = lm.group(0)
+            line = _line_of(text, lm.start())
+            # Java 方法引用 `this::onClickFab` / ambda `v -> doSomething()` / 匿名类内部方法
+            action = ""
+            for pat in (
+                r"this::([A-Za-z0-9_]+)", r"([A-Za-z0-9_]+)::([A-Za-z0-9_]+)",
+                r"->\s*([A-Za-z0-9_\.]+)\s*\(", r"public\s+void\s+([A-Za-z0-9_]+)\s*\(",
+            ):
+                mm = re.search(pat, reg)
+                if mm:
+                    action = mm.group(1) if pat.endswith("::([A-Za-z0-9_]+)") else (mm.group(2) if mm.lastindex == 2 else mm.group(1))
+                    break
+            dm = None
+            if not action:
+                dm = _BEHAVIOR_CALL_RE.search(reg)
+                if dm:
+                    action = dm.group(1)
+            data_target = "viewModel/dao/repository" if dm else "component/internal"
+            side = []
+            for marker, label in (("navigate", "navigate"), ("refresh", "refresh-list"),
+                                  ("Toast", "feedback"), ("dialog", "dialog"), ("dismiss", "dismiss"),
+                                  ("search", "search"), ("delete", "delete"), ("update", "update")):
+                if marker in reg.lower():
+                    side.append(label)
+            key = (rel, line, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "page_id": pid, "page_symbol": page["symbol"] if page else "",
+                "event": "listener@" + reg[:24].strip(), "target": "java-listener",
+                "action": action[:60],
+                "params": reg[max(0, reg.find("(")):reg.find("(") + 60],
+                "data_target": data_target,
+                "side_effect": "+".join(sorted(set(side))) if side else "none",
                 "source_ref": f"{rel}:{line}",
             })
     return rows
