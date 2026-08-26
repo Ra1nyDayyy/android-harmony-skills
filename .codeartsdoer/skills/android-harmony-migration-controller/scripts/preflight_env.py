@@ -69,11 +69,29 @@ def find_deveco() -> tuple[str, str, str]:
         r"C:\Program Files\Huawei\DevEcoStudio\bin\deveco-studio64.exe",
         r"D:\DevEcoStudio\bin\devecostudio64.exe",
         r"C:\Program Files\Huawei\DevEcoStudio",
+        r"D:\DevEco Studio",
+        r"E:\DevEco Studio",
     ]
     for c in cands:
         if Path(c).exists():
             return c, "found", ""
     return "DevEcoStudio", "not-found", ""
+
+
+def deveco_tool_roots(deveco_root: str) -> list[str]:
+    """从找到的 DevEco 根路径推导工具链候选路径（hdc/ohpm/hvigorw 所在）。"""
+    roots = [deveco_root]
+    # DevEco 安装根下常见 SDK/工具子目录
+    for child in ("sdk", "Contents", "tools", "sdk/default/openharmony/toolchains"):
+        candidate = Path(deveco_root) / child
+        if candidate.is_dir():
+            roots.append(str(candidate))
+    # Windows 上 hdc 典型位置
+    roots.extend([
+        r"D:\DevEco Studio\sdk\default\openharmony\toolchains",
+        r"C:\Program Files\Huawei\DevEcoStudio\sdk\default\openharmony\toolchains",
+    ])
+    return roots
 
 
 def adb(serial: str, *args: str) -> str:
@@ -227,18 +245,18 @@ def main() -> int:
     jp, jst, jv = detect_tool_version("java", "java", ["java", "-version"], [])
     sdk_android["java"] = {"path": jp, "status": jst, "version": jv}
 
-    hp, hst, hv = detect_tool_version("hdc", "hdc", ["hdc", "version"], [])
-    sdk_harmony["hdc"] = {"path": hp, "status": hst, "version": hv}
     dp, dst, dv = find_deveco()
     sdk_harmony["deveco"] = {"path": dp, "status": dst, "version": dv}
-    deveco_roots = [
-        "/Applications/DevEco-Studio.app/Contents",
-        "/Applications/DevEco Studio.app/Contents",
-    ]
+    # 用已找到的 DevEco 根（或常见位置）推导工具链候选路径，hdc/ohpm/hvigorw 均可命中
+    deveco_roots = deveco_tool_roots(dp if dst == "found" else "")
     harmony_tool_paths = {
-        "ohpm": [f"{root}/tools/ohpm/bin/ohpm" for root in deveco_roots],
-        "hvigorw": [f"{root}/tools/hvigor/bin/hvigorw" for root in deveco_roots],
+        "hdc": [str(Path(root) / "hdc") for root in deveco_roots],
+        "ohpm": [str(Path(root) / "ohpm" / "bin" / "ohpm") for root in deveco_roots],
+        "hvigorw": [str(Path(root) / "hvigor" / "bin" / "hvigorw") for root in deveco_roots],
     }
+    # 显式路径候选追加到 common（供 detect_tool_version 的 extra_paths 探测）
+    hp, hst, hv = detect_tool_version("hdc", "hdc", ["hdc", "version"], harmony_tool_paths["hdc"])
+    sdk_harmony["hdc"] = {"path": hp, "status": hst, "version": hv}
     for prog, cmd in [("node", ["node", "--version"]),
                       ("ohpm", ["ohpm", "--version"]),
                       ("hvigorw", ["hvigorw", "-v"])]:
