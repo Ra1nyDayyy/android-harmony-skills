@@ -27,10 +27,10 @@ Read [human-review-gates.md](references/human-review-gates.md) before running a 
 
 Initialize with `scripts/init_migration.py`, complete `controller/scope.json`, then compute Gate 1 with `scripts/validate_gate.py --phase 1 --write`.
  
-**Phase 1 屏幕前置（必做，先于 phase state machine）：** 打开并冻结 Android 与 Harmony 两套模拟器的屏幕参数（分辨率/密度一致），`scripts/preflight_screen.py --serial emulator-5554 --width 1080 --height 2400 --density 440 --scope controller/scope.json`。要求：
-- Android 模拟器在线且 `wm size/density` 固定为 WxH/dpi（P2 运行时证据以它为准）；离线/不符 → 先解决环境，P1 不放行。
-- Harmony 模拟器（hdc serial）在线且同参数（P4 H4ENV 与截图对比基准）；离线 → 明确记录「Harmony 模拟器不可用」进 scope（P4 的 parity 将 DEFERRED，不得虚构）。
-- 冻结值写入 scope.json（`screen_resolution/screen_density/serial`），P2 gmi_runtime（`--screen-size/--screen-density`）与 P4 H4ENV 直接复用，全程不改基准。
+**Phase 1 环境前置（必做，先于 phase state machine）：** 屏幕 + SDK 一起冻结，`scripts/preflight_env.py --serial emulator-5554 --width 1080 --height 2400 --density 440 --scope controller/scope.json`。要求：
+- 屏幕（screen parity）：Android 模拟器在线且 `wm size/density` 固定为 WxH/dpi（P2 运行时证据以它为准）；离线/不符 → 先解决环境，P1 不放行。Harmony 模拟器（hdc serial）在线且同参数（P4 H4ENV 与截图对比基准）；离线 → 明确记录「Harmony 模拟器不可用」进 scope（P4 的 parity 将 DEFERRED，不得虚构）。
+- SDK/工具链（SDK find）：扫描并锁定 Android（ANDROID_HOME/adb/emulator/java）+ Harmony（hdc/DevEcoStudio/node/ohpm/hvigor）路径与版本，全量写入 scope.json `sdk_toolchain` 块；缺失项输出 `[WARN] missing xxx` 先行暴露（P3/P4 构建门禁会据此硬卡，补齐后重跑）。
+- 冻结值写入 scope.json（`screen_resolution/screen_density/serial` + `sdk_toolchain`），P2 gmi_runtime（`--screen-size/--screen-density`）、P3/P4 构建与 H4ENV 直接复用，全程不改基准。
 
 ## Phase state machine
 
