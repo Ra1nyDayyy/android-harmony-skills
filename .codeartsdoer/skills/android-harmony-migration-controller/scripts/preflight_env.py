@@ -50,7 +50,10 @@ def detect_tool_version(label: str, prog: str, cmd: list[str], extra_paths: list
     path, ok = which_or_path(prog, extra_paths)
     if not ok:
         return prog, "not-found", ""
-    out = run(cmd if cmd else [path, "--version"])
+    effective = list(cmd) if cmd else [path, "--version"]
+    if effective and not shutil.which(effective[0]) and Path(path).is_file():
+        effective[0] = path
+    out = run(effective)
     ver = ""
     m = re.search(r"(\d+\.\d+(?:\.\d+)?)", out)
     if m:
@@ -60,6 +63,8 @@ def detect_tool_version(label: str, prog: str, cmd: list[str], extra_paths: list
 
 def find_deveco() -> tuple[str, str, str]:
     cands = [
+        "/Applications/DevEco-Studio.app",
+        "/Applications/DevEco Studio.app",
         r"C:\Program Files\Huawei\DevEcoStudio\bin\devecostudio64.exe",
         r"C:\Program Files\Huawei\DevEcoStudio\bin\deveco-studio64.exe",
         r"D:\DevEcoStudio\bin\devecostudio64.exe",
@@ -79,6 +84,18 @@ def hdc(serial: str, *args: str) -> str:
     return run(["hdc", "-t", serial, *args] if serial else ["hdc", *args])
 
 
+def _wm_value(output: str, label: str, value_pattern: str) -> str:
+    """Prefer Android's active Override value, then fall back to Physical/plain output."""
+    override = re.search(rf"Override\s+{label}:\s*({value_pattern})", output, re.IGNORECASE)
+    if override:
+        return override.group(1)
+    physical = re.search(rf"Physical\s+{label}:\s*({value_pattern})", output, re.IGNORECASE)
+    if physical:
+        return physical.group(1)
+    plain = re.search(rf"({value_pattern})", output)
+    return plain.group(1) if plain else ""
+
+
 def current_size_density(dev: str, serial: str) -> tuple[str, str]:
     if dev == "android":
         size_out = adb(serial, "shell", "wm", "size")
@@ -86,9 +103,7 @@ def current_size_density(dev: str, serial: str) -> tuple[str, str]:
     else:
         size_out = hdc(serial, "shell", "wm", "size")
         den_out = hdc(serial, "shell", "wm", "density")
-    m = re.search(r"(\d+x\d+)", size_out)
-    m2 = re.search(r"(\d+)", den_out)
-    return (m.group(1) if m else ""), (m2.group(1) if m2 else "")
+    return _wm_value(size_out, "size", r"\d+x\d+"), _wm_value(den_out, "density", r"\d+")
 
 
 def set_resolution(dev: str, serial: str, size: str, density: str) -> bool:
@@ -97,35 +112,58 @@ def set_resolution(dev: str, serial: str, size: str, density: str) -> bool:
         adb(serial, "shell", "wm", "density", density)
         return True
     out = hdc(serial, "shell", "wm", "size", size) + hdc(serial, "shell", "wm", "density", density)
-    if "wm" in out or "__ERR__" in out:
+    lowered = out.lower()
+    fail_markers = ("inaccessible", "not found", "no such", "command not found", "__err__")
+    if any(marker in lowered for marker in fail_markers):
         return False
     return True
 
 
 def _harmony_size_density(serial: str, config_hint: str = "") -> tuple[str, str]:
     """Harmony 模拟器无 wm 命令（Mac/部分镜像）时：
-    优先 hidumper 渲染分辨率（真实证据），密度回退模拟器 config.ini（hw.lcd.density）。"""
+    优先 hidumper 渲染分辨率（真实证据），密度回退模拟器 config.ini（hw.lcd.density）。
+
+    注意：`param get const.product.density` 在多数模拟器镜像上不存在，
+    其失败输出常含数字（如 'fail! errNum is:106!'），故必须按失败标记判定，
+    不得把错误码误采信为密度值（否则 config.ini 兜底永不触发）。"""
     size_out = hdc(serial, "shell", "hidumper", "-s", "10", "-a", "screen")
-    m = re.search(r"(\d+x\d+)", size_out)
+    m = re.search(r"render resolution=(\d+x\d+)", size_out)
+    if not m:
+        m = re.search(r"physical resolution=(\d+x\d+)", size_out)
+    if not m:
+        m = re.search(r"(\d+x\d+)", size_out)
     size = m.group(1) if m else ""
     den = ""
     hid = hdc(serial, "shell", "param", "get", "const.product.density")
+    lowered = hid.lower()
+    param_get_failed = any(
+        marker in lowered
+        for marker in ("fail", "errnum", "error", "inaccessible", "not found", "no such")
+    )
     m2 = re.search(r"(\d+)", hid)
-    if m2:
+    # 只有真实成功响应（无失败标记的纯数字/数值输出）才可采信；
+    # 失败输出（如 errNum 码）按“无值”处理，交由 config.ini 兜底。
+    if not param_get_failed and m2:
         den = m2.group(1)
-    hm = re.search(r"(\d+x\d+)", size_out.lower().replace("render resolution", "render-resolution", 1) if False else size_out)
-    if not size:
-        # 从模拟器部署 config.ini 兜底（仅用于人工复核场景，须显式传入 config_hint）
-        if config_hint and Path(config_hint).exists():
-            txt = Path(config_hint).read_text(encoding="utf-8", errors="replace")
-            mw = re.search(r"hw\.lcd\.single\.width=(\d+)", txt)
-            mh = re.search(r"hw\.lcd\.single\.height=(\d+)", txt)
-            md = re.search(r"hw\.lcd\.density=(\d+)", txt)
-            if mw and mh:
-                size = f"{mw.group(1)}x{mh.group(1)}"
-            if md:
-                den = md.group(1)
+    # 从模拟器部署 config.ini 独立兜底 size/density；必须显式传入才使用。
+    if config_hint and Path(config_hint).is_file() and (not size or not den):
+        txt = Path(config_hint).read_text(encoding="utf-8", errors="replace")
+        mw = re.search(r"hw\.lcd\.single\.width=(\d+)", txt)
+        mh = re.search(r"hw\.lcd\.single\.height=(\d+)", txt)
+        md = re.search(r"hw\.lcd\.density=(\d+)", txt)
+        if not size and mw and mh:
+            size = f"{mw.group(1)}x{mh.group(1)}"
+        if not den and md:
+            den = md.group(1)
     return size, den
+
+
+def _is_ascii_path(path: Path) -> bool:
+    try:
+        os.fspath(path).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 def main() -> int:
@@ -136,6 +174,7 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=2400)
     ap.add_argument("--density", type=int, default=440)
     ap.add_argument("--scope", help="controller/scope.json to annotate frozen env")
+    ap.add_argument("--harmony-config", default="", help="Harmony emulator config.ini for wm-less density fallback")
     args = ap.parse_args()
 
     size = f"{args.width}x{args.height}"
@@ -143,6 +182,14 @@ def main() -> int:
     warns: list[str] = []
     sdk_android: dict = {}
     sdk_harmony: dict = {}
+
+    run_hint = Path(args.scope).expanduser().absolute() if args.scope else Path.cwd().absolute()
+    if not _is_ascii_path(run_hint):
+        print(
+            f"[ERROR] non-ASCII migration path is unsupported by hvigor: {run_hint} "
+            "(move the run to an ASCII-only path before Phase 1)"
+        )
+        return 1
 
     # ---- A. Screen parity ----
     devices = run(["adb", "devices"])
@@ -160,7 +207,7 @@ def main() -> int:
             errors.append(f"harmony simulator offline: {args.harmony_serial} (hdc list targets)")
         else:
             ok = set_resolution("harmony", args.harmony_serial, size, str(args.density))
-            harm_size, harm_den = _harmony_size_density(args.harmony_serial)
+            harm_size, harm_den = _harmony_size_density(args.harmony_serial, args.harmony_config)
             if not ok:
                 warns.append("harmony wm unavailable: 分辨率已在模拟器配置层设置，preflight 改为只读探测")
             if harm_size != size or harm_den != str(args.density):
@@ -184,10 +231,18 @@ def main() -> int:
     sdk_harmony["hdc"] = {"path": hp, "status": hst, "version": hv}
     dp, dst, dv = find_deveco()
     sdk_harmony["deveco"] = {"path": dp, "status": dst, "version": dv}
+    deveco_roots = [
+        "/Applications/DevEco-Studio.app/Contents",
+        "/Applications/DevEco Studio.app/Contents",
+    ]
+    harmony_tool_paths = {
+        "ohpm": [f"{root}/tools/ohpm/bin/ohpm" for root in deveco_roots],
+        "hvigorw": [f"{root}/tools/hvigor/bin/hvigorw" for root in deveco_roots],
+    }
     for prog, cmd in [("node", ["node", "--version"]),
                       ("ohpm", ["ohpm", "--version"]),
                       ("hvigorw", ["hvigorw", "-v"])]:
-        p, st, v = detect_tool_version(prog, prog, cmd, [])
+        p, st, v = detect_tool_version(prog, prog, cmd, harmony_tool_paths.get(prog, []))
         sdk_harmony[prog] = {"path": p, "status": st, "version": v}
 
     low = {k: d for k, d in {**sdk_android, **sdk_harmony}.items() if isinstance(d, dict) and d.get("status") == "not-found"}
