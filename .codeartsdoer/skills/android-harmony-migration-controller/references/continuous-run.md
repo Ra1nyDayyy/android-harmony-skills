@@ -1,23 +1,24 @@
-# 单任务、分阶段审核执行规约
+# Single-task, phase-gated execution contract
 
-用户只需发起一次完整迁移任务。系统在同一个任务中保存上下文、证据、工单和返工记录，但不能跨过人工审核点自动进入下一阶段。
+The user issues one complete migration task. The system keeps context, evidence, work orders and rework records in the same task, but never crosses a human review point automatically into the next phase.
 
-## 执行顺序
+## Execution order
 
-1. Phase 1 冻结源码、APK、范围、账号、数据和运行环境，计算机器 Gate。
-2. 机器 Gate 通过后生成简明审核包，状态改为 `WAITING_HUMAN_REVIEW`。
-3. 人工选择通过、退回、批准明确偏差或转人工处理。
-4. 只有当前 Gate 对应的 `APPROVED` 或 `APPROVED_DEVIATION` 才能签发下一阶段工单。
-5. Phase 2、3、4 重复相同过程。原任务保持可继续，不要求用户重新开始。
+1. Phase 1 freezes source, APK, scope, accounts, data and the run environment, then computes the machine Gate.
+2. After a machine Gate PASS, generate a compact review package; status becomes `WAITING_HUMAN_REVIEW`.
+3. A person chooses approve, return, approve an explicit deviation, or take over manually.
+4. Only the `APPROVED` or `APPROVED_DEVIATION` decision bound to the current Gate may authorize the next phase work order.
+5. Phases 2, 3 and 4 repeat the same flow. The original task stays continuable; the user does not need to restart.
 
-Phase 2 内部的静态分析、运行遍历、证据绑定和覆盖率计算保持自动化，不插入人工页面枚举。人工只在 Phase 2 机器结果形成后审核页面地图、遗漏风险和低置信项。
+Inside Phase 2, static analysis, runtime traversal, evidence binding and coverage computation remain automatic; no human page enumeration is inserted. A person reviews the page map, omission risks and low-confidence items only after the Phase 2 machine result is formed.
 
-## 自动返工
+## Automatic rework
 
-机器 Gate 失败时，按问题来源自动退回：Android 事实缺失回 Phase 2，鸿蒙基座或载体错误回 Phase 3，ArkUI 实现或证据错误留在 Phase 4。每个迁移单元允许一次初始验证和最多两次自动修复；仍失败则进入 `MANUAL_TAKEOVER`。
+On a machine Gate failure, route the failure back by origin: missing/contradictory Android facts go back to Phase 2, wrong Harmony base or carrier to Phase 3, ArkUI implementation or evidence errors stay in Phase 4. Each migration unit allows one initial verification and at most two automatic repairs; further failure enters `MANUAL_TAKEOVER`.
 
-模型可以分析、实现、验证和提出修复，但不能批准阶段、接受偏差或把失败改写成 `PASS`。人工审批入口必须由 Web 登录态或人工控制终端持有。
+A model may analyze, implement, verify and propose fixes, but may not approve a phase, accept a deviation, or rewrite a failure into `PASS`. The human approval entry must be held by a Web login state or a human-controlled terminal.
 
-## 外部阻塞
+## External blockers
 
-缺少账号、验证码、私有服务权限、签名材料、SDK、DevEco/Hvigor/HDC、可用模拟器或唯一基线时，保留现有进度并一次列出所缺内容。不得通过缩小范围、伪造 CLI、替换页面载体或手写证据绕过阻塞。
+When an account, verification code, private service permission, signing material, SDK, DevEco/Hvigor/HDC, usable emulator or unique baseline is missing, keep the existing progress and list everything missing at once. Never bypass a blocker by shrinking scope, faking a CLI, replacing a page carrier or hand-writing evidence.
+
