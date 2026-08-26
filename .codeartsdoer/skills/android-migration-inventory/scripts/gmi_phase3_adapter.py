@@ -529,6 +529,10 @@ def main() -> int:
             "status": "REVIEWED",
             "notes": "synthesized-by-gmi-phase3-adapter from gmi asset-mapping candidates",
         })
+    # 行序契约：asset-inventory.csv 数据行必须按 Asset-ID 字典序写入——
+    # init_scaffold 将物理行序原样冻结进 stage-03-input-lock 的 asset_ids
+    # 数组，而 validate_stage3 以 sorted() 断言比对，故此处保证天然有序。
+    asset_rows.sort(key=lambda a: a["asset_id"])
     write_rows(phase2 / "asset-inventory.csv", asset_fields, asset_rows)
     asset_pkg = phase2 / "asset-package"
     if asset_pkg.exists():
