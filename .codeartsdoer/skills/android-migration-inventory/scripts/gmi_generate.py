@@ -376,9 +376,40 @@ def make_page_field_rows(comps: List[Dict[str, Any]], pages: List[Dict[str, Any]
 
 
 # sub-options: Preference entries -> array items; compose when-branches; spinner entries (gap: 子选项)
+def _page_for_source_hint(source: str, pages: List[Dict[str, Any]]) -> str:
+    """Conservatively bind preference/menu facts to one page; ambiguity remains blocking."""
+    stem = Path((source or "").split(":", 1)[0]).stem
+    hint_tokens = {
+        token for token in re.findall(r"[a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1 \2", stem).lower())
+        if token not in {"activity", "fragment", "screen", "page", "xml", "menu"}
+    }
+    # preferences*.xml 属于设置语义：补 settings token（使 SettingsActivity/SettingsFragment 能匹配），
+    # 不影响其它来源（menu/when 分支）原有行为。
+    if "preference" in stem.lower() or "ettings" in stem.lower():
+        hint_tokens.add("settings")
+    ranked: List[tuple[int, str]] = []
+    for page in pages:
+        symbol = str(page.get("symbol", ""))
+        page_tokens = {
+            token for token in re.findall(r"[a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1 \2", symbol).lower())
+            if token not in {"activity", "fragment", "screen", "page"}
+        }
+        score = len(hint_tokens & page_tokens)
+        if score:
+            ranked.append((score, str(page.get("page_id", ""))))
+    if not ranked:
+        return "PAGE-NONE"
+    ranked.sort(reverse=True)
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return "PAGE-NONE"
+    return ranked[0][1]
+
+
 def make_field_options_rows(pref_rows: List[Dict[str, Any]],
                             arrays: Dict[str, List[str]],
-                            to_opt_branches: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+                            to_opt_branches: Dict[str, List[str]],
+                            branch_sources: Dict[str, str],
+                            pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
     i = 0
     # ① when-branch option sets first (e.g. SettingsDestination.LookAndFeel -> LookAndFeel())
@@ -387,13 +418,14 @@ def make_field_options_rows(pref_rows: List[Dict[str, Any]],
             continue
         for j, o in enumerate(opts, start=1):
             i += 1
+            source_ref = branch_sources.get(arg, "")
             rows.append({
                 "candidate_id": f"CAND-OPT-{i:04d}-{j:02d}",
-                "page_id": "", "group": f"when({arg})", "group_key": f"when:{arg}",
+                "page_id": _page_for_source_hint(source_ref or arg, pages), "group": f"when({arg})", "group_key": f"when:{arg}",
                 "option_label": f"when({arg})", "option_type": "WHEN_BRANCH",
                 "sub_option": str(o), "sub_option_index": j,
                 "ref_key": str(o), "default_value": "", "summary": "",
-                "source_ref": f"when({arg})",
+                "source_ref": source_ref or f"when({arg})",
             })
     # ② Preference endpoint entries -> array items
     for p in pref_rows:
@@ -414,7 +446,7 @@ def make_field_options_rows(pref_rows: List[Dict[str, Any]],
             for j, o in enumerate(options, start=1):
                 rows.append({
                     "candidate_id": f"CAND-OPT-{i:04d}-{j:02d}",
-                    "page_id": "", "group": p["file"], "group_key": p.get("key", ""),
+                    "page_id": _page_for_source_hint(p["file"], pages), "group": p["file"], "group_key": p.get("key", ""),
                     "option_label": p.get("title", "") or p.get("key", ""),
                     "option_type": p["tag"], "sub_option": str(o),
                     "sub_option_index": j, "ref_key": p.get("key", ""),
@@ -429,7 +461,7 @@ def read_key_options(key: str, to_opt_branches: Dict[str, List[str]]) -> List[st
     return to_opt_branches.get(key.replace("@string/", ""), [])
 
 
-def make_menu_option_rows(menu_when_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def make_menu_option_rows(menu_when_rows: List[Dict[str, Any]], pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """when(item.itemId) menu branches -> option rows (菜单项 -> 行为/目标)."""
     rows = []
     for i, m in enumerate(menu_when_rows, start=1):
@@ -444,7 +476,7 @@ def make_menu_option_rows(menu_when_rows: List[Dict[str, Any]]) -> List[Dict[str
             target = "<展开菜单>"
         rows.append({
             "candidate_id": f"CAND-OPT-{i:04d}-MENU",
-            "page_id": "", "group": m["file"], "group_key": f"menu:{m['menu_id']}",
+            "page_id": _page_for_source_hint(m["file"], pages), "group": m["file"], "group_key": f"menu:{m['menu_id']}",
             "option_label": m["menu_id"], "option_type": "MENU_ITEM",
             "sub_option": target, "sub_option_index": 1,
             "ref_key": f"menu:{m['menu_id']}",
@@ -606,8 +638,10 @@ def make_pref_concat_rows(pref_rows: List[Dict[str, Any]], pages: List[Dict[str,
     rows = []
     for i, p in enumerate(pref_rows, start=1):
         if p["tag"] in PREF_ENDPOINT_SET:
+            page_id = _page_for_source_hint(p["file"], pages)
+            page = next((item for item in pages if item.get("page_id") == page_id), {})
             rows.append({
-                "page_id": "", "page_symbol": Path(p["file"]).stem,
+                "page_id": page_id, "page_symbol": page.get("symbol", ""),
                 "order_index": p["level"] * 100 + i, "field_id": p.get("key", "") or f"pref-{i}",
                 "field_type": p["tag"], "field_label": p.get("title", "") or p.get("key", ""),
                 "icon_resource": p.get("icon", ""), "layout_ref": p["file"],
@@ -790,7 +824,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     # preference tree (res/xml) + option arrays + nav relations (gap: 子选项 & 跳转/返回)
     pref_rows = scan.scan_preference_xml(files)
     arrays = scan.scan_string_arrays(files)
-    to_branches, menu_when_rows = scan.scan_when_branches(files)
+    to_branches, branch_sources, menu_when_rows = scan.scan_when_branches(files)
     nav_rels = scan.scan_nav_relations(files, pages)
     behaviors = scan.scan_behaviors(files, pages)
     risk_probes = scan.scan_risk_probes(files, pages)
@@ -803,7 +837,7 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
     inv_rows = make_inventory_rows(features, pages, states)
     field_rows = make_page_field_rows(comps, pages, compose_nodes) + make_pref_concat_rows(pref_rows, pages)
     dep_rows = make_dep_rows(deps)
-    opt_rows = make_field_options_rows(pref_rows, arrays, to_branches) + make_menu_option_rows(menu_when_rows)
+    opt_rows = make_field_options_rows(pref_rows, arrays, to_branches, branch_sources, pages) + make_menu_option_rows(menu_when_rows, pages)
     nav_rows = make_nav_relation_rows(nav_rels, pages)
     behavior_rows = make_behavior_rows(behaviors, pages)
     risk_rows = make_risk_rows(risk_probes)

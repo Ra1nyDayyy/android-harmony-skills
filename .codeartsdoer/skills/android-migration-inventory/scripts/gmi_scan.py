@@ -32,12 +32,15 @@ BINARY_EXTS = {
 # categories that are allowed to be OUT_OF_SCOPE without any candidate
 OUT_OF_SCOPE_CATEGORIES = {"test", "build", "metadata", "binary", "other", "empty"}
 
-FRAGMENT_BASES = ("Fragment",)
+FRAGMENT_BASES = ("Fragment", "DialogFragment", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet")
 ACTIVITY_BASES = (
     "android.app.Activity", "androidx.appcompat.app.AppCompatActivity",
     "androidx.activity.ComponentActivity", "android.app.AppCompatActivity",
     "androidx.fragment.app.FragmentActivity", "Activity",
 )
+# Dialog 承载独立布局时是页面级 UI 承载（如 FileInfoDialog、SearchAndReplaceTextDialog）。
+# 只要基类名是 Dialog/Sheet 语义且该 class 缩进 inflate 布局，就按页面发现。
+DIALOG_BASES = ("Dialog", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet", "Sheet", "DialogFragment", "AppDialog", "ZebraDialog")
 
 XML_ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"")
 TAG_RE = re.compile(r"<([A-Za-z][\w.-]*)\b([^>]*?)(/?)>")
@@ -56,7 +59,7 @@ _DATABINDING_RE = re.compile(r"@\{[^}]*\}")
 _ONCLICK_RE = re.compile(r"android:onClick\s*=\s*\"([^\"]+)\"")
 _INFLATE_RE = re.compile(r"R\.layout\.([A-Za-z0-9_]+)")
 _FRAG_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|data\s+|sealed\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:]*:\s*([A-Za-z0-9_.]+)")
-_ACT_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:]*:\s*([A-Za-z0-9_.]+)")
+_ACT_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:{}]*?(?:extends\s+|\:\s*)([A-Za-z0-9_.]+)")
 _DAO_IFACE_RE = re.compile(r"^\s*(?:@\w+\s*)*\binterface\s+([A-Za-z0-9_]+)\b")
 _DB_CLASS_RE = re.compile(r"@Database")
 
@@ -89,8 +92,11 @@ def classify(rel: str) -> str:
     if rel.endswith("AndroidManifest.xml"):
         return "manifest"
     if rel.endswith((".kt", ".java")):
+        # 生成/实验/补丁类源码（experiments/, *.patch, *.txt.java）不算应用主体，计入 other
         if "/test/" in low or "/androidtest/" in low or rel.endswith(("Test.kt", "Test.java")):
             return "test"
+        if "/experiments/" in low or "/patches/" in low or low.endswith(".txt.java") or low.endswith(".patch"):
+            return "other"
         return "source"
     if "/res/layout/" in low:
         return "layout"
@@ -238,12 +244,16 @@ def discover_pages(project: Path, files: List[Dict[str, Any]]) -> List[Dict[str,
                 continue
             cls, base = cm.group(1), cm.group(2)
             base_short = base.rsplit(".", 1)[-1]
-            if base_short.endswith(FRAGMENT_BASES) or base_short.endswith(ACTIVITY_BASES):
+            # Dialog/Sheet 承载独立布局 = 页面级 UI 承载（按页面发现）；
+            # 纯逻辑 Dialog 工具（不 inflate 布局）仍不算页面。
+            inflates_layout = bool(_INFLATE_RE.search(text))
+            is_dialog_page = base_short in DIALOG_BASES and inflates_layout
+            if base_short.endswith(FRAGMENT_BASES) or base_short.endswith(ACTIVITY_BASES) or is_dialog_page:
                 p = pages.setdefault(cls, {
                     "symbol": cls, "kinds": [], "source_refs": [], "layout_names": [],
                     "is_start": False, "features": [],
                 })
-                kind = "Fragment" if base_short.endswith(FRAGMENT_BASES) else "Activity"
+                kind = "Fragment" if base_short.endswith(FRAGMENT_BASES) else ("Dialog" if is_dialog_page else "Activity")
                 if kind not in p["kinds"]:
                     p["kinds"].append(kind)
                 if f["rel"] not in p["source_refs"]:
@@ -338,6 +348,10 @@ def scan_layout_components(files: List[Dict[str, Any]], pages: List[Dict[str, An
         text = read_text(f["abs"])
         layout_name = Path(f["rel"]).stem
         pid = page_by_layout.get(layout_name, "")
+        # 复用布局（list_item/Adapter 项/dialog item）无页面直接归属时，
+        # 用显式虚拟页 PAGE-NONE 承载，避免下游 P4 丢失字段或全量注入。
+        if not pid:
+            pid = "PAGE-NONE"
         for idx, m in enumerate(TAG_RE.finditer(text), start=1):
             tag, attrs_txt, selfclose = m.groups()
             attrs = dict(XML_ATTR_RE.findall(attrs_txt))
@@ -903,11 +917,12 @@ _WHEN_MENU_OPT_RE = re.compile(r"R\.id\.([A-Za-z0-9_]+)\s*->\s*\{")
 _MENU_BRANCH_RE = re.compile(r"([A-Za-z0-9_.@]+)\s*->\s*\{")
 
 
-def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]], Dict[str, str], List[Dict[str, Any]]]:
     """when(destination) branches -> option map {arg: [options]}
     + menu when-branches -> rows {menu_id, target_block} (子选项/跳转来源).
     Brace-aware: walks from 'when(' and matches the whole when block."""
     out: Dict[str, List[str]] = {}
+    sources: Dict[str, str] = {}
     menu_rows: List[Dict[str, Any]] = []
     for f in files:
         if f["category"] not in ("source",):
@@ -923,6 +938,11 @@ def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]
             branches = _WHEN_OPT_RE.findall(body)
             if len(branches) >= 2:
                 out[argname] = [b[0] for b in branches]
+                source = f"{f['rel']}:{_line_of(text, m.start())}"
+                if argname not in sources:
+                    sources[argname] = source
+                elif sources[argname].split(":", 1)[0] != f["rel"]:
+                    sources[argname] = ""
             for mm in _WHEN_MENU_OPT_RE.finditer(body):
                 b_start = mm.end() - 1
                 b_end = _brace_match(body, b_start, "{", "}")
@@ -932,7 +952,7 @@ def scan_when_branches(files: List[Dict[str, Any]]) -> Tuple[Dict[str, List[str]
                     "menu_id": mm.group(1), "block": body[b_start:b_end][:600],
                     "file": f["rel"], "line": _line_of(text, m.start()) + body[:mm.start()].count("\n"),
                 })
-    return out, menu_rows
+    return out, sources, menu_rows
 
 
 def scan_nav_relations(files: List[Dict[str, Any]],
