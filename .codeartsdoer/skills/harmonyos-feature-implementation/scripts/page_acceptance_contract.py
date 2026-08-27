@@ -32,6 +32,9 @@ CONTRACT_KEYS = {
     "comparison_policy", "gmi_fields", "gmi_options", "gmi_navigation", "gmi_motion",
     "behavior_bindings",
 }
+# 可选对象键（具名偏差块，SKILL.md person-approval clause）：不计入必填键集，
+# 也不属于数组字段；存在时按 _validate_contract 内的显式形状校验裁决。
+OPTIONAL_CONTRACT_KEYS = {"carrier_deviation"}
 CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "carrier_type", "comparison_policy"}
 PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -388,6 +391,38 @@ def compile_page_contracts(
     return contracts
 
 
+def apply_carrier_deviations(
+    contracts: list[dict[str, object]],
+    deviations: dict[str, dict[str, Any]],
+) -> int:
+    """Stamp controller-applied named deviations onto their page contracts.
+
+    Production side of the SKILL.md person-approval clause: consumers
+    (arkts_page_plan / capture_state) gate on this block; without stamping,
+    an authorized deviation can never reach them. Missing entries leave the
+    contract untouched. Fail-closed on malformed declarations.
+    """
+    if not isinstance(contracts, list):
+        raise ValueError("Page contracts must be a list")
+    applied = 0
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        page_id = str(contract.get("page_id", ""))
+        deviation = deviations.get(page_id)
+        if deviation is None:
+            continue
+        stamped = {}
+        for key in ("expected_carrier", "provided_carrier", "authorized_decision_id", "rationale"):
+            value = str(deviation.get(key, ""))
+            if not value:
+                raise ValueError(f"Carrier deviation for {page_id} lacks {key}")
+            stamped[key] = value
+        contract["carrier_deviation"] = {"page_id": page_id, **stamped}
+        applied += 1
+    return applied
+
+
 def publish_page_contracts(contracts: list[dict[str, object]], destination: Path) -> list[dict[str, object]]:
     """Validate a complete staged set and atomically publish its files and registry."""
     destination = Path(destination)
@@ -543,7 +578,7 @@ def _validate_source_geometry(page_id: str, contract: dict[str, object]) -> None
 
 def _validate_contract(contract: dict[str, object]) -> None:
     missing = sorted(CONTRACT_KEYS - set(contract))
-    extras = sorted(set(contract) - CONTRACT_KEYS)
+    extras = sorted(set(contract) - CONTRACT_KEYS - OPTIONAL_CONTRACT_KEYS)
     if missing or extras:
         raise ValueError(
             f"Invalid page acceptance contract {contract.get('page_id', '')}: "
@@ -574,6 +609,32 @@ def _validate_contract(contract: dict[str, object]) -> None:
         if any(not isinstance(record, dict) for record in contract[field]):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
     _validate_source_geometry(str(contract["page_id"]), contract)
+    deviation = contract.get("carrier_deviation")
+    if deviation is not None:
+        required_dev_fields = (
+            "page_id", "expected_carrier", "provided_carrier",
+            "authorized_decision_id", "rationale",
+        )
+        if not isinstance(deviation, dict) or set(deviation) != set(required_dev_fields):
+            raise ValueError(
+                f"Invalid page acceptance contract {contract['page_id']}: carrier_deviation structure differs"
+            )
+        if any(not isinstance(deviation.get(key), str) or not deviation[key] for key in required_dev_fields):
+            raise ValueError(
+                f"Invalid page acceptance contract {contract['page_id']}: carrier_deviation fields must be non-empty strings"
+            )
+        if str(deviation["page_id"]) != str(contract["page_id"]):
+            raise ValueError(
+                f"Invalid page acceptance contract {contract['page_id']}: carrier_deviation page mismatch"
+            )
+        if str(deviation["expected_carrier"]).upper() != str(contract["carrier_type"]).upper():
+            raise ValueError(
+                f"Invalid page acceptance contract {contract['page_id']}: carrier_deviation expected differs from frozen Android carrier"
+            )
+        if str(deviation["provided_carrier"]).upper() != "PAGE":
+            raise ValueError(
+                f"Invalid page acceptance contract {contract['page_id']}: carrier_deviation outside sanctioned policy"
+            )
     for state in contract["states"]:
         if set(state) != {"state_id", "state_name", "records"}:
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states structure differs")

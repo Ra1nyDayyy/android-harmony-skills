@@ -35,7 +35,7 @@ from _common import (
     validate_id,
     write_csv,
 )
-from page_acceptance_contract import compile_page_contracts, publish_page_contracts
+from page_acceptance_contract import apply_carrier_deviations, compile_page_contracts, publish_page_contracts
 from prepare_uitest_probe import prepare_uitest_probe
 
 
@@ -1861,6 +1861,10 @@ def main() -> int:
                 {"schema_version": 1, "units": migration_units},
             )
             page_contracts = compile_page_contracts(phase2, phase3, tuple(sorted(h4env_ids)))
+            # Production side of the named-deviation channel: stamp the
+            # controller-applied blocks before validation/publish so plan
+            # compilers and parity tooling see one source of truth.
+            apply_carrier_deviations(page_contracts, applied_carrier_deviations)
             page_contract_registry = publish_page_contracts(page_contracts, temp_dir)
             if [str(row["page_id"]) for row in page_contract_registry] != sorted(
                 {row["page_id"] for row in inventory}
