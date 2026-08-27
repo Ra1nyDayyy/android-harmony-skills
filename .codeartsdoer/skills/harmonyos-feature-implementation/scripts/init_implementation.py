@@ -462,6 +462,84 @@ def verify_phase3_snapshot(
     return entries, applied_rebases
 
 
+def normalize_carrier_deviations(
+    declarations: Any,
+) -> dict[str, dict[str, str]]:
+    """Validate the work-order ``phase4_carrier_deviations`` declaration block.
+
+    Implements the SKILL.md named-deviation clause ("a person approves a named
+    deviation after machine comparison") as a fail-closed machine channel: each
+    entry declares one page whose Android-recorded carrier intentionally lands
+    as a different scaffold carrier for this run. Only PAGE landings of
+    DIALOG/SHEET/POPUP expectations are sanctioned by policy; merged or
+    simplified substitutes stay forbidden. Every entry must bind a controller
+    decision-log authorization ID.
+    """
+    if declarations is None:
+        return {}
+    if not isinstance(declarations, list) or not declarations:
+        raise ValueError("phase4_carrier_deviations must be a non-empty array when present")
+    normalized: dict[str, dict[str, str]] = {}
+    for item in declarations:
+        if not isinstance(item, dict):
+            raise ValueError("phase4_carrier_deviations contains a non-object entry")
+        required = {
+            "page_id", "expected_carrier", "provided_carrier",
+            "authorized_decision_id", "rationale",
+        }
+        missing = [key for key in required if key not in item]
+        if missing:
+            raise ValueError(f"phase4_carrier_deviations entry lacks fields: {missing}")
+        page_id = validate_id(str(item["page_id"]), "deviation Page-ID")
+        expected = str(item["expected_carrier"]).upper()
+        provided = str(item["provided_carrier"]).upper()
+        if expected == provided:
+            raise ValueError(f"carrier deviation declares no effective change: {page_id}")
+        if provided != "PAGE":
+            raise ValueError(
+                f"carrier deviation to {provided!r} is outside sanctioned policy: {page_id}"
+            )
+        decision = validate_id(str(item["authorized_decision_id"]), "deviation Decision-ID")
+        rationale = str(item["rationale"]).strip()
+        if len(rationale) < 12:
+            raise ValueError(f"carrier deviation rationale is too short: {page_id}")
+        if page_id in normalized:
+            raise ValueError(f"phase4_carrier_deviations declares duplicate page: {page_id}")
+        normalized[page_id] = {
+            "expected_carrier": expected,
+            "provided_carrier": provided,
+            "authorized_decision_id": decision,
+            "rationale": rationale,
+        }
+    return normalized
+
+
+def _decision_authorizes_carrier_deviation(
+    decision_rows: list[dict[str, str]],
+    page_id: str,
+    deviation: dict[str, str],
+) -> bool:
+    decision_id = deviation["authorized_decision_id"]
+    match = next(
+        (row for row in decision_rows if str(row.get("decision_id", "")) == decision_id),
+        None,
+    )
+    if match is None:
+        return False
+    haystack = " ".join(
+        str(match.get(key, "")).upper()
+        for key in ("decision_type", "decision", "rationale")
+    )
+    pair_compact = (
+        f"{deviation['expected_carrier']}->{deviation['provided_carrier']}".replace(" ", "")
+    )
+    return (
+        "CARRIER_DEVIATION" in haystack
+        and page_id.upper() in haystack
+        and pair_compact in haystack.replace(" ", "")
+    )
+
+
 def validate_asset_chain(
     phase2: Path,
     phase3: Path,
@@ -1188,6 +1266,15 @@ def main() -> int:
         if phase3_report.get("source_snapshot_sha256") != phase3_snapshot.get("snapshot_sha256"):
             raise ValueError("Phase 3 gate references another scaffold snapshot")
 
+        carrier_deviations = normalize_carrier_deviations(
+            work_order.get("phase4_carrier_deviations")
+        )
+        applied_carrier_deviations: dict[str, dict[str, Any]] = {}
+        try:
+            decision_log_rows = read_csv(run_input / "controller" / "decision-log.csv")
+        except ValueError as exc:
+            raise ValueError(f"Controller decision log is unreadable: {exc}") from exc
+
         architecture_rows = read_csv(phase3 / "architecture-map.csv")
         architecture = indexed(architecture_rows, "source_row_key", "Phase 3 architecture row")
         expected_row_keys = {source_row_key(row) for row in inventory}
@@ -1237,10 +1324,24 @@ def main() -> int:
                 mapping["mapping_type"], str((target or {}).get("surface_kind", ""))
             )
             if android_carrier != scaffold_carrier:
-                raise ValueError(
-                    f"Page carrier changed before implementation: {source['page_id']} "
-                    f"requires {android_carrier}, scaffold provides {scaffold_carrier}"
+                deviation = carrier_deviations.get(source["page_id"])
+                sanctioned = (
+                    deviation is not None
+                    and deviation["expected_carrier"] == android_carrier
+                    and deviation["provided_carrier"] == scaffold_carrier
+                    and _decision_authorizes_carrier_deviation(
+                        decision_log_rows, source["page_id"], deviation
+                    )
                 )
+                if not sanctioned:
+                    raise ValueError(
+                        f"Page carrier changed before implementation: {source['page_id']} "
+                        f"requires {android_carrier}, scaffold provides {scaffold_carrier}"
+                    )
+                applied_carrier_deviations[source["page_id"]] = {
+                    **deviation,
+                    "inventory_id": source["inventory_id"],
+                }
         for asset_id, placement in phase3_assets.items():
             if placement["target_module_id"] not in modules:
                 raise ValueError(f"Asset references unknown Harmony module: {asset_id}")
@@ -1601,6 +1702,7 @@ def main() -> int:
                             "target_kind": mapping_type,
                             "target_id": target_id,
                             "scaffold_carrier": actual_scaffold_carrier(mapping_type, surface_kind),
+                            "carrier_deviation": applied_carrier_deviations.get(source["page_id"]),
                             "page_component_ids": sorted(set(components_by_page.get(source["page_id"], []))),
                             "page_event_ids": sorted(set(events_by_page.get(source["page_id"], []))),
                             "page_transition_ids": sorted(set(transitions_by_page.get(source["page_id"], []))),
@@ -1828,6 +1930,13 @@ def main() -> int:
                 "phase2_asset_ids": sorted(phase2_assets),
                 "required_h4env_ids": sorted(h4env_ids),
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
+                "phase4_carrier_deviations_applied": sorted(
+                    (
+                        {"page_id": page_id, **binding}
+                        for page_id, binding in sorted(applied_carrier_deviations.items())
+                    ),
+                    key=lambda item: item["page_id"],
+                ),
                 "phase3_scaffold_rebases_applied": sorted(
                     (
                         {

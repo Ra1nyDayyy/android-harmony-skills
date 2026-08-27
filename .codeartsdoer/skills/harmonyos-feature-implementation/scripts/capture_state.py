@@ -300,6 +300,28 @@ def main() -> int:
         if len(matches) != 1:
             raise ValueError(f"Parity must bind exactly one migration unit: {parity_id}")
         migration_contract = matches[0]
+        carrier_deviation = migration_contract.get("carrier_deviation")
+        carriers_equal = (
+            migration_contract.get("expected_carrier")
+            == migration_contract.get("scaffold_carrier")
+        )
+        if not carriers_equal:
+            # Named-deviation tolerance (SKILL.md): a mismatched carrier pair
+            # passes only when the contract carries a deviation block that is
+            # exactly equal to the corresponding sealed record inside
+            # stage-04-input-lock.json. Anything else stays fail-closed.
+            applied_map = {
+                item.get("page_id"): item
+                for item in input_lock.get("phase4_carrier_deviations_applied", [])
+                if isinstance(item, dict)
+            }
+            declared_ok = isinstance(carrier_deviation, dict) and (
+                applied_map.get(carrier_deviation.get("page_id"))
+                == carrier_deviation
+                and isinstance(carrier_deviation.get("inventory_id"), str)
+            )
+            if not declared_ok:
+                raise ValueError("Migration-unit identity, carrier, or anti-simplification policy differs")
         if (
             migration_contract.get("inventory_id") != parity.get("inventory_id")
             or migration_contract.get("feature_id") != parity.get("feature_id")
@@ -308,7 +330,7 @@ def main() -> int:
             or migration_contract.get("h4env_id") != h4env_id
             or migration_contract.get("target_kind") != parity.get("target_kind")
             or migration_contract.get("target_id") != parity.get("target_id")
-            or migration_contract.get("expected_carrier") != migration_contract.get("scaffold_carrier")
+            or (carriers_equal is False and not isinstance(carrier_deviation, dict))
             or migration_contract.get("simplification_policy") != "FORBIDDEN"
             or migration_contract.get("native_optimization_policy")
             != "INTERNAL_ONLY_UNLESS_APPROVED"
