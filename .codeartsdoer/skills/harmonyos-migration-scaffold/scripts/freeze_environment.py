@@ -138,7 +138,7 @@ def main() -> int:
         parser.error("--frozen-by is required")
     ownership = manifest.get("ownership") if isinstance(manifest.get("ownership"), dict) else {}
     if args.frozen_by != ownership.get("architecture_lead_id"):
-        parser.error("--frozen-by must equal the controller-assigned architecture lead")
+        parser.error("--frozen-by must equal the frozen architecture lead")
 
     config = dict(config)
     config["run_id"] = manifest.get("run_id")

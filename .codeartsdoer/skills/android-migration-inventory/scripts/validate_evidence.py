@@ -1101,28 +1101,28 @@ def main() -> int:
     if indexed_paths != actual_evidence_dirs:
         add_error(errors, "Evidence directory set and evidence index are not identical")
 
-    rework_ids: set[str] = set()
+    ticket_ids: set[str] = set()
     open_rechecks = 0
     open_critical = 0
     for row in rechecks:
-        rework_id = row.get("rework_id", "")
-        if not rework_id or rework_id in rework_ids:
-            add_error(errors, f"Missing or duplicate rework ID: {rework_id!r}")
-        rework_ids.add(rework_id)
+        ticket_id = row.get("ticket_id", "")
+        if not ticket_id or ticket_id in ticket_ids:
+            add_error(errors, f"Missing or duplicate rework Ticket-ID: {ticket_id!r}")
+        ticket_ids.add(ticket_id)
         status = row.get("status", "").upper()
         if status in {"CLOSED", "SUPERSEDED"}:
-            resolution = row.get("resolution_evidence_id", "")
-            if row.get("closed_by") != expected_reviewer or not row.get("resolved_at") or not resolution:
-                add_error(errors, f"Closed rework lacks checker closure or resolution evidence: {rework_id}")
+            resolution = row.get("resolution_verification_id", "")
+            if row.get("closed_by") != expected_reviewer or not row.get("closed_at") or not resolution:
+                add_error(errors, f"Closed rework lacks checker closure or resolution evidence: {ticket_id}")
             resolution_index = index_by_id.get(resolution, {})
-            if resolution == row.get("evidence_id"):
-                add_error(errors, f"Rework resolution must use a new Evidence-ID: {rework_id}")
+            if resolution == row.get("failed_verification_id"):
+                add_error(errors, f"Rework resolution must use a new Evidence-ID: {ticket_id}")
             if not resolution_index or resolution_index.get("status") not in ({"SEALED", "ACCEPTED"} if is_resuming_finalization else {"SEALED"}):
-                add_error(errors, f"Rework resolution evidence is not active and sealed: {rework_id}")
+                add_error(errors, f"Rework resolution evidence is not active and sealed: {ticket_id}")
             elif any(resolution_index.get(field) != row.get(field) for field in ("feature_id", "page_id", "state_id", "env_id")):
-                add_error(errors, f"Rework resolution evidence has different core IDs: {rework_id}")
+                add_error(errors, f"Rework resolution evidence has different core IDs: {ticket_id}")
             elif resolution_index.get("captured_at", "") <= row.get("opened_at", ""):
-                add_error(errors, f"Rework resolution evidence predates the recheck: {rework_id}")
+                add_error(errors, f"Rework resolution evidence predates the rework ticket: {ticket_id}")
         else:
             open_rechecks += 1
             if row.get("severity", "").upper() == "CRITICAL":

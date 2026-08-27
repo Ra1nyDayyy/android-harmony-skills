@@ -109,7 +109,7 @@ class ValidateAndroidEvidenceGmiTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-ACCEPTED"):
                 init_impl.validate_android_evidence(phase2, [row], evidence_rows)
 
-    def test_legacy_acceptance_still_requires_sealed_tree(self) -> None:
+    def test_non_gmi_acceptance_still_requires_sealed_tree(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             phase2 = self._workspace(tmp, gmi=False)

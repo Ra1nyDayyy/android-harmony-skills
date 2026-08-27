@@ -27,6 +27,71 @@ COMPOSE_WIDGETS = {
     "Slider", "LazyColumn", "LazyRow", "Row", "Column", "Box", "Scaffold",
 }
 
+# Phase-2 双门槛契约：每个运行任务必须携带 verification_mode 与 review_tier。
+#   SOURCE_ONLY   源码足以确定，不占模拟器时间（不进入运行队列）
+#   RUNTIME_UI    必须在模拟器确认页面/弹窗/控件/文案/布局/状态
+#   RUNTIME_EFFECT 必须验证真实结果（保存、删除、跳转、重启恢复、数据库变化）
+#   REQUIRED      核心功能，100% 运行验证，未完成即阻断
+#   REVIEW        低风险/同构重复项，未验证 ≤10% 留给人工复核
+TASK_VERIFICATION = {
+    "VERIFY_PAGE_DEFAULT_STATE": ("RUNTIME_UI", "REQUIRED"),
+    "VERIFY_EVENT": ("RUNTIME_UI", "REQUIRED"),
+    "VERIFY_TRANSITION": ("RUNTIME_UI", "REQUIRED"),
+    "VERIFY_DYNAMIC_SURFACE": ("RUNTIME_UI", "REQUIRED"),
+    "VERIFY_SIDE_EFFECT": ("RUNTIME_EFFECT", "REQUIRED"),
+    "VERIFY_SCENARIO": ("RUNTIME_EFFECT", "REQUIRED"),
+    # 普通视觉状态分支：同构重复，抽样归 REVIEW；当分支条件是编译期常量
+    # （静态已证）时降级 SOURCE_ONLY：不进运行队列（gmi_runtime 按模式分流）、
+    # 覆盖率分母排除（gmi_closure），completeness 记 RECORDED。
+    "VERIFY_STATE_BRANCH": ("RUNTIME_UI", "REVIEW"),
+}
+
+# Compile-time constant grammar for the conservative SOURCE_ONLY downgrade.
+# LITERAL  : signed int / float / quoted string / true / false / null
+# CONST_ID : SCREAMING_SNAKE identifier (compile-time constant naming convention)
+# Anything else (member access "a.b", calls "f()", templates "${}", camelCase
+# locals such as isEmpty, enum words such as Loading, compound &&/||) is NOT
+# provable at compile time and keeps RUNTIME_UI. Prefer missing cases over
+# false positives.
+_CT_LITERAL_RE = r"(?:-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\"|true|false|null)"
+_CT_CONST_ID_RE = r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z]{2,}[A-Z0-9]*"
+# Shape 1: [!]boolean-literal / [!]SCREAMING_SNAKE constant as the whole condition.
+# Shape 2: literal-or-constant on both sides of one comparison operator.
+# A bare non-boolean literal (e.g. "2") is NOT a valid boolean condition and is
+# deliberately rejected; numeric/string literals only qualify inside comparisons.
+_CT_CONDITION_RE = re.compile(
+    rf"^(?:!)?(?:true|false|{_CT_CONST_ID_RE})$"
+    rf"|(?:{_CT_LITERAL_RE}|{_CT_CONST_ID_RE})"
+    rf"\s*(?:==|!=|<=|>=|<|>)\s*(?:{_CT_LITERAL_RE}|{_CT_CONST_ID_RE})$"
+)
+
+
+def is_compile_time_constant_condition(expression: str | None) -> bool:
+    """Conservatively decide whether a state-branch condition is compile-time constant.
+
+    Accepted shapes (after whitespace normalisation):
+      A) [!] boolean literals / SCREAMING_SNAKE constants -> "true", "!DEBUG"
+      B) single literal-or-constant comparison -> "1 == 1", "'a' != \\"b\\"",
+         "MAX_COUNT == 3", "MODE == READING", "FLAG_ON == true"
+    Everything else (camelCase locals such as isEmpty or userReady, enum words
+    such as Loading, member access, calls, ${} templates, compound &&/||, bare
+    non-boolean literals) stays RUNTIME_UI. Prefer missing cases over false
+    positives.
+    """
+    if not expression:
+        return False
+    normalized = re.sub(r"\s+", " ", expression).strip()
+    if normalized in {"true", "false"}:
+        return True
+    return bool(_CT_CONDITION_RE.fullmatch(normalized))
+
+
+def classify_task(task_type: str, state_condition: str | None = None) -> tuple[str, str]:
+    mode, tier = TASK_VERIFICATION.get(task_type, ("RUNTIME_UI", "REQUIRED"))
+    if task_type == "VERIFY_STATE_BRANCH" and is_compile_time_constant_condition(state_condition):
+        return "SOURCE_ONLY", tier
+    return mode, tier
+
 
 def stable_id(prefix: str, *values: str) -> str:
     raw = "|".join(values)
@@ -56,17 +121,52 @@ def binding_layouts(text: str) -> list[str]:
         names.add(match.group(1))
     for match in re.finditer(r"\binflate\s*\(\s*R\.layout\.([A-Za-z0-9_]+)", text):
         names.add(match.group(1))
+    # Generic reference binding: fragments often return/assign layout ids
+    # (e.g. getLayoutResId() { return R.layout.document__fragment__edit; }).
+    # Exclude framework layouts (android.R.layout.*) and any other package prefix.
+    for match in re.finditer(r"(?<!\.)R\.layout\.([A-Za-z0-9_]+)", text):
+        names.add(match.group(1))
     return sorted(names)
 
 
-def class_layout_bindings(project: Path) -> dict[str, list[str]]:
+def parse_class_layout_bindings(text: str) -> dict[str, list[str]]:
+    """Single-file class -> bound-layout names (pure, cache-friendly)."""
+    layouts = binding_layouts(text)
+    if not layouts:
+        return {}
+    return {
+        match.group(1): layouts
+        for match in re.finditer(r"\b(?:open\s+)?class\s+(\w+)", text)
+    }
+
+
+def parse_code_candidates(path_value: str, text: str) -> list[dict[str, Any]]:
+    """Single-file declaration rows for full-code-candidates.json (pure, cache-friendly)."""
+    rows: list[dict[str, Any]] = []
+    for m in re.finditer(r"^\s*(?:class|object|interface|enum class|fun|val|var)\s+(\w+)", text, re.MULTILINE):
+        line = line_number(text, m.start())
+        code_ref = f"{path_value}:{line}"
+        rows.append({
+            "code_ref": code_ref, "file_path": path_value, "line": str(line), "symbol": m.group(1),
+            "snippet": text[m.start():m.start()+120].split("\n")[0][:120],
+            "source_ref": code_ref,
+        })
+    return rows
+
+
+def class_layout_bindings(
+    project: Path,
+    per_file: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for path in source_files(project):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        layouts = binding_layouts(text)
-        if layouts:
-            for match in re.finditer(r"\b(?:open\s+)?class\s+(\w+)", text):
-                result[match.group(1)] = layouts
+        path_value = rel(path, project)
+        parsed = per_file.get(path_value) if per_file is not None else None
+        if parsed is None or "class_layouts" not in parsed:
+            parsed = {"class_layouts": parse_class_layout_bindings(
+                path.read_text(encoding="utf-8", errors="replace")
+            )}
+        result.update(parsed["class_layouts"])
     return result
 
 
@@ -192,10 +292,10 @@ def scan_layouts(project: Path, resources: dict[str, str]) -> tuple[dict[str, li
                 "width": attrs.get("layout_width", ""),
                 "height": attrs.get("layout_height", ""),
                 "visibility": attrs.get("visibility", "visible"),
-                "clickable": attrs.get("clickable", "") or ("true" if "onClick" in attrs or "navigateToAddFragment" in attrs or "sendDataToUpdateFragment" in attrs or "parsePriorityColor" in attrs else "unknown"),
+                "clickable": attrs.get("clickable", "") or ("true" if "onClick" in attrs else "unknown"),
                 "enabled_expression": attrs.get("enabled", "true"),
                 "position_rules": {key: value for key, value in attrs.items() if key.startswith("layout_") or "constraint" in key.lower()},
-                "event_bindings": {key: value for key, value in attrs.items() if key in {"onClick", "onLongClick", "navigateToAddFragment", "sendDataToUpdateFragment", "emptyDatabase", "parsePriorityToInt", "parsePriorityColor"}},
+                "event_bindings": {key: value for key, value in attrs.items() if key in {"onClick", "onLongClick"}},
                 "attributes": attrs,
                 "fidelity_attrs": fidelity_attrs,
                 "is_visual": True,
@@ -301,7 +401,16 @@ def navigation_resources(project: Path) -> tuple[list[dict[str, Any]], list[dict
     return pages, transitions, action_map, start_destination_symbol
 
 
-def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def scan_sources(
+    project: Path,
+    action_map: dict[str, str] | None = None,
+    per_file: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Aggregate per-file page/event/transition/state candidates.
+
+    ``per_file`` (incremental mode) maps relative path -> cached parse result;
+    a hit skips re-parsing that file. Aggregation itself is always recomputed.
+    """
     if action_map is None:
         action_map = {}
     pages: list[dict[str, Any]] = []
@@ -315,23 +424,25 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
     navigate_re = re.compile(r"\bnavigate\s*\(\s*(?:R\.id\.)?[\"']?([A-Za-z0-9_/{.$}-]+)")
     state_re = re.compile(r"\b(?:if\s*\(([^)]+)\)|when\s*\(([^)]+)\)|(?:is|==)\s*(Loading|Success|Error|Empty))")
     binding_adapter_re = re.compile(r'@BindingAdapter\s*\(\s*"(?:[a-zA-Z_]+:)?(\w+)"')
-    # BindingAdapter method name -> owning page symbol heuristic.
-    binding_adapter_owner = {
-        "navigateToAddFragment": "ListFragment",
-        "sendDataToUpdateFragment": "ListFragment",
-        "emptyDatabase": "ListFragment",
-        "parsePriorityToInt": "ListFragment",
-        "parsePriorityColor": "ListFragment",
-    }
-    # BindingAdapter method name -> navigation target symbol heuristic.
-    binding_adapter_target = {
-        "navigateToAddFragment": "AddFragment",
-        "sendDataToUpdateFragment": "UpdateFragment",
-    }
+
 
     for path in source_files(project):
-        text = path.read_text(encoding="utf-8", errors="replace")
         path_value = rel(path, project)
+        cached = per_file.get(path_value) if per_file is not None else None
+        if (
+            isinstance(cached, dict)
+            and all(key in cached for key in ("pages", "events", "transitions", "states"))
+        ):
+            pages.extend(cached["pages"])
+            events.extend(cached["events"])
+            transitions.extend(cached["transitions"])
+            states.extend(cached["states"])
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        file_pages: list[dict[str, Any]] = []
+        file_events: list[dict[str, Any]] = []
+        file_transitions: list[dict[str, Any]] = []
+        file_states: list[dict[str, Any]] = []
         layouts_in_file = binding_layouts(text)
         compose_roots = sorted(set(re.findall(r"setContent\s*\{[\s\S]{0,8000}?\b([A-Z]\w*Screen)\s*\(", text)))
         class_matches = list(class_re.finditer(text))
@@ -343,21 +454,19 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
         source_symbol = file_page_symbols[0] if file_page_symbols else (
             f"Widget_{remote_matches[0].group(1)}" if remote_matches else "PENDING_SOURCE_BINDING"
         )
-        # File-level owner heuristic for non-UI helper classes used by known pages.
-        if source_symbol == "PENDING_SOURCE_BINDING":
-            path_lower = path_value.lower()
-            if "baseviewmodel" in path_lower:
-                source_symbol = "ListFragment"
-            elif "tododatabase" in path_lower or "tododao" in path_lower:
-                source_symbol = "ListFragment"
+
         for match in class_matches:
             symbol = match.group(1)
             suffix = next((candidate for candidate in ("BottomSheetDialogFragment", "DialogFragment", "Fragment", "Activity", "Dialog") if symbol.endswith(candidate)), "")
             if suffix:
-                pages.append({
+                file_pages.append({
                     "symbol": symbol, "kind": suffix.upper(), "manifest_entry": False,
                     "layout_names": layouts_in_file, "compose_root_symbols": compose_roots,
-                    "ui_declared": bool(layouts_in_file or compose_roots),
+                    "ui_declared": bool(layouts_in_file or compose_roots) or (
+                        # Programmatic dialogs build their UI in code (AlertDialog);
+                        # a *Dialog-suffixed class with dialog-framework usage is a UI surface.
+                        suffix == "Dialog" and ("AlertDialog" in text or "DialogInterface" in text)
+                    ),
                     "source_ref": f"{path_value}:{line_number(text, match.start())}",
                 })
         for match in compose_re.finditer(text):
@@ -379,12 +488,14 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
                         "type": widget_match.group(1),
                         "source_ref": f"{path_value}:{line_number(text, match.end() + widget_match.start())}",
                     })
-                pages.append({
+                file_pages.append({
                     "symbol": symbol, "kind": "COMPOSABLE", "manifest_entry": False,
                     "layout_names": [], "compose_components": compose_components,
                     "source_ref": f"{path_value}:{line_number(text, match.start())}",
                 })
-        # Pre-scan @BindingAdapter method ranges for owner inference.
+        # Generic @BindingAdapter method-range scan (kept as the discovery
+        # mechanism for binding adapters; the sample-specific owner/target
+        # symbol maps were removed, so no consumer rewrites symbols from here).
         binding_adapter_ranges: list[tuple[int, int, str]] = []
         for ba_match in binding_adapter_re.finditer(text):
             method_name = ba_match.group(1)
@@ -398,23 +509,20 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
             binding_adapter_ranges.append((fun_start, method_end, method_name))
 
         def infer_owner(pos: int, default: str) -> str:
-            for start, end, name in binding_adapter_ranges:
-                if start <= pos < end and name in binding_adapter_owner:
-                    return binding_adapter_owner[name]
+            # Generic @BindingAdapter scanning is kept above; the sample-specific
+            # owner-symbol mapping was removed (ghost-page risk). Unknown owners
+            # keep the file-level source_symbol and go through normal host
+            # resolution instead of being guessed onto a hard-coded page.
             return default
 
         def infer_target(pos: int, raw_target: str) -> str:
             # If the raw target is a resolved action_id, use the action map.
             if raw_target in action_map:
                 return action_map[raw_target]
-            # Otherwise, if inside a BindingAdapter method, use its declared target.
-            for start, end, name in binding_adapter_ranges:
-                if start <= pos < end and name in binding_adapter_target:
-                    return binding_adapter_target[name]
             return raw_target
 
         for match in click_re.finditer(text):
-            events.append({
+            file_events.append({
                 "component_symbol": match.group(1), "event": match.group(2),
                 "handler_excerpt": text[match.end():match.end() + 240].strip().split("\n", 1)[0],
                 "source_symbol": infer_owner(match.start(), source_symbol),
@@ -422,13 +530,13 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
             })
         for match in remote_matches:
             layout_name = match.group(1)
-            pages.append({
+            file_pages.append({
                 "symbol": f"Widget_{layout_name}", "kind": "APP_WIDGET", "manifest_entry": False,
                 "layout_names": [layout_name], "ui_declared": True,
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
         for match in compose_event_re.finditer(text):
-            events.append({
+            file_events.append({
                 "component_symbol": match.group(1).replace("?.", "."), "event": match.group(2),
                 "handler_excerpt": text[match.end():match.end() + 240].strip().split("\n", 1)[0],
                 "source_symbol": source_symbol,
@@ -438,7 +546,7 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
             prefix = text[max(0, match.start() - 1200):match.start()]
             owners = list(re.finditer(r"\b([A-Z]\w*)\s*\(", prefix))
             if owners:
-                events.append({
+                file_events.append({
                     "component_symbol": owners[-1].group(1), "event": match.group(1),
                     "handler_excerpt": text[match.end():match.end() + 240].strip().split("\n", 1)[0],
                     "source_symbol": source_symbol,
@@ -448,19 +556,19 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
             raw_target = match.group(1)
             # Resolve action_id -> fragment symbol via the navigation graph map or BindingAdapter target.
             resolved_target = infer_target(match.start(), raw_target)
-            transitions.append({
+            file_transitions.append({
                 "source_symbol": infer_owner(match.start(), source_symbol), "target_symbol": resolved_target, "navigation_type": "NAVIGATE",
                 "condition": "PENDING_RUNTIME_CONFIRMATION",
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
         for match in re.finditer(r"\bstart(About|Customization)Activity\s*\(", text):
-            transitions.append({
+            file_transitions.append({
                 "source_symbol": source_symbol, "target_symbol": match.group(1) + "Activity", "navigation_type": "COMMONS_EXTENSION",
                 "condition": "PENDING_RUNTIME_CONFIRMATION",
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
             })
         for match in re.finditer(r"\bIntent\s*\([^,\n]+,\s*([A-Z]\w*Activity)::class\.java", text):
-            transitions.append({
+            file_transitions.append({
                 "source_symbol": source_symbol, "target_symbol": match.group(1), "navigation_type": "ACTIVITY_INTENT",
                 "condition": "PENDING_RUNTIME_CONFIRMATION",
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
@@ -475,17 +583,28 @@ def scan_sources(project: Path, action_map: dict[str, str] | None = None) -> tup
             for match in matches:
                 if source_symbol == "PENDING_SOURCE_BINDING":
                     continue
-                transitions.append({
+                file_transitions.append({
                     "source_symbol": source_symbol, "target_symbol": target, "navigation_type": "EXTERNAL_SURFACE",
                     "condition": "PENDING_RUNTIME_CONFIRMATION",
                     "source_ref": f"{path_value}:{line_number(text, match.start())}",
                 })
         for match in state_re.finditer(text):
             expression = next((value for value in match.groups() if value), "UNKNOWN")
-            states.append({
+            file_states.append({
                 "expression": re.sub(r"\s+", " ", expression).strip()[:240],
                 "source_symbol": infer_owner(match.start(), source_symbol),
                 "source_ref": f"{path_value}:{line_number(text, match.start())}",
+            })
+        pages.extend(file_pages)
+        events.extend(file_events)
+        transitions.extend(file_transitions)
+        states.extend(file_states)
+        if per_file is not None:
+            per_file.setdefault(path_value, {}).update({
+                "pages": file_pages, "events": file_events,
+                "transitions": file_transitions, "states": file_states,
+                "class_layouts": parse_class_layout_bindings(text),
+                "code_candidates": parse_code_candidates(path_value, text),
             })
     return pages, events, transitions, states
 
@@ -622,6 +741,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--analyzed-by", required=True)
+    parser.add_argument(
+        "--incremental", action="store_true",
+        help="reuse cached per-file parse results for sources whose sha256 is "
+             "unchanged (scan-cache.json); aggregation is always recomputed; "
+             "a missing/corrupt/stale cache falls back to a full parse",
+    )
     args = parser.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
@@ -650,12 +775,60 @@ def main() -> int:
         })
     pages = manifest_pages(project)
     nav_pages, nav_transitions, action_map, start_destination_symbol = navigation_resources(project)
-    source_pages, events, transitions, states = scan_sources(project, action_map)
+    # Incremental rescan (B6): per-file parse cache keyed by relative path and
+    # sha256. The cache context pins the analyzer revision and the navigation
+    # action map so any change to either invalidates the whole cache. The
+    # COMMITTED marker above still forbids re-running a committed package.
+    cache_path = output / "scan-cache.json"
+    cache_context = {
+        "analyzer_sha256": sha256_file(Path(__file__).resolve()),
+        "navigation_fingerprint": hashlib.sha256(
+            json.dumps(action_map, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+    }
+    file_cache: dict[str, dict[str, Any]] = {}
+    if args.incremental and cache_path.is_file():
+        try:
+            loaded_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded_cache = None
+        if (
+            isinstance(loaded_cache, dict)
+            and loaded_cache.get("schema_version") == 1
+            and loaded_cache.get("cache_context") == cache_context
+            and isinstance(loaded_cache.get("files"), dict)
+        ):
+            file_cache = {
+                str(key): value for key, value in loaded_cache["files"].items()
+                if isinstance(value, dict)
+            }
+        # Any mismatch above silently degrades to a full parse (file_cache={}).
+    per_file: dict[str, dict[str, Any]] = {}
+    for path in source_files(project):
+        pv = rel(path, project)
+        if args.incremental:
+            digest = sha256_file(path)
+            cached_entry = file_cache.get(pv)
+            if (
+                isinstance(cached_entry, dict)
+                and cached_entry.get("sha256") == digest
+                and all(key in cached_entry for key in ("pages", "events", "transitions", "states"))
+            ):
+                per_file[pv] = cached_entry
+                continue
+            per_file[pv] = {"sha256": digest}
+        else:
+            per_file[pv] = {}
+    source_pages, events, transitions, states = scan_sources(project, action_map, per_file)
+    if args.incremental:
+        atomic_json(cache_path, {
+            "schema_version": 1, "cache_context": cache_context, "files": per_file,
+        })
     pages.extend(nav_pages)
     transitions.extend(nav_transitions)
     events = list({(item["component_symbol"], item["event"], item["source_ref"]): item for item in events}.values())
     transitions = list({(item.get("source_symbol"), item["target_symbol"], item["source_ref"]): item for item in transitions}.values())
-    class_layouts = class_layout_bindings(project)
+    class_layouts = class_layout_bindings(project, per_file)
     by_symbol: dict[str, dict[str, Any]] = {}
     for item in pages + source_pages:
         key = item["symbol"].rsplit(".", 1)[-1]
@@ -755,11 +928,13 @@ def main() -> int:
                 "clickable": "unknown", "enabled_expression": "RUNTIME_RESOLVED", "position_rules": {},
                 "event_bindings": {}, "attributes": {}, "source_ref": component["source_ref"], "confidence": "MEDIUM",
             })
+        _vm, _rt = classify_task("VERIFY_PAGE_DEFAULT_STATE")
         runtime_tasks.append({
             "task_id": stable_id("RTASK", page_id, "DEFAULT"), "task_type": "VERIFY_PAGE_DEFAULT_STATE",
             "subject_id": page_id, "page_id": page_id, "candidate_feature_ids": candidate_features,
             "trigger": "AUTO_LAUNCH_OR_ROUTE", "expected": "Confirm page identity, full UI tree and final geometry",
             "status": "OPEN", "source_refs": page["source_refs"],
+            "verification_mode": _vm, "review_tier": _rt,
         })
         path_value, line = source_ref.rsplit(":", 1)
         if len(candidate_features) == 1:
@@ -771,14 +946,82 @@ def main() -> int:
                 "notes": "Static candidate; runtime correlation required before VERIFIED",
             })
 
+    # Deterministic host resolution for subjects defined in files without a
+    # discoverable page class (shared helpers, base classes, adapters, holders,
+    # programmatic dialog factories, manifest XML). Rule: bind to the single page
+    # whose source file references the subject's primary class symbol. When zero
+    # or multiple pages reference it, the subject is NOT guessed onto the
+    # launcher page any more: it is explicitly blocked as PENDING_HOST and
+    # listed in advanced-analysis.json needs_human_resolution for a human to
+    # assign the host (validate_static_analysis downgrades those to WARNING).
+    launcher_symbol = ""
+    for page in page_rows:
+        for flt in page.get("intent_filters", []):
+            if (
+                "android.intent.action.MAIN" in flt.get("actions", [])
+                and "android.intent.category.LAUNCHER" in flt.get("categories", [])
+            ):
+                launcher_symbol = page["symbol"]
+                break
+        if launcher_symbol:
+            break
+    if not launcher_symbol and page_rows:
+        launcher_symbol = sorted(row["symbol"] for row in page_rows)[0]
+    host_file_texts: dict[str, str] = {}
+    host_file_pages: dict[str, set[str]] = {}
+    host_class_re = re.compile(r"\b(?:open\s+)?class\s+(\w+)")
+    for path in source_files(project):
+        pv = rel(path, project)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        host_file_texts[pv] = text
+        defined = {m.group(1) for m in host_class_re.finditer(text)} & set(page_ids_by_symbol)
+        if defined:
+            host_file_pages[pv] = defined
+    # path -> {"page_id": str | None, "reason": str}
+    host_resolution_cache: dict[str, dict[str, Any]] = {}
+
+    def resolve_host_page_id(source_ref: str) -> str | None:
+        path_value = source_ref.rsplit(":", 1)[0]
+        if path_value in host_resolution_cache:
+            return host_resolution_cache[path_value]["page_id"]
+        resolved: str | None = None
+        reason = "ZERO_HOST_REFERENCES"
+        if not path_value.endswith(".xml"):
+            text = host_file_texts.get(path_value, "")
+            symbols = [m.group(1) for m in host_class_re.finditer(text)] if text else []
+            stem = Path(path_value).stem
+            main_symbol = stem if stem in symbols else (symbols[0] if symbols else "")
+            hosts: set[str] = set()
+            if main_symbol:
+                pattern = re.compile(rf"\b{re.escape(main_symbol)}\b")
+                for other_pv, other_text in host_file_texts.items():
+                    if other_pv == path_value:
+                        continue
+                    if pattern.search(other_text):
+                        hosts |= host_file_pages.get(other_pv, set())
+            if len(hosts) == 1:
+                resolved = page_ids_by_symbol.get(next(iter(hosts)))
+            elif len(hosts) > 1:
+                reason = "AMBIGUOUS_HOST_REFERENCES"
+        host_resolution_cache[path_value] = {"page_id": resolved, "reason": reason}
+        return resolved
+
+    def host_page_id_or_block(source_ref: str) -> str:
+        """Page-ID, or the explicit PENDING_HOST block marker."""
+        resolved = resolve_host_page_id(source_ref)
+        return "PENDING_HOST" if resolved is None else resolved
+
     resolved_events: list[dict[str, Any]] = []
     for item in events:
         page_id = page_ids_by_symbol.get(item.get("source_symbol", ""), "PENDING_SOURCE_BINDING")
+        if page_id == "PENDING_SOURCE_BINDING":
+            page_id = host_page_id_or_block(item["source_ref"])
         event_id = stable_id(
             "EVENT", page_id, item.get("component_symbol", ""), item.get("event", ""), item["source_ref"]
         )
         resolved = {**item, "event_id": event_id, "page_id": page_id}
         resolved_events.append(resolved)
+        _vm, _rt = classify_task("VERIFY_EVENT")
         runtime_tasks.append({
             "task_id": stable_id("RTASK", event_id), "task_type": "VERIFY_EVENT",
             "subject_id": event_id, "page_id": page_id,
@@ -788,6 +1031,7 @@ def main() -> int:
             "trigger": item.get("event", "UNKNOWN_EVENT"),
             "expected": f"Execute {item.get('component_symbol', 'component')} and capture the observable result",
             "status": "OPEN", "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
     events = resolved_events
 
@@ -795,12 +1039,20 @@ def main() -> int:
     seen_state_ids: set[str] = set()
     for item in states:
         page_id = page_ids_by_symbol.get(item.get("source_symbol", ""), "PENDING_SOURCE_BINDING")
-        state_id = stable_id("STATE", page_id, item.get("expression", ""), item["source_ref"])
+        if page_id == "PENDING_SOURCE_BINDING":
+            page_id = host_page_id_or_block(item["source_ref"])
+        state_id = stable_id(
+            "STATE", page_id, item.get("expression", ""), item["source_ref"]
+        )
         if state_id in seen_state_ids:
             continue
         seen_state_ids.add(state_id)
         resolved = {**item, "state_id": state_id, "page_id": page_id}
         resolved_states.append(resolved)
+        # B3: a compile-time-constant branch is statically proven; it carries
+        # SOURCE_ONLY so gmi_runtime keeps it out of the emulator queue and
+        # gmi_closure excludes it from the coverage denominator (RECORDED).
+        _vm, _rt = classify_task("VERIFY_STATE_BRANCH", item.get("expression", ""))
         runtime_tasks.append({
             "task_id": stable_id("RTASK", state_id), "task_type": "VERIFY_STATE_BRANCH",
             "subject_id": state_id, "page_id": page_id,
@@ -809,12 +1061,15 @@ def main() -> int:
             ),
             "trigger": "AUTO_SATISFY_CONDITION", "expected": item.get("expression", "UNKNOWN"),
             "status": "OPEN", "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
     states = resolved_states
 
     resolved_transitions: list[dict[str, Any]] = []
     for item in transitions:
         source_page_id = page_ids_by_symbol.get(item.get("source_symbol", ""), "PENDING_SOURCE_BINDING")
+        if source_page_id == "PENDING_SOURCE_BINDING":
+            source_page_id = host_page_id_or_block(item["source_ref"])
         target_page_id = page_ids_by_symbol.get(item.get("target_symbol", "")) or stable_id(
             "PAGE", item.get("target_symbol", "PENDING_TARGET_BINDING")
         )
@@ -826,6 +1081,7 @@ def main() -> int:
             "target_page_id": target_page_id,
         }
         resolved_transitions.append(resolved)
+        _vm, _rt = classify_task("VERIFY_TRANSITION")
         runtime_tasks.append({
             "task_id": stable_id("RTASK", transition_id),
             "task_type": "VERIFY_TRANSITION",
@@ -833,6 +1089,7 @@ def main() -> int:
             "candidate_feature_ids": feature_candidates(item["source_ref"], item["target_symbol"], features),
             "trigger": item["navigation_type"], "expected": f"Resolve and open target {item['target_symbol']}",
             "status": "OPEN", "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
     transitions = resolved_transitions
     advanced_page_ids = dict(page_ids_by_symbol)
@@ -848,6 +1105,12 @@ def main() -> int:
         if len(owners) == 1:
             advanced_page_ids.setdefault(component_type, next(iter(owners)))
     advanced = scan_advanced_candidates(project, advanced_page_ids, features)
+    # Rebind advanced subjects that live in files without a discoverable page.
+    for collection in ("dynamic_risks", "side_effects", "scenarios"):
+        for item in advanced.get(collection, []):
+            if item.get("page_id") == "PENDING_SOURCE_BINDING":
+                item["page_id"] = host_page_id_or_block(item.get("source_ref", ""))
+    _vm, _rt = classify_task("VERIFY_DYNAMIC_SURFACE")
     for item in advanced["dynamic_risks"]:
         runtime_tasks.append({
             "task_id": stable_id("RTASK", item["risk_id"]), "task_type": "VERIFY_DYNAMIC_SURFACE",
@@ -855,7 +1118,9 @@ def main() -> int:
             "candidate_feature_ids": item["candidate_feature_ids"], "trigger": item["risk_type"],
             "expected": item["required_runtime_resolution"], "status": "OPEN",
             "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
+    _vm, _rt = classify_task("VERIFY_SIDE_EFFECT")
     for item in advanced["side_effects"]:
         runtime_tasks.append({
             "task_id": stable_id("RTASK", item["candidate_id"]), "task_type": "VERIFY_SIDE_EFFECT",
@@ -863,7 +1128,9 @@ def main() -> int:
             "candidate_feature_ids": item["candidate_feature_ids"], "trigger": item["effect_type"],
             "expected": f"Capture a sealed {item['required_probe']} before/after probe",
             "status": "OPEN", "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
+    _vm, _rt = classify_task("VERIFY_SCENARIO")
     for item in advanced["scenarios"]:
         runtime_tasks.append({
             "task_id": stable_id("RTASK", item["scenario_id"]), "task_type": "VERIFY_SCENARIO",
@@ -871,15 +1138,58 @@ def main() -> int:
             "candidate_feature_ids": item["candidate_feature_ids"], "trigger": item["scenario_type"],
             "expected": "Reset the environment, satisfy the scenario, and bind runtime evidence",
             "status": "OPEN", "source_refs": [item["source_ref"]],
+            "verification_mode": _vm, "review_tier": _rt,
         })
+    # Collect every subject blocked on PENDING_HOST for human assignment (C2).
+    def _host_reason(source_ref: str) -> str:
+        return host_resolution_cache.get(
+            source_ref.rsplit(":", 1)[0], {}
+        ).get("reason", "ZERO_HOST_REFERENCES")
+
+    needs_human_resolution: list[dict[str, Any]] = []
+    for item in events:
+        if item.get("page_id") == "PENDING_HOST":
+            needs_human_resolution.append({
+                "subject_kind": "EVENT", "subject_id": item["event_id"],
+                "source_ref": item["source_ref"], "reason": _host_reason(item["source_ref"]),
+                "status": "OPEN",
+            })
+    for item in states:
+        if item.get("page_id") == "PENDING_HOST":
+            needs_human_resolution.append({
+                "subject_kind": "STATE", "subject_id": item["state_id"],
+                "source_ref": item["source_ref"], "reason": _host_reason(item["source_ref"]),
+                "status": "OPEN",
+            })
+    for item in transitions:
+        if item.get("source_page_id") == "PENDING_HOST":
+            needs_human_resolution.append({
+                "subject_kind": "TRANSITION", "subject_id": item["transition_id"],
+                "source_ref": item["source_ref"], "reason": _host_reason(item["source_ref"]),
+                "status": "OPEN",
+            })
+    for kind, id_key in (
+        ("DYNAMIC_RISK", "risk_id"), ("SIDE_EFFECT", "candidate_id"), ("SCENARIO", "scenario_id"),
+    ):
+        for item in advanced.get(
+            {"DYNAMIC_RISK": "dynamic_risks", "SIDE_EFFECT": "side_effects", "SCENARIO": "scenarios"}[kind], []
+        ):
+            if item.get("page_id") == "PENDING_HOST":
+                needs_human_resolution.append({
+                    "subject_kind": kind, "subject_id": item[id_key],
+                    "source_ref": item["source_ref"], "reason": _host_reason(item["source_ref"]),
+                    "status": "OPEN",
+                })
     for issue in issues:
         subject_id = stable_id("DISCOVERY", issue["kind"], issue["source_ref"])
+        _vm, _rt = classify_task(issue["kind"])
         runtime_tasks.append({
             "task_id": stable_id("RTASK", issue["source_ref"], issue["kind"]), "task_type": issue["kind"],
             "subject_id": subject_id,
             "page_id": "PENDING_SOURCE_BINDING", "candidate_feature_ids": [], "trigger": "AUTO_RESCAN",
             "expected": issue["detail"], "status": "OPEN", "source_refs": [issue["source_ref"]],
             "blocking_discovery_gap": True,
+            "verification_mode": _vm, "review_tier": _rt,
         })
 
     # Build full project-index with asset/resource trace for candidate generation
@@ -907,6 +1217,8 @@ def main() -> int:
             "asset_count": len(all_assets),
             "assets": all_assets,
             "fidelity_index": fidelity_index,
+            "launcher_page_symbol": launcher_symbol,
+            "pending_host_resolution": {p: entry for p, entry in sorted(host_resolution_cache.items())},
         },
         "pages.json": {"schema_version": 1, "pages": page_rows},
         "components.json": {"schema_version": 1, "components": component_rows},
@@ -914,30 +1226,28 @@ def main() -> int:
         "transitions.json": {"schema_version": 1, "transitions": transitions},
         "state-candidates.json": {"schema_version": 1, "states": states},
         "runtime-tasks.json": {"schema_version": 1, "tasks": runtime_tasks},
-        "advanced-analysis.json": {"schema_version": 1, **advanced},
+        "advanced-analysis.json": {
+            "schema_version": 1, **advanced,
+            "needs_human_resolution": needs_human_resolution,
+        },
     }
     for name, value in artifacts.items():
         atomic_json(output / name, value)
     # Full code candidates: every kt/java file line with class/fun/val/var + binding adapters
+    # (aggregated from the per-file parse pass above; identical for cache hits)
     full_code_candidates: list[dict[str, Any]] = []
     for path in source_files(project):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        path_value = rel(path, project)
-        for m in re.finditer(r"^\s*(?:class|object|interface|enum class|fun|val|var)\s+(\w+)", text, re.MULTILINE):
-            line = line_number(text, m.start())
-            code_ref = f"{path_value}:{line}"
-            full_code_candidates.append({
-                "code_ref": code_ref, "file_path": path_value, "line": str(line), "symbol": m.group(1),
-                "snippet": text[m.start():m.start()+120].split("\n")[0][:120],
-                "source_ref": code_ref,
-            })
+        entry = per_file.get(rel(path, project))
+        if entry is not None:
+            full_code_candidates.extend(entry.get("code_candidates", []))
     atomic_json(output / "full-code-candidates.json", {"schema_version": 1, "candidates": full_code_candidates, "count": len(full_code_candidates)})
     fields = [
         "code_ref", "feature_id", "page_id", "state_candidate_id", "component_type", "symbol",
         "file_path", "line", "coverage_disposition", "owner", "status", "notes",
     ]
     write_csv(output / "code-map.candidates.csv", fields, code_rows)
-    names = sorted([*artifacts, "code-map.candidates.csv"])
+    # full-code-candidates.json is written above and must be covered by the tamper-evident manifest
+    names = sorted([*artifacts, "code-map.candidates.csv", "full-code-candidates.json"])
     atomic_text(output / "manifest.sha256", manifest_lines(output, names))
     atomic_text(output / "COMMITTED", sha256_file(output / "manifest.sha256") + "\n")
     print(json.dumps({

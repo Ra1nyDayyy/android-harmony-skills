@@ -29,11 +29,11 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = SKILL_ROOT / "assets"
 PHASE_NAME = "phase-04-harmony-implementation"
 LOCAL_FIELDS = [
-    "ticket_id", "severity", "problem_type", "parity_or_record_id", "feature_id",
-    "page_id", "state_id", "h4env_id", "failed_build_id", "failed_evidence_id",
+    "ticket_id", "severity", "problem_type", "phase", "record_id", "feature_id",
+    "page_id", "state_id", "env_id", "failed_verification_id",
     "responsible_role", "responsible_agent", "completion_condition", "status",
-    "opened_by", "opened_at", "confirmed_by", "confirmed_at", "resolution_build_id",
-    "resolution_evidence_id", "closed_by", "closed_at", "notes",
+    "opened_by", "opened_at", "confirmed_by", "confirmed_at",
+    "resolution_verification_id", "closed_by", "closed_at", "notes",
 ]
 CONTROLLER_FIELDS = [
     "rework_id", "created_at", "phase", "record_id", "feature_id", "page_id",
@@ -42,18 +42,17 @@ CONTROLLER_FIELDS = [
     "reviewed_by",
 ]
 ROUTES = {
-    "FEATURE": ("feature-owner", "feature_owner_id"),
-    "INTEGRATION": ("feature-owner", "feature_owner_id"),
-    "SOURCE": ("feature-owner", "feature_owner_id"),
-    "UI": ("ui-agent", "ui_agent_id"),
-    "VISUAL": ("ui-agent", "ui_agent_id"),
-    "INTERACTION": ("ui-agent", "ui_agent_id"),
-    "BUSINESS": ("business-data-agent", "business_data_agent_id"),
-    "DATA": ("business-data-agent", "business_data_agent_id"),
-    "STATE": ("business-data-agent", "business_data_agent_id"),
-    "NATIVE": ("native-capability-agent", "native_capability_agent_id"),
-    "CAPABILITY": ("native-capability-agent", "native_capability_agent_id"),
-    "PERMISSION": ("native-capability-agent", "native_capability_agent_id"),
+    "INTEGRATION": ("page-owner", "feature_owner_id"),
+    "SOURCE": ("page-owner", "feature_owner_id"),
+    "UI": ("page-ui-agent", "ui_agent_id"),
+    "VISUAL": ("page-ui-agent", "ui_agent_id"),
+    "INTERACTION": ("page-ui-agent", "ui_agent_id"),
+    "BUSINESS": ("page-owner", "business_data_agent_id"),
+    "DATA": ("page-owner", "business_data_agent_id"),
+    "STATE": ("page-owner", "business_data_agent_id"),
+    "NATIVE": ("shared-capability-specialist", "native_capability_agent_id"),
+    "CAPABILITY": ("shared-capability-specialist", "native_capability_agent_id"),
+    "PERMISSION": ("shared-capability-specialist", "native_capability_agent_id"),
     "ASSET": ("visual-asset-agent", "visual_asset_agent_id"),
     "PROVENANCE": ("visual-asset-agent", "visual_asset_agent_id"),
     "CONVERSION": ("visual-asset-agent", "visual_asset_agent_id"),
@@ -66,7 +65,6 @@ ROUTES = {
     "ASSERTION": ("verification-executor", "verification_executor_id"),
     "EVIDENCE": ("verification-executor", "verification_executor_id"),
 }
-BUILD_REWORK = {"BUILD", "INSTALL", "DEVICE", "ENVIRONMENT"}
 
 
 def canonical_workspace(value: str) -> Path:
@@ -153,96 +151,57 @@ def verify_sealed_package(
     return metadata
 
 
-def load_feature_order(
+def load_page_order(
     workspace: Path,
-    feature_id: str,
-    page_id: str = "",
+    page_id: str,
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    if (workspace / "page-work-order-registry.csv").is_file():
-        if not page_id:
-            raise ValueError("Page-ID is required to route page-owned Phase 4 rework")
-        ledger = indexed(
-            read_csv(workspace / "page-implementation-ledger.csv"), "page_id", "page ledger"
-        )
-        row = ledger.get(page_id)
-        if not row or not row.get("work_order_id"):
-            raise ValueError(f"Page has no issued implementation work order: {page_id}")
-        work_order_id = validate_id(row["work_order_id"], "Page Work-Order-ID")
-        registry = [
-            item for item in read_csv(workspace / "page-work-order-registry.csv")
-            if item.get("work_order_id") == work_order_id and item.get("status") == "ISSUED"
-        ]
-        relative = f"page-work-orders/{work_order_id}.json"
-        if len(registry) != 1 or registry[0].get("relative_path") != relative:
-            raise ValueError(f"Page work order is not uniquely registered: {work_order_id}")
-        path = safe_relative_path(workspace, relative, f"page work order {work_order_id}")
-        if (
-            not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o222
-            or registry[0].get("work_order_sha256") != sha256_file(path)
-        ):
-            raise ValueError(f"Page work order is changed/writable: {work_order_id}")
-        order = load_json(path)
-        if (
-            not isinstance(order, dict) or order.get("page_id") != page_id
-            or feature_id not in order.get("feature_ids", []) or order.get("status") != "ISSUED"
-            or row.get("owner_id") != order.get("owner_id")
-            or row.get("ui_understanding_agent_id") != order.get("ui_understanding_agent_id")
-            or row.get("codearts_task_id") != order.get("codearts_task_id")
-        ):
-            raise ValueError(f"Page work-order identity differs: {work_order_id}")
-        page_owner = str(order["owner_id"])
-        ui_owner = str(order["ui_understanding_agent_id"])
-        order = dict(order)
-        order["ownership"] = {
-            "feature_owner_id": page_owner,
-            "ui_agent_id": ui_owner,
-            "business_data_agent_id": page_owner,
-            "native_capability_agent_id": page_owner,
-        }
-        return row, order
-    ledger = indexed(read_csv(workspace / "implementation-ledger.csv"), "feature_id", "feature ledger")
-    row = ledger.get(feature_id)
-    if not row or not row.get("work_order_id") or row.get("status") == "NOT_STARTED":
-        raise ValueError(f"Feature has no issued implementation work order: {feature_id}")
-    work_order_id = validate_id(row["work_order_id"], "Feature Work-Order-ID")
+    if not (workspace / "page-work-order-registry.csv").is_file():
+        raise ValueError("Phase 4 rework requires the page work-order registry (page model only)")
+    ledger = indexed(
+        read_csv(workspace / "page-implementation-ledger.csv"), "page_id", "page ledger"
+    )
+    row = ledger.get(page_id)
+    if not row or not row.get("work_order_id"):
+        raise ValueError(f"Page has no issued implementation work order: {page_id}")
+    work_order_id = validate_id(row["work_order_id"], "Page Work-Order-ID")
     registry = [
-        item for item in read_csv(workspace / "feature-work-order-registry.csv")
+        item for item in read_csv(workspace / "page-work-order-registry.csv")
         if item.get("work_order_id") == work_order_id and item.get("status") == "ISSUED"
     ]
-    if len(registry) != 1:
-        raise ValueError(f"Feature work order is not uniquely registered: {work_order_id}")
-    relative = f"feature-work-orders/{work_order_id}.json"
-    if registry[0].get("relative_path") != relative:
-        raise ValueError(f"Feature work-order path differs: {work_order_id}")
-    path = safe_relative_path(workspace, relative, f"feature work order {work_order_id}")
+    relative = f"page-work-orders/{work_order_id}.json"
+    if len(registry) != 1 or registry[0].get("relative_path") != relative:
+        raise ValueError(f"Page work order is not uniquely registered: {work_order_id}")
+    path = safe_relative_path(workspace, relative, f"page work order {work_order_id}")
     if (
-        not path.is_file() or path.is_symlink()
-        or path.stat().st_mode & 0o222
+        not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o222
         or registry[0].get("work_order_sha256") != sha256_file(path)
     ):
-        raise ValueError(f"Feature work order is changed/writable: {work_order_id}")
+        raise ValueError(f"Page work order is changed/writable: {work_order_id}")
     order = load_json(path)
-    feature_ownership = order.get("ownership") if isinstance(order, dict) else None
     if (
-        not isinstance(order, dict)
-        or order.get("feature_id") != feature_id
+        not isinstance(order, dict) or order.get("page_id") != page_id
         or order.get("status") != "ISSUED"
-        or not isinstance(feature_ownership, dict)
+        or row.get("owner_id") != order.get("owner_id")
+        or row.get("ui_understanding_agent_id") != order.get("ui_understanding_agent_id")
+        or row.get("codearts_task_id") != order.get("codearts_task_id")
     ):
-        raise ValueError(f"Feature work-order identity differs: {work_order_id}")
-    for field in (
-        "feature_owner_id", "ui_agent_id", "business_data_agent_id",
-        "native_capability_agent_id",
-    ):
-        if row.get(field) != feature_ownership.get(field):
-            raise ValueError(f"Feature work-order actor differs from ledger: {field}")
+        raise ValueError(f"Page work-order identity differs: {work_order_id}")
+    page_owner = str(order["owner_id"])
+    ui_owner = str(order["ui_understanding_agent_id"])
+    order = dict(order)
+    order["ownership"] = {
+        "feature_owner_id": page_owner,
+        "ui_agent_id": ui_owner,
+        "business_data_agent_id": page_owner,
+        "native_capability_agent_id": page_owner,
+    }
     return row, order
 
 
 def route(
     problem_type: str,
     phase_ownership: dict[str, str],
-    feature_order: dict[str, Any],
+    page_order: dict[str, Any],
 ) -> tuple[str, str]:
     definition = ROUTES.get(problem_type)
     if not definition:
@@ -251,8 +210,8 @@ def route(
     if owner_key in phase_ownership:
         actor = phase_ownership.get(owner_key, "")
     else:
-        feature_ownership = feature_order.get("ownership", {})
-        actor = feature_ownership.get(owner_key, "") if isinstance(feature_ownership, dict) else ""
+        page_ownership = page_order.get("ownership", {})
+        actor = page_ownership.get(owner_key, "") if isinstance(page_ownership, dict) else ""
     if not isinstance(actor, str) or not actor:
         raise ValueError(f"Frozen routing has no actor for {problem_type}")
     if actor == phase_ownership.get("parity_acceptance_agent_id"):
@@ -264,11 +223,14 @@ def load_evidence(
     workspace: Path,
     evidence_id: str,
     expected_executor: str,
+    *,
+    allowed_statuses: tuple[str, ...] = ("SEALED",),
 ) -> tuple[dict[str, str], dict[str, Any]]:
     validate_id(evidence_id, "HEVD-ID")
     index = [
         row for row in read_csv(workspace / "evidence-index.csv")
-        if row.get("evidence_id") == evidence_id and row.get("status") == "SEALED"
+        if row.get("evidence_id") == evidence_id
+        and row.get("status") in allowed_statuses
     ]
     if len(index) != 1:
         raise ValueError(f"HEVD is not one active SEALED evidence record: {evidence_id}")
@@ -295,19 +257,19 @@ def load_build(
     return metadata
 
 
-def record_belongs_to_feature(
+def record_belongs_to_page(
     workspace: Path,
     record_id: str,
-    feature_id: str,
+    page_id: str,
 ) -> tuple[str, str, str]:
     parity = next(
         (row for row in read_csv(workspace / "parity-map.csv") if row.get("parity_id") == record_id),
         None,
     )
     if parity:
-        if parity.get("feature_id") != feature_id:
-            raise ValueError("Parity record belongs to another feature")
-        return parity.get("page_id", ""), parity.get("state_id", ""), parity.get("h4env_id", "")
+        if parity.get("page_id") != page_id:
+            raise ValueError("Parity record belongs to another page")
+        return parity.get("feature_id", ""), parity.get("state_id", ""), parity.get("h4env_id", "")
     visual = next(
         (row for row in read_csv(workspace / "visual-elements.csv") if row.get("visual_element_id") == record_id),
         None,
@@ -320,17 +282,18 @@ def record_belongs_to_feature(
             ),
             None,
         )
-        if not parity or parity.get("feature_id") != feature_id:
-            raise ValueError("Visual record belongs to another feature")
-        return parity.get("page_id", ""), parity.get("state_id", ""), parity.get("h4env_id", "")
+        if not parity or parity.get("page_id") != page_id:
+            raise ValueError("Visual record belongs to another page")
+        return parity.get("feature_id", ""), parity.get("state_id", ""), parity.get("h4env_id", "")
     asset = next(
         (row for row in read_csv(workspace / "asset-migration.csv") if row.get("asset_id") == record_id),
         None,
     )
     if asset:
-        if feature_id not in split_multi(asset.get("feature_ids", "")):
-            raise ValueError("Asset record belongs to another feature")
-        return "", "", ""
+        if page_id not in split_multi(asset.get("page_ids", "")):
+            raise ValueError("Asset record belongs to another page")
+        feature_ids = split_multi(asset.get("feature_ids", ""))
+        return (feature_ids[0] if feature_ids else ""), "", ""
     capability = next(
         (
             row for row in read_csv(workspace / "capability-implementation.csv")
@@ -339,32 +302,30 @@ def record_belongs_to_feature(
         None,
     )
     if capability:
-        if capability.get("feature_id") != feature_id:
-            raise ValueError("Capability record belongs to another feature")
+        return capability.get("feature_id", ""), "", ""
+    if record_id == page_id:
         return "", "", ""
-    if record_id == feature_id:
-        return "", "", ""
-    raise ValueError(f"Rework record is not a frozen feature/parity/visual/asset/capability record: {record_id}")
+    raise ValueError(f"Rework record is not a frozen page/parity/visual/asset/capability record: {record_id}")
 
 
 def expected_controller_row(local: dict[str, str], *, closed: bool) -> dict[str, str]:
     return {
         "rework_id": local["ticket_id"],
         "created_at": local["opened_at"],
-        "phase": "4",
-        "record_id": local["parity_or_record_id"],
+        "phase": local["phase"],
+        "record_id": local["record_id"],
         "feature_id": local["feature_id"],
         "page_id": local["page_id"],
         "state_id": local["state_id"],
-        "env_id": local["h4env_id"],
-        "evidence_id": local["failed_evidence_id"],
+        "env_id": local["env_id"],
+        "evidence_id": local["failed_verification_id"],
         "gate_rule": local["problem_type"],
         "reason": local["notes"],
         "assigned_to": local["responsible_agent"],
         "completion_condition": local["completion_condition"],
         "status": "CLOSED" if closed else "REWORK",
         "resolved_at": local["closed_at"] if closed else "",
-        "resolution_evidence_id": local["resolution_evidence_id"] if closed else "",
+        "resolution_evidence_id": local["resolution_verification_id"] if closed else "",
         "reviewed_by": local["closed_by"] if closed else local["opened_by"],
     }
 
@@ -417,21 +378,18 @@ def main() -> int:
     parser.add_argument("--action", required=True, choices=("open", "close"))
     parser.add_argument("--reviewer", required=True)
     parser.add_argument("--ticket-id", required=True)
-    parser.add_argument("--feature-id")
-    parser.add_argument("--problem-type")
-    parser.add_argument("--parity-or-record-id")
     parser.add_argument("--page-id")
+    parser.add_argument("--problem-type")
+    parser.add_argument("--record-id")
     parser.add_argument("--state-id")
-    parser.add_argument("--h4env-id")
-    parser.add_argument("--failed-build-id")
-    parser.add_argument("--failed-evidence-id")
+    parser.add_argument("--env-id")
+    parser.add_argument("--failed-verification-id")
     parser.add_argument("--severity", choices=("CRITICAL", "HIGH", "MEDIUM", "LOW"))
     parser.add_argument("--reason")
     parser.add_argument("--completion-condition")
     parser.add_argument("--confirmed-by", required=True)
     parser.add_argument("--responsible-agent")
-    parser.add_argument("--resolution-build-id")
-    parser.add_argument("--resolution-evidence-id")
+    parser.add_argument("--resolution-verification-id")
     args = parser.parse_args()
 
     try:
@@ -485,10 +443,10 @@ def main() -> int:
 
             if args.action == "open":
                 required = {
-                    "feature_id": args.feature_id,
+                    "page_id": args.page_id,
                     "problem_type": args.problem_type,
-                    "parity_or_record_id": args.parity_or_record_id,
-                    "failed_evidence_id": args.failed_evidence_id,
+                    "record_id": args.record_id,
+                    "failed_verification_id": args.failed_verification_id,
                     "severity": args.severity,
                     "reason": args.reason,
                     "completion_condition": args.completion_condition,
@@ -498,60 +456,59 @@ def main() -> int:
                     raise ValueError(f"Opening Phase 4 rework requires: {', '.join(missing)}")
                 if local_matches or controller_matches:
                     raise ValueError("Ticket-ID already exists; overwrite is prohibited")
-                feature_id = validate_id(str(args.feature_id), "Feature-ID")
-                record_id = validate_id(str(args.parity_or_record_id), "parity/record ID")
+                page_id = validate_id(str(args.page_id), "Page-ID")
+                record_id = validate_id(str(args.record_id), "record ID")
                 problem_type = str(args.problem_type).upper()
-                derived_page, derived_state, derived_h4env = record_belongs_to_feature(
-                    workspace, record_id, feature_id
+                derived_feature, derived_state, derived_env = record_belongs_to_page(
+                    workspace, record_id, page_id
                 )
-                page_id = str(args.page_id or derived_page)
-                _feature_row, feature_order = load_feature_order(workspace, feature_id, page_id)
-                responsible_role, responsible_agent = route(problem_type, ownership, feature_order)
+                _page_row, page_order = load_page_order(workspace, page_id)
+                responsible_role, responsible_agent = route(problem_type, ownership, page_order)
                 if args.responsible_agent and args.responsible_agent != responsible_agent:
                     raise ValueError(
                         f"--responsible-agent differs from frozen routing; expected {responsible_agent}"
                     )
+                feature_id = derived_feature
                 state_id = str(args.state_id or derived_state)
-                h4env_id = str(args.h4env_id or derived_h4env)
+                env_id = str(args.env_id or derived_env)
                 for supplied, derived, label in (
-                    (args.page_id, derived_page, "page_id"),
                     (args.state_id, derived_state, "state_id"),
-                    (args.h4env_id, derived_h4env, "h4env_id"),
+                    (args.env_id, derived_env, "env_id"),
                 ):
                     if supplied and derived and supplied != derived:
                         raise ValueError(f"Supplied {label} differs from the frozen record")
-                failed_evidence_id = str(args.failed_evidence_id)
+                failed_verification_id = str(args.failed_verification_id)
                 failed_index, failed_evidence = load_evidence(
-                    workspace, failed_evidence_id, str(ownership["verification_executor_id"])
+                    workspace, failed_verification_id, str(ownership["verification_executor_id"])
                 )
-                if failed_evidence.get("feature_id") != feature_id:
-                    raise ValueError("Failed HEVD belongs to another feature")
-                if page_id and failed_evidence.get("page_id") != page_id:
+                if failed_evidence.get("page_id") != page_id:
                     raise ValueError("Failed HEVD page differs from the rework record")
+                if feature_id and failed_evidence.get("feature_id") != feature_id:
+                    raise ValueError("Failed HEVD belongs to another feature")
                 if state_id and failed_evidence.get("state_id") != state_id:
                     raise ValueError("Failed HEVD state differs from the rework record")
-                if h4env_id and failed_evidence.get("h4env_id") != h4env_id:
+                if env_id and failed_evidence.get("h4env_id") != env_id:
                     raise ValueError("Failed HEVD H4ENV differs from the rework record")
-                failed_build_id = str(args.failed_build_id or failed_evidence.get("hbuild_id", ""))
+                failed_build_id = str(failed_evidence.get("hbuild_id", ""))
+                if not failed_build_id:
+                    raise ValueError("Failed HEVD does not bind a failed HBUILD")
                 failed_build = load_build(
                     workspace, failed_build_id, str(ownership["verification_executor_id"])
                 )
-                if failed_evidence.get("hbuild_id") != failed_build_id:
-                    raise ValueError("Failed HEVD does not bind the failed HBUILD")
-                if h4env_id and failed_build.get("h4env_id") != h4env_id:
+                if env_id and failed_build.get("h4env_id") != env_id:
                     raise ValueError("Failed HBUILD H4ENV differs from the rework record")
                 opened_at = utc_now()
                 local = {
                     "ticket_id": ticket_id,
                     "severity": str(args.severity),
                     "problem_type": problem_type,
-                    "parity_or_record_id": record_id,
+                    "phase": "4",
+                    "record_id": record_id,
                     "feature_id": feature_id,
                     "page_id": page_id,
                     "state_id": state_id,
-                    "h4env_id": h4env_id,
-                    "failed_build_id": failed_build_id,
-                    "failed_evidence_id": failed_evidence_id,
+                    "env_id": env_id,
+                    "failed_verification_id": failed_verification_id,
                     "responsible_role": responsible_role,
                     "responsible_agent": responsible_agent,
                     "completion_condition": str(args.completion_condition),
@@ -560,15 +517,14 @@ def main() -> int:
                     "opened_at": opened_at,
                     "confirmed_by": lead,
                     "confirmed_at": opened_at,
-                    "resolution_build_id": "",
-                    "resolution_evidence_id": "",
+                    "resolution_verification_id": "",
                     "closed_by": "",
                     "closed_at": "",
                     "notes": str(args.reason),
                 }
                 if any(
                     row.get("status") == "OPEN"
-                    and row.get("parity_or_record_id") == record_id
+                    and row.get("record_id") == record_id
                     and row.get("problem_type") == problem_type
                     for row in local_rows
                 ):
@@ -582,12 +538,10 @@ def main() -> int:
                 controller = controller_matches[0]
                 if local.get("status") != "OPEN" or controller.get("status") != "REWORK":
                     raise ValueError("Only an OPEN/REWORK ticket may be closed")
-                feature_id = local["feature_id"]
-                _feature_row, feature_order = load_feature_order(
-                    workspace, feature_id, local.get("page_id", "")
-                )
+                page_id = local["page_id"]
+                _page_row, page_order = load_page_order(workspace, page_id)
                 responsible_role, responsible_agent = route(
-                    local["problem_type"], ownership, feature_order
+                    local["problem_type"], ownership, page_order
                 )
                 if (
                     local.get("responsible_role") != responsible_role
@@ -597,38 +551,43 @@ def main() -> int:
                     or controller != expected_controller_row(local, closed=False)
                 ):
                     raise ValueError("Stored ticket authority, routing, or mirror differs")
-                resolution_evidence_id = str(args.resolution_evidence_id or "")
-                if not resolution_evidence_id:
-                    raise ValueError("Closing Phase 4 rework requires --resolution-evidence-id")
-                if resolution_evidence_id == local.get("failed_evidence_id"):
+                resolution_verification_id = str(args.resolution_verification_id or "")
+                if not resolution_verification_id:
+                    raise ValueError("Closing Phase 4 rework requires --resolution-verification-id")
+                if resolution_verification_id == local.get("failed_verification_id"):
                     raise ValueError("Resolution HEVD must use a new Evidence-ID")
                 resolution_index, resolution_evidence = load_evidence(
-                    workspace, resolution_evidence_id, str(ownership["verification_executor_id"])
+                    workspace, resolution_verification_id, str(ownership["verification_executor_id"])
                 )
-                if resolution_evidence.get("feature_id") != feature_id:
-                    raise ValueError("Resolution HEVD belongs to another feature")
-                if local.get("page_id") and resolution_evidence.get("page_id") != local.get("page_id"):
+                if resolution_evidence.get("page_id") != page_id:
                     raise ValueError("Resolution HEVD page differs from the ticket")
+                if local.get("feature_id") and resolution_evidence.get("feature_id") != local.get("feature_id"):
+                    raise ValueError("Resolution HEVD belongs to another feature")
                 if local.get("state_id") and resolution_evidence.get("state_id") != local.get("state_id"):
                     raise ValueError("Resolution HEVD state differs from the ticket")
-                if local.get("h4env_id") and resolution_evidence.get("h4env_id") != local.get("h4env_id"):
+                if local.get("env_id") and resolution_evidence.get("h4env_id") != local.get("env_id"):
                     raise ValueError("Resolution HEVD H4ENV differs from the ticket")
                 if parse_time(str(resolution_evidence.get("captured_at", "")), "HEVD captured_at") <= parse_time(
                     local["opened_at"], "ticket opened_at"
                 ):
                     raise ValueError("Resolution HEVD must be newer than the ticket")
-                resolution_build_id = str(args.resolution_build_id or resolution_evidence.get("hbuild_id", ""))
-                if local["problem_type"] in BUILD_REWORK and not args.resolution_build_id:
-                    raise ValueError(
-                        f"{local['problem_type']} rework requires an explicit --resolution-build-id"
-                    )
-                if resolution_build_id == local.get("failed_build_id"):
+                resolution_build_id = str(resolution_evidence.get("hbuild_id", ""))
+                if not resolution_build_id:
+                    raise ValueError("Resolution HEVD does not bind a resolution HBUILD")
+                # 关闭返工单时，失败证据可能已被 resolution 证据取代（SUPERSEDED
+                # 是合法终态）；此处只需其 HBUILD 归属做新旧对比，故同时接受
+                # SEALED 与 SUPERSEDED。resolution 证据仍严格要求 SEALED。
+                _failed_index, failed_evidence = load_evidence(
+                    workspace,
+                    str(local.get("failed_verification_id", "")),
+                    str(ownership["verification_executor_id"]),
+                    allowed_statuses=("SEALED", "SUPERSEDED"),
+                )
+                if failed_evidence.get("hbuild_id") == resolution_build_id:
                     raise ValueError("Resolution HBUILD must use a new Build-ID")
                 resolution_build = load_build(
                     workspace, resolution_build_id, str(ownership["verification_executor_id"])
                 )
-                if resolution_evidence.get("hbuild_id") != resolution_build_id:
-                    raise ValueError("Resolution HEVD does not bind the resolution HBUILD")
                 if parse_time(str(resolution_build.get("created_at", "")), "HBUILD created_at") <= parse_time(
                     local["opened_at"], "ticket opened_at"
                 ):
@@ -637,8 +596,7 @@ def main() -> int:
                 local.update(
                     {
                         "status": "CLOSED",
-                        "resolution_build_id": resolution_build_id,
-                        "resolution_evidence_id": resolution_evidence_id,
+                        "resolution_verification_id": resolution_verification_id,
                         "closed_by": reviewer,
                         "closed_at": closed_at,
                     }

@@ -4,15 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import binascii
 import json
 import os
 import re
 import stat
-import struct
 import uuid
-import zipfile
-import zlib
 from pathlib import Path
 from typing import Any
 
@@ -20,16 +16,19 @@ from _common import (
     atomic_json,
     atomic_text,
     build_snapshot_manifest,
+    command_output_verdict,
     csv_fieldnames,
     load_json,
     manifest_text,
     parse_resolution,
+    png_dimensions,
     read_csv,
     safe_relative_path,
     sha256_file,
     source_row_key,
     split_multi,
     utc_now,
+    validate_hap,
     validate_id,
 )
 
@@ -104,87 +103,6 @@ ASSET_PLAN_DECISIONS = {
 ASSET_SYMBOL_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
-def full_png_dimensions(path: Path) -> tuple[int, int]:
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
-        raise ValueError(f"Cannot read PNG {path}: {exc}") from exc
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError(f"Invalid PNG signature: {path}")
-    offset = 8
-    ihdr: bytes | None = None
-    idat = bytearray()
-    saw_iend = False
-    chunk_index = 0
-    while offset < len(data):
-        if offset + 12 > len(data):
-            raise ValueError(f"Truncated PNG chunk: {path}")
-        length = struct.unpack(">I", data[offset:offset + 4])[0]
-        chunk_type = data[offset + 4:offset + 8]
-        end = offset + 12 + length
-        if end > len(data):
-            raise ValueError(f"Truncated PNG chunk payload: {path}")
-        payload = data[offset + 8:offset + 8 + length]
-        expected_crc = struct.unpack(">I", data[offset + 8 + length:end])[0]
-        actual_crc = binascii.crc32(payload, binascii.crc32(chunk_type)) & 0xFFFFFFFF
-        if expected_crc != actual_crc:
-            raise ValueError(f"PNG chunk CRC mismatch: {path}")
-        if chunk_index == 0 and chunk_type != b"IHDR":
-            raise ValueError(f"PNG IHDR is not the first chunk: {path}")
-        if chunk_type == b"IHDR":
-            if ihdr is not None or length != 13:
-                raise ValueError(f"Invalid PNG IHDR: {path}")
-            ihdr = payload
-        elif chunk_type == b"IDAT":
-            idat.extend(payload)
-        elif chunk_type == b"IEND":
-            if length != 0:
-                raise ValueError(f"Invalid PNG IEND: {path}")
-            saw_iend = True
-            offset = end
-            break
-        offset = end
-        chunk_index += 1
-    if not ihdr or not idat or not saw_iend or offset != len(data):
-        raise ValueError(f"PNG stream is incomplete or has trailing bytes: {path}")
-    width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
-        ">IIBBBBB", ihdr
-    )
-    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
-    valid_depths = {
-        0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8},
-        4: {8, 16}, 6: {8, 16},
-    }
-    if (
-        width <= 0 or height <= 0 or compression != 0 or filtering != 0 or interlace != 0
-        or channels is None or bit_depth not in valid_depths[color_type]
-    ):
-        raise ValueError(f"Unsupported or invalid PNG IHDR: {path}")
-    expected_size = height * (((width * channels * bit_depth + 7) // 8) + 1)
-    try:
-        decoded = zlib.decompress(bytes(idat))
-    except zlib.error as exc:
-        raise ValueError(f"Invalid PNG compressed image data: {path}: {exc}") from exc
-    if len(decoded) != expected_size:
-        raise ValueError(f"PNG decompressed image length differs: {path}")
-    return width, height
-
-
-def validate_hap(path: Path) -> None:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            names = archive.namelist()
-            if not names or archive.testzip() is not None:
-                raise ValueError(f"HAP ZIP payload is empty or corrupt: {path}")
-            for name in names:
-                candidate = Path(name)
-                if candidate.is_absolute() or ".." in candidate.parts:
-                    raise ValueError(f"HAP contains an unsafe member path: {name}")
-            if not any(Path(name).name in {"module.json", "config.json"} for name in names):
-                raise ValueError(f"HAP lacks module.json or config.json: {path}")
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise ValueError(f"Build artifact is not a valid HAP ZIP: {path}: {exc}") from exc
-
 
 def check_locked_path_records(value: Any, label: str, errors: list[str]) -> None:
     """Recursively verify every input-lock object that binds path + sha256."""
@@ -227,16 +145,6 @@ def check_locked_path_records(value: Any, label: str, errors: list[str]) -> None
         for index, item in enumerate(value):
             check_locked_path_records(item, f"{label}[{index}]", errors)
 
-
-def command_output_verdict(
-    stdout: str, stderr: str, success_patterns: list[str], error_patterns: list[str]
-) -> tuple[list[str], list[str]]:
-    combined = stdout + "\n" + stderr
-    combined_lower = combined.lower()
-    return (
-        [pattern for pattern in success_patterns if pattern in combined],
-        [pattern for pattern in error_patterns if pattern.lower() in combined_lower],
-    )
 
 
 def asset_ref_array(value: str, label: str, errors: list[str]) -> list[str]:
@@ -490,8 +398,7 @@ def main() -> int:
         owner_values = [str(ownership.get(key, "")) for key in sorted(REQUIRED_OWNERS)]
         if any(not value for value in owner_values):
             errors.append("Frozen Phase 3 ownership contains an empty agent ID")
-        if len(set(owner_values)) != len(owner_values):
-            errors.append("Every frozen Phase 3 role must have a distinct agent ID")
+
         locked_ownership = input_lock.get("ownership")
         if locked_ownership != ownership:
             errors.append("phase-manifest ownership differs from stage-03-input-lock ownership")
@@ -503,7 +410,7 @@ def main() -> int:
     if closure.get("final_verdict") != "PASS" or closure.get("evidence_chain_closed") is not True:
         errors.append("Frozen Phase 2 closure is not PASS")
     if phase2_gate_snapshot.get("phase") != 2 or phase2_gate_snapshot.get("verdict") != "PASS":
-        errors.append("Frozen Phase 2 controller gate is not PASS")
+        errors.append("Frozen Phase 2 gate snapshot is not PASS")
 
     check_locked_path_records(input_lock, "input_lock", errors)
     gate_snapshot_path = workspace / "inputs" / "phase-02-gate-report.json"
@@ -1256,7 +1163,7 @@ def main() -> int:
             verify_sealed_manifest(screenshot_dir, errors)
             screenshot_png = screenshot_dir / "screenshot.png"
             metadata = load_json(screenshot_dir / "metadata.json")
-            width, height = full_png_dimensions(screenshot_png)
+            width, height = png_dimensions(screenshot_png)
             expected_width, expected_height = parse_resolution(
                 str(device_by_id[row["device_id"]].get("resolution", ""))
             )
@@ -1687,8 +1594,8 @@ def main() -> int:
             row for row in read_csv(workspace.parent / "controller" / "rework-log.csv")
             if row.get("phase") == "3"
         ]
-    except ValueError as exc:
-        errors.append(str(exc))
+    except ValueError:
+        # gmi path: no ticket was ever opened, so the mirror ledger may not exist yet.
         controller_rework = []
     local_ticket_ids = [row.get("ticket_id", "") for row in rework]
     controller_ticket_ids = [row.get("rework_id", "") for row in controller_rework]
@@ -1708,6 +1615,8 @@ def main() -> int:
             validate_id(ticket_id, "Rework Ticket-ID")
         except ValueError as exc:
             errors.append(str(exc))
+        if row.get("phase", "") != "3":
+            errors.append(f"Rework ticket phase differs from 3: {ticket_id}")
         problem_type = row.get("problem_type", "").upper()
         route = REWORK_ROUTES.get(problem_type)
         if not route:
@@ -1747,11 +1656,16 @@ def main() -> int:
             controller_row = controller_matches[0]
             expected_mirror = {
                 "created_at": row.get("opened_at", ""),
-                "record_id": row.get("source_or_mapping_id", ""),
+                "record_id": row.get("record_id", ""),
+                "feature_id": row.get("feature_id", ""),
+                "page_id": row.get("page_id", ""),
+                "state_id": row.get("state_id", ""),
+                "env_id": row.get("env_id", ""),
                 "evidence_id": failed_id,
                 "gate_rule": problem_type,
                 "reason": row.get("notes", ""),
                 "assigned_to": row.get("responsible_agent", ""),
+                "completion_condition": row.get("completion_condition", ""),
             }
             for field, expected in expected_mirror.items():
                 if controller_row.get(field, "") != expected:
@@ -1761,7 +1675,7 @@ def main() -> int:
         if row.get("status", "").upper() == "CLOSED":
             if row.get("closed_by") != ownership.get("architecture_acceptance_agent_id"):
                 errors.append(f"Closed rework ticket has invalid closer: {ticket_id}")
-            correction_id = row.get("correction_verification_id", "")
+            correction_id = row.get("resolution_verification_id", "")
             if not correction_id or correction_id == row.get("failed_verification_id"):
                 errors.append(f"Closed rework ticket lacks a new correction HVER: {ticket_id}")
             else:

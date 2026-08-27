@@ -370,8 +370,9 @@ def main() -> int:
         "business_implementation_allowed": True,
         "mp4_allowed": False,
         "required_return": [
-            "stage-04-input-lock.json", "phase-manifest.json", "feature-work-orders/",
-            "implementation-ledger.csv", "parity-map.csv", "visual-elements.csv",
+            "stage-04-input-lock.json", "phase-manifest.json", "page-work-orders/",
+            "capability-work-orders/", "page-work-order-registry.csv",
+            "page-implementation-ledger.csv", "parity-map.csv", "visual-elements.csv",
             "migration-unit-contracts.json",
             "asset-migration.csv", "capability-implementation.csv", "nativeization-decisions.csv",
             "asset-policy.json", "asset-conversion-contracts.json", "asset-conversions/",

@@ -1,8 +1,19 @@
 # Roles and authority
 
-All six Phase 3 actor IDs are frozen in the controller-issued work order and copied into `phase-manifest.json` and `stage-03-input-lock.json`. They must be distinct from each other and from the frozen Phase 1/2 actors. A command-line `--created-by`, `--executed-by`, `--mapped-by`, or `--reviewer` value is not authority by itself; it must equal the assigned ID below.
+All six Phase 3 roles are **logical responsibilities** owned by named agent IDs,
+frozen in the Phase 3 work order and copied into `phase-manifest.json` and
+`stage-03-input-lock.json`. They are not proof that six unrelated models ran:
+one worker may reuse a single platform task for several roles, and several roles
+may share one agent ID when that worker owns every duty involved. A command-line
+`--created-by`, `--executed-by`, `--mapped-by`, or `--reviewer` value is not
+authority by itself; it must equal the assigned agent ID below.
 
-Every role is a distinct actual CodeArts worker task. After completion, the controller records the platform task ID and hashes of role-owned artifacts. A role string, command-line actor value, or model-authored narrative is not an execution receipt. One platform task ID cannot satisfy two roles.
+Responsibility is still tracked to a person: after completion, bind the actual
+platform task and the role-owned artifact hashes to a receipt. The one
+non-negotiable separation is independence of review — the architecture
+acceptance agent may not be a creator, mapper, status updater, environment
+owner, or verification executor of the workspace it accepts, and no agent may
+review work it authored.
 
 ## HarmonyOS architecture lead
 
@@ -41,7 +52,7 @@ Every role is a distinct actual CodeArts worker task. After completion, the cont
 ## Architecture acceptance agent
 
 - Is the sole final reviewer.
-- Must use the exact `architecture_acceptance_agent_id` frozen in the work order and therefore differs from every creator, mapper, and verification executor.
+- Must use the exact `architecture_acceptance_agent_id` frozen in the work order and therefore may not be a creator, mapper, or verification executor of the workspace it accepts.
 - Verifies; it never edits project files, registries, mappings, evidence, or tickets.
 - Visually opens every sealed PNG; hashes, metadata, and command success alone are insufficient.
 - Uses `manage_stage3_rework.py` to open or close tickets and rechecks the new immutable verification package after the original responsible agent fixes the issue.
@@ -56,4 +67,4 @@ Every role is a distinct actual CodeArts worker task. After completion, the cont
 | `PUBLIC_UI`, `RESPONSIVE`, `THEME` | Public UI agent |
 | `CAPABILITY`, `CONTRACT` | Capability-contract agent |
 
-The problem type, not a free-form assignee, selects the frozen owner. The manager writes the same ticket into local `rework-tickets.csv` and controller `rework-log.csv`. Flow: acceptance agent opens ticket → architecture lead confirms the deterministic owner → original role corrects it → frozen toolchain agent produces a newer sealed PASS `HVER-ID` → acceptance agent closes it with that HVER. Every open ticket blocks PASS, regardless of severity. A closed workspace rejects further ticket changes.
+The problem type, not a free-form assignee, selects the frozen owner. `manage_stage3_rework.py` writes the same ticket into local `rework-tickets.csv` and controller `rework-log.csv`. Flow: acceptance agent opens ticket → architecture lead confirms the deterministic owner → original role corrects it → frozen toolchain agent produces a newer sealed PASS `HVER-ID` → acceptance agent closes it with that HVER. Every open ticket blocks PASS, regardless of severity. A closed workspace rejects further ticket changes.

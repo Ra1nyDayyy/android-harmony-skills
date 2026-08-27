@@ -398,6 +398,55 @@ class HumanGateTest(unittest.TestCase):
             self.assertIn("inside the migration run", result.stderr.lower())
             self.assertFalse((outside / "phase-02" / "review-summary.json").exists())
 
+    def test_phase2_approval_dual_writes_gmi_acceptance_satisfying_adapter(self) -> None:
+        """A2：record_human_review --phase 2 APPROVED 在 gmi 布局下双写
+        phase-2-acceptance.json；其 decision/closure_sha256 字段必须满足
+        gmi_phase3_adapter 的强制校验（decision==ACCEPTED 且绑定 closure 现行哈希），
+        closure 事后被篡改时哈希绑定必须失配（adapter 将拒绝并要求重审）。"""
+        with tempfile.TemporaryDirectory(prefix="human-gate-gmi-acceptance-") as temp:
+            run_dir, gate_report = self.make_run(Path(temp))
+            p2 = run_dir / "phase-02-android-inventory"
+            closure_path = p2 / "phase-2-closure.json"
+            write_json(closure_path, {
+                "generator": "gmi_closure",
+                "machine_status": "READY_FOR_HUMAN_REVIEW",
+                "gate": {"unmapped": 0, "audit_passed": True},
+            })
+            result = self.run_script(
+                "record_human_review.py",
+                "--run-dir", str(run_dir), "--phase", "2",
+                "--gate-report", str(gate_report),
+                "--review-id", "HREV-P2-GMI-ACCEPT",
+                "--reviewer", "gmi-reviewer-1", "--decision", "APPROVED",
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+
+            acceptance_path = p2 / "human-review" / "phase-2-acceptance.json"
+            self.assertTrue(acceptance_path.is_file(), "gmi acceptance dual-write missing")
+            record = json.loads(acceptance_path.read_text(encoding="utf-8"))
+            # gmi_phase3_adapter 的强制字段与判定（adapter.main 的 acceptance 校验逻辑）
+            self.assertEqual("ACCEPTED", record["decision"])
+            actual_sha = hashlib.sha256(closure_path.read_bytes()).hexdigest()
+            self.assertEqual(
+                actual_sha, record["closure_sha256"],
+                "closure_sha256 must bind the current phase-2-closure.json hash",
+            )
+            # adapter 读取的复核人/时间字段同源落盘
+            self.assertEqual("gmi-reviewer-1", record["reviewer_id"])
+            self.assertTrue(record["accepted_at"])
+
+            # 篡改对照：closure 在人工审核后被改动 -> 记录哈希不再等于实际哈希，
+            # adapter 的 closure_sha256 校验会拒绝（"changed after human review"）
+            write_json(closure_path, {
+                "generator": "gmi_closure", "machine_status": "READY_FOR_HUMAN_REVIEW",
+                "gate": {"unmapped": 0, "audit_passed": True, "tampered": True},
+            })
+            tampered_sha = hashlib.sha256(closure_path.read_bytes()).hexdigest()
+            self.assertNotEqual(
+                tampered_sha, record["closure_sha256"],
+                "post-review closure tampering must invalidate the recorded binding",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
+
 import struct
 import sys
 import tempfile
@@ -31,22 +31,6 @@ from capture_state import (  # noqa: E402
 )
 from _common import write_csv  # noqa: E402
 
-
-def inspector_envelope() -> dict:
-    raw_tree = {
-        "$ID": "root", "$type": "Column",
-        "$rect": {"x": 0, "y": 0, "width": 320, "height": 640},
-        "$children": [{"$ID": "login", "$type": "Text", "id": "login", "content": "Login"}],
-    }
-    digest = hashlib.sha256(json.dumps(
-        raw_tree, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")).hexdigest()
-    return {
-        "schema_version": 1, "source": "ARKUI_UI_CONTEXT",
-        "api": "getFilteredInspectorTree", "capture_mode": "OHOS_TEST_BRIDGE",
-        "bridge_contract": "arkui-inspector-bridge-v1", "raw_tree": raw_tree,
-        "raw_tree_sha256": digest,
-    }
 
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -190,121 +174,6 @@ class Phase4CommonTest(unittest.TestCase):
             path.write_text(json.dumps({**bindings, "assertions": results}) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Generated assertion differs"):
                 validate_assertion_result(path, plan, bindings)
-
-    @unittest.skip("legacy tree fixture removed; UiTest carrier rejection is covered by test_uitest_evidence")
-    def test_runtime_carrier_substitution_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "ui-tree.json"
-            value = {
-                "bundle_name": "com.example.fixture", "carrier": "DIALOG",
-                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
-                "inspector": inspector_envelope(), "operation_trace": [],
-                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
-            }
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            contract = {
-                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
-                "required_component_ids": [], "component_locators": {},
-                "required_event_ids": [], "required_transition_ids": [],
-            }
-            with self.assertRaisesRegex(ValueError, "Runtime carrier differs"):
-                validate_ui_tree(
-                    path, "com.example.fixture", "HDEVICE-001", "device-1", contract
-                )
-
-    @unittest.skip("legacy tree fixture removed; UiTest trace rejection is covered by test_uitest_evidence")
-    def test_event_ids_without_raw_operation_trace_are_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "ui-tree.json"
-            value = {
-                "bundle_name": "com.example.fixture", "carrier": "PAGE",
-                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
-                "inspector": inspector_envelope(),
-                "observed_event_ids": ["EVENT-SUBMIT"], "operation_trace": [],
-                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
-            }
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            contract = {
-                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
-                "required_component_ids": [], "component_locators": {},
-                "required_event_ids": ["EVENT-SUBMIT"], "required_transition_ids": [],
-            }
-            with self.assertRaisesRegex(ValueError, "operation trace differs"):
-                validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
-
-    @unittest.skip("legacy tree fixture removed; production no longer accepts tree evidence")
-    def test_plain_script_declared_nodes_cannot_impersonate_inspector(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "ui-tree.json"
-            value = {
-                "bundle_name": "com.example.fixture", "carrier": "PAGE",
-                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
-                "root": {"id": "root"}, "nodes": [{"id": "login"}],
-                "operation_trace": [],
-                "bounds": {"x": 0, "y": 0, "width": 320, "height": 640},
-                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
-            }
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            contract = {
-                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
-                "required_component_ids": [], "component_locators": {},
-                "required_event_ids": [], "required_transition_ids": [],
-            }
-            with self.assertRaisesRegex(ValueError, "Inspector envelope"):
-                validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
-
-    @unittest.skip("legacy tree fixture removed; UiTest hash rejection is covered by test_uitest_evidence")
-    def test_inspector_hash_mismatch_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "ui-tree.json"
-            inspector = inspector_envelope()
-            inspector["raw_tree"]["content"] = "tampered"
-            value = {
-                "bundle_name": "com.example.fixture", "carrier": "PAGE",
-                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
-                "inspector": inspector, "operation_trace": [],
-                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
-            }
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            contract = {
-                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
-                "required_component_ids": [], "component_locators": {},
-                "required_event_ids": [], "required_transition_ids": [],
-            }
-            with self.assertRaisesRegex(ValueError, "raw_tree hash differs"):
-                validate_ui_tree(path, "com.example.fixture", "HDEVICE-001", "device-1", contract)
-
-    @unittest.skip("legacy tree fixture removed; UiTest locator binding is covered by test_uitest_evidence")
-    def test_component_binding_is_derived_from_inspector_tree(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "ui-tree.json"
-            value = {
-                "bundle_name": "com.example.fixture", "carrier": "PAGE",
-                "target_id": "ROUTE-LOGIN", "window": {"id": "main"},
-                "inspector": inspector_envelope(), "operation_trace": [],
-                "device": {"device_id": "HDEVICE-001", "serial": "device-1"},
-                "nodes": [{"source_component_id": "CMP-LOGIN"}],
-            }
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            contract = {
-                "expected_carrier": "PAGE", "target_id": "ROUTE-LOGIN",
-                "required_component_ids": ["CMP-LOGIN"],
-                "component_locators": {"CMP-LOGIN": {"resource_id": "login"}},
-                "required_event_ids": [], "required_transition_ids": [],
-            }
-            result = validate_ui_tree(
-                path, "com.example.fixture", "HDEVICE-001", "device-1", contract
-            )
-            self.assertEqual(result["component_bindings"]["CMP-LOGIN"]["basis"], "RESOURCE_ID")
-            self.assertNotIn("source_component_id", result["nodes"][0])
-            sealed = json.loads(path.read_text(encoding="utf-8"))
-            sealed["nodes"][0]["type"] = "Forged"
-            with self.assertRaisesRegex(ValueError, "normalized nodes differ"):
-                validate_normalized(sealed)
-            sealed = json.loads(path.read_text(encoding="utf-8"))
-            sealed["inspector"]["normalized_nodes_sha256"] = "0" * 64
-            with self.assertRaisesRegex(ValueError, "normalized node hash differs"):
-                validate_normalized(sealed)
 
     def test_controller_attempt_chain_prevents_budget_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:

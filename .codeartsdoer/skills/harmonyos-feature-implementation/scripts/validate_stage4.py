@@ -66,6 +66,8 @@ INPUT_LOCK_KEYS = {
     "page_contract_registry", "page_contracts",
     "phase2_inventory_ids", "phase2_asset_ids", "required_h4env_ids",
     "phase3_source_snapshot_sha256",
+    "phase4_carrier_deviations_applied", "phase3_scaffold_rebases_applied",
+    "page_verification_tiers",
     "ui_test_snapshot_generation",
 }
 INPUT_RECORD_KEYS = {"label", "source_path", "snapshot_path", "sha256", "size"}
@@ -113,18 +115,7 @@ STAGE4_INPUT_RELATIVES = {
     "phase3_advanced_obligations_sha256": "phase-03-harmony-scaffold/advanced-obligations.json",
     "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
 }
-FEATURE_ORDER_KEYS = {
-    "schema_version", "work_order_id", "run_id", "phase", "feature_id",
-    "status", "issued_at", "issued_by", "phase4_manifest_sha256",
-    "stage04_input_lock_sha256", "ownership", "visual_asset_agent_id",
-    "source_inventory_ids", "parity_ids", "harmony_module_ids", "targets",
-    "required_h4env_ids", "asset_ids", "capability_requirement_ids",
-    "capability_contract_ids", "exclusive_code_paths", "completion_conditions",
-}
-FEATURE_ACTOR_KEYS = {
-    "feature_owner_id", "ui_agent_id", "business_data_agent_id",
-    "native_capability_agent_id",
-}
+
 HREV_KEYS = {
     "parity_id", "visual_result", "functional_result", "asset_result",
     "reviewed_visual_element_ids", "differences", "notes", "review_id",
@@ -329,6 +320,20 @@ def validate_migration_unit_contracts(
     obligations = obligation_doc.get("obligations")
     require(isinstance(obligations, list) and all(isinstance(row, dict) for row in obligations),
             "Phase 3 obligations must be an object array")
+    # Controller-applied carrier deviations（与 init_implementation 的
+    # applied_carrier_deviations 同源：input-lock 记录去掉 page_id 包装键）
+    applied_deviations = {
+        str(item.get("page_id")): {k: v for k, v in item.items() if k != "page_id"}
+        for item in input_lock.get("phase4_carrier_deviations_applied", [])
+        if isinstance(item, dict)
+    }
+    # P4 分层验证：input-lock 冻结的最终 tier 决策（init 的 a>b>c 推导产物）。
+    # 旧工作区（无记录）缺省 CORE，与旧行为完全一致。
+    locked_tiers = {
+        str(item.get("page_id")): str(item.get("verification_tier") or "CORE")
+        for item in input_lock.get("page_verification_tiers", [])
+        if isinstance(item, dict)
+    }
     contract_path = workspace / "migration-unit-contracts.json"
     contract_sha = sha256_file(contract_path)
     require(
@@ -384,14 +389,25 @@ def validate_migration_unit_contracts(
             "android_entry_condition": source["entry_condition"],
             "android_action_summary": source["action_summary"],
             "android_expected_observable": source["expected_observable"],
-            "required_business_rule_ids": sorted(set(split_multi(source["business_rule_refs"]))),
-            "required_data_dependency_ids": sorted(set(split_multi(source["data_dependency_refs"]))),
-            "required_system_capability_ids": sorted(set(split_multi(source["system_capability_refs"]))),
-            "required_third_party_dependency_ids": sorted(set(split_multi(source["third_party_dependency_refs"]))),
+            # NONE_FOUND 哨兵与 init_implementation 的迁移单元构造同口径过滤
+            "required_business_rule_ids": sorted(
+                set(split_multi(source["business_rule_refs"])) - {"NONE_FOUND"}
+            ),
+            "required_data_dependency_ids": sorted(
+                set(split_multi(source["data_dependency_refs"])) - {"NONE_FOUND"}
+            ),
+            "required_system_capability_ids": sorted(
+                set(split_multi(source["system_capability_refs"])) - {"NONE_FOUND"}
+            ),
+            "required_third_party_dependency_ids": sorted(
+                set(split_multi(source["third_party_dependency_refs"])) - {"NONE_FOUND"}
+            ),
             "expected_carrier": carrier,
             "target_kind": mapping_type,
             "target_id": target_id,
             "scaffold_carrier": scaffold_carrier(mapping_type, surface_kind),
+            "carrier_deviation": applied_deviations.get(page_id),
+            "verification_tier": locked_tiers.get(page_id, "CORE"),
             "page_component_ids": sorted({str(row["component_id"]) for row in components if row.get("page_id") == page_id}),
             "page_event_ids": sorted({str(row["event_id"]) for row in events if row.get("page_id") == page_id}),
             "page_transition_ids": sorted({str(row["transition_id"]) for row in transitions if row.get("source_page_id") == page_id}),
@@ -415,8 +431,20 @@ def validate_migration_unit_contracts(
             "native_optimization_policy": "INTERNAL_ONLY_UNLESS_APPROVED",
             "max_automatic_repair_attempts": 2,
         }
-        require(unit_by_parity[parity_id] == expected,
-                f"Migration-unit observable contract differs from frozen Android facts: {parity_id}")
+        actual_unit = unit_by_parity[parity_id]
+        if actual_unit != expected:
+            differing = sorted(
+                str(key) for key in set(actual_unit) | set(expected)
+                if actual_unit.get(key) != expected.get(key)
+            )
+            extra = sorted(set(map(str, actual_unit)) - set(map(str, expected)))
+            missing = sorted(set(map(str, expected)) - set(map(str, actual_unit)))
+            require(
+                False,
+                f"Migration-unit observable contract differs from frozen Android facts: "
+                f"{parity_id}: differing keys: {differing}; "
+                f"keys only in actual: {extra}; keys only in expected: {missing}",
+            )
         require(carrier == expected["scaffold_carrier"],
                 f"Phase 3 carrier changes Android semantics: {parity_id}")
 
@@ -932,7 +960,7 @@ def validate_locked_materials(
     return android_dirs, locked_assets, environments, source_snapshot_sha
 
 
-def validate_mapping_and_feature_orders(
+def validate_mapping_and_page_orders(
     workspace: Path,
     scope: dict[str, Any],
     manifest: dict[str, Any],
@@ -994,195 +1022,32 @@ def validate_mapping_and_feature_orders(
     require(included and {row.get("feature_id", "") for row in inventory.values()} == included,
             "Included feature scope differs from active inventory")
 
-    page_registry_path = workspace / "page-work-order-registry.csv"
-    if page_registry_path.is_file():
-        validate_order_coverage(workspace)
-        page_contracts = _page_contracts(workspace)
-        orders = _registered_orders(workspace, page_contracts)
-        page_orders = {
-            str(order["page_id"]): order for order in orders if order.get("page_id")
-        }
-        ledger = rows_by(
-            workspace / "page-implementation-ledger.csv", "page_id",
-            "page implementation ledger",
-        )
-        require(set(ledger) == set(page_contracts) == set(page_orders),
-                "Page work-order/ledger/contract coverage differs")
-        for page_id, row in ledger.items():
-            order = page_orders[page_id]
-            require(
-                row.get("work_order_id") == order.get("work_order_id")
-                and row.get("owner_id") == order.get("owner_id")
-                and row.get("ui_understanding_agent_id") == order.get("ui_understanding_agent_id")
-                and row.get("codearts_task_id") == order.get("codearts_task_id")
-                and row.get("contract_sha256") == order.get("page_contract_sha256")
-                and row.get("status") == "ACCEPTED",
-                f"Page implementation ledger differs from frozen page work order: {page_id}",
-            )
-        return page_orders, ledger, parity
-
-    registry_path = workspace / "feature-work-order-registry.csv"
-    require_csv_header(
-        registry_path,
-        ["work_order_id", "feature_id", "relative_path", "work_order_sha256",
-         "issued_by", "issued_at", "status"],
-        "Feature work-order registry",
-    )
-    registry_rows = read_csv(registry_path)
-    active_rows = [row for row in registry_rows if row.get("status") != "SUPERSEDED"]
-    require(len(active_rows) == len(included),
-            "Feature work-order registry must contain one active row per included feature")
-    by_feature: dict[str, dict[str, str]] = {}
-    by_order: set[str] = set()
-    for row in active_rows:
-        feature_id = validate_id(str(row.get("feature_id", "")), "Feature-ID")
-        order_id = validate_id(str(row.get("work_order_id", "")), "Feature Work-Order-ID")
-        require(feature_id in included and feature_id not in by_feature and order_id not in by_order,
-                f"Unknown/duplicate feature work order: {feature_id}/{order_id}")
-        by_feature[feature_id] = row
-        by_order.add(order_id)
-    require(set(by_feature) == included, "Feature work-order feature coverage differs")
-
-    manifest_sha = sha256_file(workspace / "phase-manifest.json")
-    input_lock_sha = sha256_file(workspace / "stage-04-input-lock.json")
-    work_orders: dict[str, dict[str, Any]] = {}
-    exclusive_paths: dict[Path, str] = {}
-    for feature_id in sorted(included):
-        row = by_feature[feature_id]
-        order_id = row["work_order_id"]
-        relative = f"feature-work-orders/{order_id}.json"
-        require(row.get("relative_path") == relative and row.get("status") == "ISSUED",
-                f"Feature work-order registry path/status differs: {feature_id}")
-        path = safe_relative_path(workspace, relative, f"feature work order {order_id}")
-        order = object_json(path, f"feature work order {order_id}")
-        require(set(order) == FEATURE_ORDER_KEYS,
-                f"Feature work-order keys differ: {order_id}")
-        require(
-            row.get("work_order_sha256") == sha256_file(path)
-            and row.get("issued_by") == ownership["implementation_lead_id"]
-            and row.get("issued_at") == order.get("issued_at")
-            and order.get("schema_version") == "1.0"
-            and order.get("work_order_id") == order_id
-            and order.get("run_id") == scope.get("run_id")
-            and order.get("phase") == 4 and order.get("feature_id") == feature_id
-            and order.get("status") == "ISSUED"
-            and order.get("issued_by") == ownership["implementation_lead_id"]
-            and order.get("phase4_manifest_sha256") == manifest_sha
-            and order.get("stage04_input_lock_sha256") == input_lock_sha
-            and order.get("visual_asset_agent_id") == ownership["visual_asset_agent_id"],
-            f"Feature work-order identity/hash/issuer differs: {feature_id}",
-        )
-        actors = order.get("ownership")
-        require(isinstance(actors, dict) and set(actors) == FEATURE_ACTOR_KEYS,
-                f"Feature work-order ownership keys differ: {feature_id}")
-        actor_values = {validate_actor(str(actors[key]), f"{feature_id}.{key}") for key in FEATURE_ACTOR_KEYS}
-        require(
-            not actor_values & {
-                ownership["verification_executor_id"], ownership["parity_acceptance_agent_id"]
-            },
-            f"Feature implementer conflicts with verifier/reviewer: {feature_id}",
-        )
-        feature_inventory = {
-            inventory_id: source
-            for inventory_id, source in inventory.items() if source.get("feature_id") == feature_id
-        }
-        feature_parity = {
-            parity_id: parity_row
-            for parity_id, parity_row in parity.items() if parity_row.get("feature_id") == feature_id
-        }
-        feature_modules = sorted(
-            {architecture[source_row_key(source)]["harmony_module_id"] for source in feature_inventory.values()}
-        )
-        feature_assets: set[str] = set()
-        for source in feature_inventory.values():
-            feature_assets.update(item for item in split_multi(source.get("asset_ids", "")) if item != "NONE_FOUND")
-        feature_caps = {
-            requirement_id: contract
-            for requirement_id, contract in capabilities.items()
-            if contract.get("source_feature_id") == feature_id
-        }
-        expected_targets: list[dict[str, str]] = []
-        for source in feature_inventory.values():
-            mapping = architecture[source_row_key(source)]
-            mapping_type = str(mapping.get("mapping_type", ""))
-            expected_targets.append(
-                {
-                    "source_row_key": source_row_key(source),
-                    "harmony_module_id": str(mapping.get("harmony_module_id", "")),
-                    "target_kind": mapping_type,
-                    "target_id": str(
-                        mapping.get("route_id", "")
-                        if mapping_type == "ROUTE_PAGE"
-                        else mapping.get("surface_shell_id", "")
-                    ),
-                }
-            )
-        expected_targets.sort(key=lambda item: json.dumps(item, sort_keys=True))
-        actual_targets = order.get("targets")
-        require(isinstance(actual_targets, list) and all(isinstance(item, dict) for item in actual_targets),
-                f"Feature work-order targets are malformed: {feature_id}")
-        actual_targets = sorted(actual_targets, key=lambda item: json.dumps(item, sort_keys=True))
-        require(
-            order.get("source_inventory_ids") == sorted(feature_inventory)
-            and order.get("parity_ids") == sorted(feature_parity)
-            and order.get("harmony_module_ids") == feature_modules
-            and order.get("targets") == actual_targets == expected_targets
-            and order.get("required_h4env_ids") == sorted(environments)
-            and order.get("asset_ids") == sorted(feature_assets)
-            and order.get("capability_requirement_ids") == sorted(feature_caps)
-            and order.get("capability_contract_ids")
-            == sorted({row.get("capability_contract_id", "") for row in feature_caps.values()}),
-            f"Feature work-order frozen coverage differs: {feature_id}",
-        )
-        code_paths = canonical_string_list(
-            order.get("exclusive_code_paths"), f"{feature_id}.exclusive_code_paths"
-        )
-        for relative_path in code_paths:
-            path = safe_relative_path(
-                workspace / "harmony-project", relative_path,
-                f"exclusive code path for {feature_id}",
-            ).resolve()
-            for existing, other_feature in exclusive_paths.items():
-                try:
-                    path.relative_to(existing)
-                    conflict = True
-                except ValueError:
-                    try:
-                        existing.relative_to(path)
-                        conflict = True
-                    except ValueError:
-                        conflict = False
-                require(not conflict,
-                        f"Feature code-path ownership overlaps: {feature_id}/{other_feature}")
-            exclusive_paths[path] = feature_id
-        conditions = order.get("completion_conditions")
-        require(isinstance(conditions, list) and conditions
-                and all(isinstance(item, str) and item.strip() for item in conditions),
-                f"Feature work-order completion conditions are empty: {feature_id}")
-        work_orders[feature_id] = order
-
+    require((workspace / "page-work-order-registry.csv").is_file(),
+            "Phase 4 requires a page work-order registry (page model only)")
+    validate_order_coverage(workspace)
+    page_contracts = _page_contracts(workspace)
+    orders = _registered_orders(workspace, page_contracts)
+    page_orders = {
+        str(order["page_id"]): order for order in orders if order.get("page_id")
+    }
     ledger = rows_by(
-        workspace / "implementation-ledger.csv", "feature_id", "implementation ledger"
+        workspace / "page-implementation-ledger.csv", "page_id",
+        "page implementation ledger",
     )
-    require(set(ledger) == included, "Implementation ledger feature coverage differs")
-    for feature_id, row in ledger.items():
-        order = work_orders[feature_id]
-        actors = order["ownership"]
+    require(set(ledger) == set(page_contracts) == set(page_orders),
+            "Page work-order/ledger/contract coverage differs")
+    for page_id, row in ledger.items():
+        order = page_orders[page_id]
         require(
             row.get("work_order_id") == order.get("work_order_id")
-            and all(row.get(key) == actors.get(key) for key in FEATURE_ACTOR_KEYS)
-            and row.get("asset_agent_id") == ownership["visual_asset_agent_id"]
-            and json_string_array(row.get("source_inventory_ids", ""), f"{feature_id}.source_inventory_ids", allow_empty=False)
-            == order.get("source_inventory_ids")
-            and json_string_array(row.get("harmony_module_ids", ""), f"{feature_id}.harmony_module_ids", allow_empty=False)
-            == order.get("harmony_module_ids")
-            and row.get("status") == "ACCEPTED"
-            and row.get("updated_by") in {
-                ownership["implementation_lead_id"], ownership["parity_acceptance_agent_id"]
-            },
-            f"Implementation ledger differs from frozen feature work order: {feature_id}",
+            and row.get("owner_id") == order.get("owner_id")
+            and row.get("ui_understanding_agent_id") == order.get("ui_understanding_agent_id")
+            and row.get("codearts_task_id") == order.get("codearts_task_id")
+            and row.get("contract_sha256") == order.get("page_contract_sha256")
+            and row.get("status") == "ACCEPTED",
+            f"Page implementation ledger differs from frozen page work order: {page_id}",
         )
-    return work_orders, ledger, parity
+    return page_orders, ledger, parity
 
 
 def collect_final_builds(
@@ -1241,7 +1106,7 @@ def build_candidate_report(
     source_snapshot_sha256: str,
     reviewer: str,
 ) -> dict[str, Any]:
-    implementation = read_csv(workspace / "implementation-ledger.csv")
+    implementation = read_csv(workspace / "page-implementation-ledger.csv")
     parity = read_csv(workspace / "parity-map.csv")
     evidence = [
         row for row in read_csv(workspace / "evidence-index.csv")
@@ -1341,8 +1206,8 @@ def main() -> int:
             workspace, scope, input_lock, ownership, inventory, assets, phase3_assets, context
         )
         # These checks deliberately run before the controller's independent Gate 4 audit.
-        # They make feature ownership and frozen state coverage fail locally, at the authoring boundary.
-        validate_mapping_and_feature_orders(
+        # They make page ownership and frozen state coverage fail locally, at the authoring boundary.
+        validate_mapping_and_page_orders(
             workspace, scope, manifest, input_lock, ownership, inventory,
             architecture, modules, environments, context,
         )

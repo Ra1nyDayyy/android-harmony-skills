@@ -163,14 +163,13 @@ class ReviewFixture:
             / "phase-02-android-inventory"
             / "evidence"
             / "ENV-001"
-            / FEATURE_ID
             / PAGE_ID
             / STATE_ID
             / ANDROID_EVIDENCE_ID
         )
         self.android = self.workspace / "inputs" / "android-evidence" / ANDROID_EVIDENCE_ID
         self.harmony_relative = (
-            Path("evidence") / "H4ENV-001" / FEATURE_ID / PAGE_ID / STATE_ID / HARMONY_EVIDENCE_ID
+            Path("evidence") / "H4ENV-001" / PAGE_ID / STATE_ID / HARMONY_EVIDENCE_ID
         )
         self.harmony = self.workspace / self.harmony_relative
         self.comparison = root / "comparison.json"
@@ -600,6 +599,90 @@ class ReviewParityTests(unittest.TestCase):
             fixture = self.fixture(Path(temp_name))
             try:
                 fixture.write_comparison(reviewed_ids=[])
+                self.assert_rejected_without_write(fixture, "exactly every visual element")
+            finally:
+                fixture.cleanup_permissions()
+
+    def test_lite_page_accepts_visual_subset_and_stamps_tier(self) -> None:
+        """LITE 页 review：非空抽样子集通过、全集亦通过；review JSON 带 tier=LITE。
+
+        CORE（无页合同时默认）的子集拒绝由上一用例的空集变体与
+        test_comparison_must_cover_every_visual_element 覆盖；此处另构造
+        双视觉元素 parity 验证 CORE 子集被拒。
+        """
+        with tempfile.TemporaryDirectory() as temp_name:
+            fixture = self.fixture(Path(temp_name))
+            try:
+                second_visual = "VEL-PAGE-ROOT-002"
+                # 页合同 tier=LITE（P4 分层验证单一真相源）。
+                write_json(
+                    fixture.workspace / "page-contracts" / f"{PAGE_ID}.json",
+                    {"page_id": PAGE_ID, "verification_tier": "LITE"},
+                )
+                # parity 声明两个视觉元素，comparison 只抽检其一。
+                fixture.parity_row["visual_element_ids"] = json.dumps(
+                    [VISUAL_ID, second_visual], separators=(",", ":")
+                )
+                fixture.write_parity()
+                write_rows(
+                    fixture.workspace / "visual-elements.csv",
+                    template_fields(ASSETS / "visual-elements.template.csv"),
+                    [
+                        {
+                            "visual_element_id": VISUAL_ID, "parity_id": PARITY_ID,
+                            "element_kind": "PAGE_ROOT", "android_evidence_id": ANDROID_EVIDENCE_ID,
+                            "status": "IMPLEMENTED", "implemented_by": "phase4-ui-agent",
+                        },
+                        {
+                            "visual_element_id": second_visual, "parity_id": PARITY_ID,
+                            "element_kind": "PAGE_ROOT", "android_evidence_id": ANDROID_EVIDENCE_ID,
+                            "status": "IMPLEMENTED", "implemented_by": "phase4-ui-agent",
+                        },
+                    ],
+                )
+                fixture.write_comparison(reviewed_ids=[VISUAL_ID])
+                result = fixture.run()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                output = json.loads(result.stdout)
+                review = json.loads(
+                    (fixture.workspace / "reviews" / f"{output['review_id']}.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual("LITE", review["verification_tier"])
+                self.assertEqual([VISUAL_ID], review["reviewed_visual_element_ids"])
+                # 全集在 LITE 下同样合法。
+                fixture.write_comparison(reviewed_ids=[second_visual, VISUAL_ID])
+                second = fixture.run()
+                self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            finally:
+                fixture.cleanup_permissions()
+
+    def test_core_page_rejects_visual_subset(self) -> None:
+        """CORE 页（默认，无页合同）review 子集被拒——与旧版行为完全一致。"""
+        with tempfile.TemporaryDirectory() as temp_name:
+            fixture = self.fixture(Path(temp_name))
+            try:
+                second_visual = "VEL-PAGE-ROOT-002"
+                fixture.parity_row["visual_element_ids"] = json.dumps(
+                    [VISUAL_ID, second_visual], separators=(",", ":")
+                )
+                fixture.write_parity()
+                write_rows(
+                    fixture.workspace / "visual-elements.csv",
+                    template_fields(ASSETS / "visual-elements.template.csv"),
+                    [
+                        {
+                            "visual_element_id": VISUAL_ID, "parity_id": PARITY_ID,
+                            "element_kind": "PAGE_ROOT", "android_evidence_id": ANDROID_EVIDENCE_ID,
+                            "status": "IMPLEMENTED", "implemented_by": "phase4-ui-agent",
+                        },
+                        {
+                            "visual_element_id": second_visual, "parity_id": PARITY_ID,
+                            "element_kind": "PAGE_ROOT", "android_evidence_id": ANDROID_EVIDENCE_ID,
+                            "status": "IMPLEMENTED", "implemented_by": "phase4-ui-agent",
+                        },
+                    ],
+                )
+                fixture.write_comparison(reviewed_ids=[VISUAL_ID])
                 self.assert_rejected_without_write(fixture, "exactly every visual element")
             finally:
                 fixture.cleanup_permissions()

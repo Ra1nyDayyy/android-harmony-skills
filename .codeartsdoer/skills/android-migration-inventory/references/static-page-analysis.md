@@ -27,7 +27,16 @@ Do not treat a static guess as observed behavior. Reflection, remote configurati
 - `events.json`: stable Event-IDs, source pages, event candidates, and handler excerpts;
 - `transitions.json`: stable Transition-IDs, source/target Page-IDs, and target symbols/routes;
 - `state-candidates.json`: stable State-IDs and branch expressions requiring runtime coverage;
-- `runtime-tasks.json`: machine-executable verification backlog;
+- `runtime-tasks.json`: machine-executable verification backlog. Every task carries two frozen fields:
+
+```json
+{
+  "verification_mode": "SOURCE_ONLY | RUNTIME_UI | RUNTIME_EFFECT",
+  "review_tier": "REQUIRED | REVIEW"
+}
+```
+
+`SOURCE_ONLY` items are settled by source and never enter an emulator queue. `RUNTIME_UI` items must be confirmed on an emulator (page/popup/control/copy/layout/state). `RUNTIME_EFFECT` items must verify a real outcome (save, delete, navigation, restart recovery, database change). `REQUIRED` tasks must run; `REVIEW` tasks (low-risk or isomorphic duplicates) may stay unverified up to 10% for human review. Default classification: page default states, core events, navigation, persistence, and system side effects are `REQUIRED`; ordinary visual-state branches and duplicate enum-style options are `REVIEW`; purely internal implementation provable from source is `SOURCE_ONLY`. No extra runtime-task CSV and no new semantic IDs are introduced;
 - `advanced-analysis.json`: dynamic surface risks, non-UI side-effect candidates, and automatically expanded special scenarios;
 - `code-map.candidates.csv`: rows that may be promoted to the formal code map only after source/runtime correlation;
 - `manifest.sha256` and `COMMITTED`: immutable package binding.
@@ -45,4 +54,4 @@ Static location is complete when:
 5. every conditional UI branch becomes a State-ID candidate;
 6. package validation passes and the frozen source revision still matches.
 
-Static completion does not close Phase 2. Runtime traversal must consume all tasks, bind final geometry and observable behavior, and promote only evidence-backed rows to `VERIFIED`.
+Static completion does not close Phase 2. Runtime traversal consumes the frozen lane queues, binds final geometry and observable behavior, and promotes only evidence-backed rows to `VERIFIED`. `SOURCE_ONLY` tasks leave the emulator denominator; a `PENDING_SOURCE_BINDING` page must never reach the runtime stage (validation rejects REQUIRED tasks without a bound Page-ID and source reference).

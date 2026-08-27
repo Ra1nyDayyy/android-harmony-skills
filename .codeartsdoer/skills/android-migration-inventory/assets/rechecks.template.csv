@@ -1,1 +1,1 @@
-rework_id,opened_at,inventory_id,feature_id,page_id,state_id,env_id,evidence_id,severity,problem_code,reason,assigned_to,completion_condition,status,resolved_at,resolution_evidence_id,closed_by
+ticket_id,severity,problem_type,phase,record_id,feature_id,page_id,state_id,env_id,failed_verification_id,responsible_role,responsible_agent,completion_condition,status,opened_by,opened_at,confirmed_by,confirmed_at,resolution_verification_id,closed_by,closed_at,notes

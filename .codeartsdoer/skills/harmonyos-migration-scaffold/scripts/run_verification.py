@@ -4,15 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import binascii
 import json
 import os
 import shutil
 import stat
-import struct
 import tempfile
-import zipfile
-import zlib
 from pathlib import Path
 from typing import Any
 
@@ -21,15 +17,18 @@ from _common import (
     atomic_json,
     atomic_text,
     build_snapshot_manifest,
+    command_output_verdict,
     join_multi,
     load_json,
     manifest_text,
     parse_resolution,
+    png_dimensions,
     read_csv,
     run_command,
     safe_relative_path,
     sha256_file,
     utc_now,
+    validate_hap,
     validate_id,
     write_csv,
 )
@@ -58,91 +57,6 @@ SCREENSHOT_INDEX_FIELDS = [
 ]
 
 
-def full_png_dimensions(path: Path) -> tuple[int, int]:
-    """Validate the complete PNG stream, not merely its header."""
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
-        raise ValueError(f"Cannot read PNG {path}: {exc}") from exc
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError(f"Invalid PNG signature: {path}")
-    offset = 8
-    ihdr: bytes | None = None
-    idat = bytearray()
-    saw_iend = False
-    chunk_index = 0
-    while offset < len(data):
-        if offset + 12 > len(data):
-            raise ValueError(f"Truncated PNG chunk: {path}")
-        length = struct.unpack(">I", data[offset:offset + 4])[0]
-        chunk_type = data[offset + 4:offset + 8]
-        end = offset + 12 + length
-        if end > len(data):
-            raise ValueError(f"Truncated PNG chunk payload: {path}")
-        payload = data[offset + 8:offset + 8 + length]
-        expected_crc = struct.unpack(">I", data[offset + 8 + length:end])[0]
-        actual_crc = binascii.crc32(chunk_type)
-        actual_crc = binascii.crc32(payload, actual_crc) & 0xFFFFFFFF
-        if expected_crc != actual_crc:
-            raise ValueError(f"PNG chunk CRC mismatch: {path}")
-        if chunk_index == 0 and chunk_type != b"IHDR":
-            raise ValueError(f"PNG IHDR is not the first chunk: {path}")
-        if chunk_type == b"IHDR":
-            if ihdr is not None or length != 13:
-                raise ValueError(f"Invalid PNG IHDR: {path}")
-            ihdr = payload
-        elif chunk_type == b"IDAT":
-            idat.extend(payload)
-        elif chunk_type == b"IEND":
-            if length != 0:
-                raise ValueError(f"Invalid PNG IEND: {path}")
-            saw_iend = True
-            offset = end
-            break
-        offset = end
-        chunk_index += 1
-    if not ihdr or not idat or not saw_iend or offset != len(data):
-        raise ValueError(f"PNG stream is incomplete or has trailing bytes: {path}")
-    width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
-        ">IIBBBBB", ihdr
-    )
-    if width <= 0 or height <= 0 or compression != 0 or filtering != 0 or interlace != 0:
-        raise ValueError(f"Unsupported or invalid PNG IHDR: {path}")
-    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
-    valid_depths = {
-        0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8},
-        4: {8, 16}, 6: {8, 16},
-    }
-    if channels is None or bit_depth not in valid_depths[color_type]:
-        raise ValueError(f"Unsupported PNG color type/bit depth: {path}")
-    expected_size = height * (((width * channels * bit_depth + 7) // 8) + 1)
-    try:
-        decoded = zlib.decompress(bytes(idat))
-    except zlib.error as exc:
-        raise ValueError(f"Invalid PNG compressed image data: {path}: {exc}") from exc
-    if len(decoded) != expected_size:
-        raise ValueError(
-            f"PNG decompressed image length differs: {path} ({len(decoded)} != {expected_size})"
-        )
-    return width, height
-
-
-def validate_hap(path: Path) -> None:
-    """Require a readable HAP ZIP containing a Harmony module configuration."""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            names = archive.namelist()
-            if not names or archive.testzip() is not None:
-                raise ValueError(f"HAP ZIP payload is empty or corrupt: {path}")
-            for name in names:
-                candidate = Path(name)
-                if candidate.is_absolute() or ".." in candidate.parts:
-                    raise ValueError(f"HAP contains an unsafe member path: {name}")
-            if not any(Path(name).name in {"module.json", "config.json"} for name in names):
-                raise ValueError(f"HAP lacks module.json or config.json: {path}")
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise ValueError(f"Build artifact is not a valid HAP ZIP: {path}: {exc}") from exc
-
 
 def resolved_executable(value: str) -> Path:
     candidate = Path(value).expanduser()
@@ -164,15 +78,6 @@ def require_string_list(value: Any, label: str) -> list[str]:
         raise ValueError(f"{label} must be a non-empty array of non-empty strings")
     return list(value)
 
-
-def command_output_verdict(
-    stdout: str, stderr: str, success_patterns: list[str], error_patterns: list[str]
-) -> tuple[bool, list[str], list[str]]:
-    combined = stdout + "\n" + stderr
-    combined_lower = combined.lower()
-    success_hits = [pattern for pattern in success_patterns if pattern in combined]
-    error_hits = [pattern for pattern in error_patterns if pattern.lower() in combined_lower]
-    return len(success_hits) == len(success_patterns) and not error_hits, success_hits, error_hits
 
 
 def file_state(path: Path) -> dict[str, Any] | None:
@@ -622,9 +527,10 @@ def main() -> int:
             stderr_name = f"logs/{command['command_id']}.stderr.log"
             atomic_text(temp_dir / stdout_name, stdout)
             atomic_text(temp_dir / stderr_name, stderr)
-            output_ok, success_hits, error_hits = command_output_verdict(
+            success_hits, error_hits = command_output_verdict(
                 stdout, stderr, contract["success_output_contains"], contract["error_output_contains"]
             )
+            output_ok = len(success_hits) == len(contract["success_output_contains"]) and not error_hits
             record = {
                 **raw,
                 "command_id": command["command_id"],
@@ -707,7 +613,7 @@ def main() -> int:
             if command["category"] == "SCREENSHOT_CAPTURE":
                 screenshot_id = command["screenshot_id"]
                 try:
-                    width, height = full_png_dimensions(command["output_path"])
+                    width, height = png_dimensions(command["output_path"])
                     expected_width, expected_height = parse_resolution(
                         str(device_by_id[command["device_id"]].get("resolution", ""))
                     )

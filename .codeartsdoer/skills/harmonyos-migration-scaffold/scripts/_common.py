@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -422,6 +423,39 @@ def build_snapshot_manifest(workspace: Path, henv_id: str) -> dict[str, Any]:
         "snapshot_sha256": sha256_text(canonical),
         "excluded_generated_parts": sorted(SNAPSHOT_EXCLUDED_PARTS),
     }
+
+
+def validate_hap(path: Path) -> None:
+    """Require a readable HAP ZIP containing a Harmony module configuration."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if not names or archive.testzip() is not None:
+                raise ValueError(f"HAP ZIP payload is empty or corrupt: {path}")
+            for name in names:
+                candidate = Path(name)
+                if candidate.is_absolute() or ".." in candidate.parts:
+                    raise ValueError(f"HAP contains an unsafe member path: {name}")
+            if not any(Path(name).name in {"module.json", "config.json"} for name in names):
+                raise ValueError(f"HAP lacks module.json or config.json: {path}")
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Build artifact is not a valid HAP ZIP: {path}: {exc}") from exc
+
+
+def command_output_verdict(
+    stdout: str, stderr: str, success_patterns: Sequence[str], error_patterns: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Match sealed command output against frozen success/error markers.
+
+    Returns (success_hits, error_hits); callers derive the boolean verdict as
+    len(success_hits) == len(success_patterns) and not error_hits.
+    """
+    combined = stdout + "\n" + stderr
+    combined_lower = combined.lower()
+    return (
+        [pattern for pattern in success_patterns if pattern in combined],
+        [pattern for pattern in error_patterns if pattern.lower() in combined_lower],
+    )
 
 
 def executable_is_allowed(executable: str, allowed: list[str]) -> bool:

@@ -14,7 +14,7 @@ Each `verification/<HVER-ID>/` is immutable and contains:
 - `artifact-manifest.json` plus immutable HAP copies under `artifacts/`;
 - `manifest.sha256` and `COMMITTED`.
 
-The source snapshot excludes generated build/cache directories but includes project source, module build configuration, lockfiles, the scaffold registries, the input lock, and the selected HENV. It deliberately excludes `rework-tickets.csv`, because the governed open → correction HVER → close lifecycle must be able to advance after a failed HVER. The rework ledger is instead checked against its controller mirror and is protected by the final Phase 3 closure. A verification ID applies only to its scaffold snapshot, one registered work order, and one `HENV-ID`. The frozen toolchain agent is the only valid `executed_by` value.
+The source snapshot excludes generated build/cache directories but includes project source, module build configuration, lockfiles, the scaffold registries, the input lock, and the selected HENV. It deliberately excludes `rework-tickets.csv`, because the governed open → correction HVER → close lifecycle must be able to advance after a failed HVER. The rework ledger is instead checked against its controller mirror (`controller/rework-log.csv`) and is protected by the final Phase 3 closure. A verification ID applies only to its scaffold snapshot, one registered work order, and one `HENV-ID`. The frozen toolchain agent is the only valid `executed_by` value.
 
 The runner creates and seals a package for both PASS and FAIL. `manifest.sha256` must exactly cover all package files other than itself and `COMMITTED`, and every path in the finished HVER is read-only. Never edit a failed HVER into a passing one; correct the project and issue a new ID.
 
@@ -36,9 +36,9 @@ The verification plan declares relative `.hap` paths. `CLEAN_BUILD` must create 
 
 ## Rework
 
-`rework-tickets.csv` records ticket ID, severity, problem type, source/mapping ID, failed HVER, responsible role and agent, architecture-lead confirmation, status, correction HVER, opener, and closer. Only `manage_stage3_rework.py` may update it. The script simultaneously mirrors the same ticket into controller `rework-log.csv` under an exclusive lock.
+`rework-tickets.csv` uses the standard unified ticket header: ticket ID, severity, problem type, phase, record ID, Feature/Page/State/Env IDs, failed HVER, responsible role and agent, completion condition, status, opener and timestamps, architecture-lead confirmation (by/at), resolution HVER, closer, and notes. Only `manage_stage3_rework.py` may update it. The script simultaneously mirrors the same ticket into controller `rework-log.csv` under an exclusive lock, bootstrapping that mirror ledger with its frozen header when no ticket exists yet.
 
-Only the frozen architecture acceptance agent opens or closes a ticket. The problem type deterministically routes it to a frozen role, and the architecture lead must confirm that owner. Closing requires a different, newer, read-only PASS HVER produced by the frozen toolchain agent. **No ticket of any severity may remain open at PASS.** A route, mapping, contract, dependency, build, install, launch, smoke, artifact, or screenshot failure also prevents PASS even when no ticket has yet been opened.
+Only the frozen architecture acceptance agent opens or closes a ticket. The problem type deterministically routes it to a frozen role, and the architecture lead must confirm that owner. Closing requires a different, newer, read-only PASS HVER produced by the frozen toolchain agent (recorded as `resolution_verification_id`). **No ticket of any severity may remain open at PASS.** A route, mapping, contract, dependency, build, install, launch, smoke, artifact, or screenshot failure also prevents PASS even when no ticket has yet been opened.
 
 ## Final gate
 
@@ -55,4 +55,4 @@ The acceptance agent visually opens every PNG and attests that it shows the expe
 
 The final reviewer must equal the work-order's frozen architecture acceptance ID and cannot be any creator, mapper, status updater, environment owner, or verification executor. A later fix requires a new `HVER-ID`; never edit the reviewed package.
 
-On PASS, `validate_stage3.py` writes `stage-03-closure-manifest.sha256`, writes `CLOSED` with the SHA-256 of the final Stage 3 report, and removes write permission from the complete workspace. The closure manifest covers everything except the mutable final report, the closure manifest itself, and `CLOSED`. The controller then recomputes that complete file set and every hash at Gate 3; the Stage 3 report alone is not the controller gate.
+On PASS, `validate_stage3.py` writes `stage-03-closure-manifest.sha256`, writes `CLOSED` with the SHA-256 of the final Stage 3 report, and removes write permission from the complete workspace. The closure manifest covers everything except the mutable final report, the closure manifest itself, and `CLOSED`. Gate 3 then recomputes that complete file set and every hash; the Stage 3 report alone is not the Gate 3 approval, which stays with the external human review.

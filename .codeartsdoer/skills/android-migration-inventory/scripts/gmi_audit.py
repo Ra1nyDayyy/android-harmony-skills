@@ -1,115 +1,216 @@
 # -*- coding: utf-8 -*-
-"""gmi_runtime --audit: 证据重放审计（防伪造）。
+"""gmi_audit -- 双 lane 证据审计与合并（防伪造）。
 
-不触摸模拟器。只读 runtime-evidence/ 下每个页面目录的 ui.xml + screenshot.png +
-evidence-index.csv 的记录，用"证据本身"重新判定每页真实状态：
+不触摸模拟器。对 runtime-evidence/lane-a/ 与 lane-b/ 各自独立审计后合并：
 
-  VISITED       = foreground 属目标包 且 UI 树出现该页特征文本（锚点命中）
-  UNRECOGNIZED  = foreground 属目标包 但 UI 无目标页特征（点错页/非特征页）
-  EXITED        = foreground 非目标包（掉到桌面/别的 app）
-  NO_EVIDENCE   = ui.xml 或 screenshot.png 缺失/为空
+  1) 重算每个证据文件哈希（ui.xml / screenshot.png 对比 lane-evidence-index 记录）
+  2) 重放页面身份（foreground + 锚点特征，绝不信"点击过"）
+  3) 校验 capture_slot / device_serial 与 lane-meta 声明一致
+  4) 检查两队列是否重叠（同 Task-ID 重复）或遗漏（并集 ≠ 冻结总集）
+  5) 合并输出唯一 runtime-evidence/{evidence-index,runtime-gate,audit-replay}.csv
 
-visits 记录中的 status 与重放结果不一致 -> audit-discrepancies.csv。
-任何页面不能仅凭"点击过"标签被判 VISITED。
+recorded 与 replayed 一致但都不是 VERITED 时同样视为 invalid（"都错"也要能发现）。
+
+阻断（exit 1）：重复 Task-ID、serial/slot 声明不符、哈希不符、分辨率/密度
+不一致、队列并集≠总集、REQUIRED 任务在两条 lane 均无证据行。
 """
 from __future__ import annotations
 
 import argparse
-import csv
-import re
+import json
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import gmi_runtime as rt
 
-
-def page_features(text: str) -> List[str]:
-    out = []
-    for m in re.finditer(r'(?:text|content-desc)="([^"]+)"', text):
-        v = m.group(1).strip()
-        if v and v not in out:
-            out.append(v)
-    return out
+MERGED_EVIDENCE_FIELDS = ["lane"] + rt.LANE_EVIDENCE_FIELDS
+MERGED_GATE_FIELDS = ["lane"] + rt.LANE_GATE_FIELDS
+REPLAY_FIELDS = ["lane", "task_id", "page_id", "symbol", "recorded",
+                 "replayed", "discrepancy", "invalid", "note"]
 
 
-def audit(project: Path, workspace: Path, pkg: str) -> List[Dict[str, Any]]:
-    out_dir = workspace / "runtime-evidence"
-    index_rows = rt.read_csv(out_dir / "evidence-index.csv")
-    gate_rows = rt.read_csv(out_dir / "runtime-gate.csv")
-    strings = rt.load_strings(project)
+def _read_json(p: Path) -> Any:
+    return json.loads(p.read_text(encoding="utf-8"))
 
-    # 缺口5：特征集扩到 page-fields field_label（含自绘标题页）
-    pf_rows = rt.read_csv(workspace / "candidates" / "page-fields.candidates.csv")
-    label_by_page: Dict[str, List[str]] = {}
-    for r in pf_rows:
+
+def _label_by_page(ws: Path) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for r in rt.read_csv(ws / "candidates" / "page-fields.candidates.csv"):
         sym = r.get("page_symbol", "") or ""
         lbl = (r.get("field_label") or "").strip()
         if sym and lbl and len(lbl) <= 40 and "%" not in lbl[:1]:
-            label_by_page.setdefault(sym, []).append(lbl)
+            out.setdefault(sym, []).append(lbl)
+    return out
 
-    rows: List[Dict[str, Any]] = []
+
+def replay_status(ui_text: str, foreground: str, pkg: str, sym: str,
+                  strings: Dict[str, str], registry: Dict[str, set],
+                  labels: Dict[str, List[str]]) -> Tuple[str, str]:
+    if "<node" not in ui_text:
+        return "NO_EVIDENCE", "ui.xml missing/empty"
+    if pkg not in (foreground or ""):
+        return "EXITED", f"foreground={foreground}"
+    feats = rt.match_anchors(sym, strings, registry, ui_text) if sym else []
+    feats += [f for f in labels.get(sym, []) if f and f in ui_text]
+    anchors_defined = bool(rt.anchor_for(sym, strings)) or bool(labels.get(sym))
+    if feats or not anchors_defined or sym in ("MainActivity",):
+        return "VERIFIED", f"hits={len(feats)}"
+    return "UNRECOGNIZED", "no page-identity feature hit"
+
+
+def audit_lane(project: Path, ws: Path, pkg: str, lane: str) -> Tuple[List[Dict], List[Dict], List[Dict], List[str]]:
+    """返回 (evidence_rows, gate_rows, replay_rows, errors)。"""
+    lane_dir = ws / "runtime-evidence" / f"lane-{lane.lower()}"
+    errors: List[str] = []
+    if not lane_dir.is_dir():
+        return [], [], [], [f"lane-{lane.lower()}/ directory missing"]
+    meta_path = lane_dir / "lane-meta.json"
+    if not meta_path.is_file():
+        errors.append(f"lane-{lane.lower()}/lane-meta.json missing")
+        return [], [], [], errors
+    meta = _read_json(meta_path)
+    declared_serial = str(meta.get("device_serial", ""))
+    declared_slot = str(meta.get("lane", ""))
+    if declared_slot != lane:
+        errors.append(f"lane-{lane.lower()} meta lane={declared_slot!r} != {lane!r}")
+    queue_tasks = list(meta.get("queue_tasks", []))
+    dup_in_lane = [t for t, c in Counter(queue_tasks).items() if c > 1]
+    if dup_in_lane:
+        errors.append(f"lane-{lane.lower()} queue has duplicate Task-IDs: {dup_in_lane[:5]}")
+
+    strings = rt.load_strings(project)
+    universe = set(rt.page_symbol_universe(ws / "candidates"))
+    universe |= {str(g.get("symbol") or "") for g in rt.read_csv(lane_dir / "lane-runtime-gate.csv") if g.get("symbol")}
+    universe.discard("")
+    registry = rt.build_anchor_registry(sorted(universe), strings)
+    labels = _label_by_page(ws)
+
+    ev_rows = rt.read_csv(lane_dir / "lane-evidence-index.csv")
+    gate_rows = rt.read_csv(lane_dir / "lane-runtime-gate.csv")
+
+    fg_by_task: Dict[str, str] = {}
+    for e in ev_rows:
+        fg_by_task.setdefault(str(e.get("task_id", "")), str(e.get("foreground", "")))
+        # slot / serial 必须与 lane 声明一致（证据声明的 serial 与实际采集设备不一致 -> 阻断）
+        if str(e.get("capture_slot", "")) != lane:
+            errors.append(f"evidence row task={e.get('task_id')} declares capture_slot="
+                          f"{e.get('capture_slot')!r} but lives in lane-{lane.lower()}")
+        if str(e.get("device_serial", "")) != declared_serial:
+            errors.append(f"evidence row task={e.get('task_id')} device_serial="
+                          f"{e.get('device_serial')!r} != lane serial {declared_serial!r}")
+        # 哈希重算
+        for tag_file, hash_col, name in (("ui.xml", "ui_sha256", "ui"),
+                                         ("screenshot.png", "png_sha256", "png")):
+            art = lane_dir / str(e.get("task_id", "")) / str(e.get("tag", "")) / tag_file
+            if not art.is_file():
+                errors.append(f"lane-{lane.lower()} evidence file missing: {art.relative_to(ws)}")
+                continue
+            actual = rt.sha256f(art)
+            recorded = str(e.get(hash_col, ""))
+            if recorded and actual != recorded:
+                errors.append(f"lane-{lane.lower()} {name} hash mismatch at task={e.get('task_id')}/{e.get('tag')}")
+
+    replay_rows: List[Dict[str, Any]] = []
     for g in gate_rows:
-        pid = g.get("page_id", "")
-        sym = g.get("symbol", "")
-        recorded = g.get("status", "")
-        # NOT_ENTERED: 预期无证据，跳过（不属于伪造）
-        if recorded == "NOT_ENTERED":
-            continue
-        d = out_dir / pid if pid else None
-        ui_p = (d / "ui.xml") if d else None
-        fg = ""
-        for e in index_rows:
-            if e.get("page_id") == pid:
-                fg = e.get("foreground", "")
-                break
-        if not d or not ui_p or not ui_p.exists() or ui_p.stat().st_size < 200:
-            status, note = "NO_EVIDENCE", "ui.xml missing/empty"
+        tid = str(g.get("task_id", ""))
+        recorded = str(g.get("status", ""))
+        art = lane_dir / tid / "after" / "ui.xml"
+        if art.is_file() and art.stat().st_size >= 100:
+            ui_text = art.read_text(encoding="utf-8", errors="replace")
+            replayed, note = replay_status(ui_text, fg_by_task.get(tid, ""), pkg,
+                                           str(g.get("symbol", "")), strings, registry, labels)
         else:
-            ui_text = ui_p.read_text(encoding="utf-8", errors="replace")
-            in_pkg = pkg in fg
-            feats = rt.anchor_for(sym, strings) if sym else []
-            # 补充 page-fields 特征（自绘标题页如 AboutScreen）
-            feats += label_by_page.get(sym, [])
-            # 补充 UI 树自身文本特征（锚点扩展最后手段）
-            if not feats:
-                feats = page_features(ui_text)
-            hits = [f for f in feats if f and f in ui_text]
-            if not in_pkg:
-                status, note = "EXITED", f"foreground={fg}"
-            elif pid == "PAGE-LAUNCH" or sym in ("MainActivity", "待办事项"):
-                status, note = "VISITED", f"fg={fg} (root page, evidence present)"
-            elif hits:
-                status, note = "VISITED", f"fg={fg} hits={len(hits)}"
-            else:
-                status, note = "UNRECOGNIZED", f"fg={fg} no target feature"
-        rows.append({"page_id": pid, "symbol": sym, "replayed": status,
-                     "recorded": recorded,
-                     "discrepancy": ("YES" if status != recorded else "no"),
-                     "note": note})
-    return rows
+            replayed, note = "NO_EVIDENCE", "after/ui.xml missing/empty"
+        discrepancy = "YES" if replayed != recorded else "no"
+        # recorded == replayed 但两者都无效（非 VERIFIED）同样算发现的问题
+        invalid = "YES" if replayed != "VERIFIED" else "no"
+        replay_rows.append({"lane": lane, "task_id": tid,
+                            "page_id": g.get("page_id", ""), "symbol": g.get("symbol", ""),
+                            "recorded": recorded, "replayed": replayed,
+                            "discrepancy": discrepancy, "invalid": invalid, "note": note})
+    return ev_rows, gate_rows, replay_rows, errors
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="gmi runtime audit (anti-forgery)")
+    ap = argparse.ArgumentParser(description="dual-lane runtime audit & merge (anti-forgery)")
     ap.add_argument("--project", required=True)
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--package", required=True)
     args = ap.parse_args()
-    rows = audit(Path(args.project), Path(args.workspace), args.package)
-    from collections import Counter
-    out_dir = Path(args.workspace) / "runtime-evidence"
-    rt.write_csv(out_dir / "audit-replay.csv",
-                 ["page_id", "symbol", "replayed", "recorded", "discrepancy", "note"], rows)
-    bad = [r for r in rows if r["discrepancy"] == "YES"]
-    print("[audit] replayed:", dict(Counter(r["replayed"] for r in rows)))
-    if bad:
-        print(f"[audit] DISCREPANCIES={len(bad)} (recorded != replayed):")
-        for r in bad[:20]:
-            print(f"   {r['page_id'][:38]:40} recorded={r['recorded']:12} replayed={r['replayed']}")
-        print("-> audit-discrepancies.csv written.")
+    ws = Path(args.workspace)
+    ev_root = ws / "runtime-evidence"
+
+    errors: List[str] = []
+    merged_ev: List[Dict[str, Any]] = []
+    merged_gate: List[Dict[str, Any]] = []
+    replay: List[Dict[str, Any]] = []
+    lane_task_ids: Dict[str, List[str]] = {}
+
+    lanes_present = [d.name.split("-", 1)[1].upper() for d in ev_root.glob("lane-*") if d.is_dir()]
+    if not lanes_present:
+        print("[audit] BLOCKED: no lane evidence found (expected runtime-evidence/lane-a and lane-b)")
         return 1
-    print("[audit] OK: all recorded status matches evidence replay.")
-    return 0
+
+    for lane in sorted(set(lanes_present)):
+        ev_rows, gate_rows, replay_rows, lane_errors = audit_lane(
+            Path(args.project), ws, args.package, lane)
+        errors.extend(lane_errors)
+        for e in ev_rows:
+            merged_ev.append({"lane": lane.lower(), **e})
+        for g in gate_rows:
+            merged_gate.append({"lane": lane.lower(), **g})
+        replay.extend(replay_rows)
+        lane_task_ids[lane] = [str(g.get("task_id", "")) for g in gate_rows if g.get("task_id")]
+
+    # 跨 lane：同 Task-ID 重复（交集即冲突）
+    if "A" in lane_task_ids and "B" in lane_task_ids:
+        overlap = sorted(set(lane_task_ids["A"]) & set(lane_task_ids["B"]))
+        if overlap:
+            errors.append(f"Task-ID executed in BOTH lanes: {overlap[:5]}")
+
+    # 队列并集 == 冻结总集
+    task_set_path = ev_root / "runtime-task-set.json"
+    if task_set_path.is_file():
+        task_set = _read_json(task_set_path)
+        frozen = set(task_set.get("task_ids", []))
+        covered = set()
+        for ids in lane_task_ids.values():
+            covered |= set(ids)
+        missing = sorted(frozen - covered)
+        extra = sorted(covered - frozen)
+        if missing:
+            errors.append(f"queue union misses frozen tasks ({len(missing)}): {missing[:5]}")
+        if extra:
+            errors.append(f"gate rows reference unknown Task-IDs: {extra[:5]}")
+
+    # 双 lane 屏幕基准一致（同一逻辑环境）
+    res = {str(e.get("screen_resolution", "")) for e in merged_ev if e.get("screen_resolution")}
+    dens = {str(e.get("screen_density", "")) for e in merged_ev if e.get("screen_density")}
+    if len(res) > 1:
+        errors.append(f"screen resolution mismatch across evidence: {sorted(res)}")
+    if len(dens) > 1:
+        errors.append(f"screen density mismatch across evidence: {sorted(dens)}")
+
+    rt.write_csv(ev_root / "evidence-index.csv", MERGED_EVIDENCE_FIELDS, merged_ev)
+    rt.write_csv(ev_root / "runtime-gate.csv", MERGED_GATE_FIELDS, merged_gate)
+    rt.write_csv(ev_root / "audit-replay.csv", REPLAY_FIELDS, replay)
+
+    n_disc = sum(1 for r in replay if r["discrepancy"] == "YES")
+    n_invalid = sum(1 for r in replay if r["invalid"] == "YES")
+    print(f"[audit] replayed={len(replay)} discrepancy={n_disc} invalid_status={n_invalid}")
+    if errors:
+        print(f"[audit] BLOCKED with {len(errors)} error(s):")
+        for e in errors[:30]:
+            print("  -", e)
+        result = {"passed": False, "errors": errors}
+    else:
+        result = {"passed": True, "errors": []}
+    (ev_root / "audit-result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not errors:
+        print("[audit] OK: merged evidence-index.csv / runtime-gate.csv / audit-replay.csv")
+    return 0 if result["passed"] else 1
 
 
 if __name__ == "__main__":

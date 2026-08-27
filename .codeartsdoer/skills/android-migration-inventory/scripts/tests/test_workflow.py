@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,10 @@ INVENTORY_SKILL = HERE.parents[1]
 BUNDLE = INVENTORY_SKILL.parent
 CONTROLLER_SKILL = BUNDLE / "android-harmony-migration-controller"
 FAKE_ANDROID = HERE / "fake_android.py"
+# controller validate_gate.resolve_executable runs the analyzer binary directly and
+# requires the executable bit; keep the checked-in fake runnable however the repo
+# was synced (the bit itself is not tracked by content diffs).
+FAKE_ANDROID.chmod(FAKE_ANDROID.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def run(*args: str, env: dict[str, str] | None = None, expect: int = 0) -> subprocess.CompletedProcess[str]:
@@ -40,6 +45,56 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> 
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+INVENTORY_FIELDS = [
+    "inventory_id", "feature_id", "feature_name", "page_id", "page_name", "state_id",
+    "state_name", "env_id", "evidence_id", "entry_condition", "transition_from_state_id",
+    "predecessor_evidence_id", "action_summary", "expected_observable", "actual_observable",
+    "code_refs", "business_rule_refs", "data_dependency_refs", "system_capability_refs",
+    "third_party_dependency_refs", "asset_ids", "responsible_agent", "row_status", "rework_id",
+    "reviewed_by", "reviewed_at",
+]
+INVENTORY_REF_FIELDS = (
+    "code_refs", "business_rule_refs", "data_dependency_refs", "system_capability_refs",
+    "third_party_dependency_refs", "asset_ids",
+)
+
+
+def write_inventory_outputs(workspace: Path, claims: list[dict]) -> None:
+    """Materialize inventory.csv/json + manifest from validated claims.
+
+    The retired claim-builder script owned this normalization; the test reproduces its
+    output contract so validate_evidence and downstream gates keep an identical fixture.
+    """
+    rows = sorted(
+        claims,
+        key=lambda row: (row["feature_id"], row["page_id"], row["state_id"], row["env_id"], row["inventory_id"]),
+    )
+    csv_rows = []
+    for row in rows:
+        csv_row = {field: row.get(field, "") for field in INVENTORY_FIELDS}
+        for field in INVENTORY_REF_FIELDS:
+            csv_row[field] = json.dumps(row.get(field, []), ensure_ascii=False, separators=(",", ":"))
+        csv_rows.append(csv_row)
+    json_rows = [
+        {
+            field: (row.get(field, []) if field in INVENTORY_REF_FIELDS else row.get(field, ""))
+            for field in INVENTORY_FIELDS
+        }
+        for row in rows
+    ]
+    write_csv(workspace / "inventory.csv", INVENTORY_FIELDS, csv_rows)
+    (workspace / "inventory.json").write_text(
+        json.dumps({"records": json_rows}, indent=2) + "\n", encoding="utf-8"
+    )
+    (workspace / "inventory-manifest.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256((workspace / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in ("inventory.json", "inventory.csv")
+        ),
+        encoding="utf-8",
+    )
 
 
 class WorkflowTest(unittest.TestCase):
@@ -136,9 +191,11 @@ class WorkflowTest(unittest.TestCase):
                 encoding="utf-8",
             )
             recheck_fields = [
-                "rework_id", "opened_at", "inventory_id", "feature_id", "page_id", "state_id",
-                "env_id", "evidence_id", "severity", "problem_code", "reason", "assigned_to",
-                "completion_condition", "status", "resolved_at", "resolution_evidence_id", "closed_by",
+                "ticket_id", "severity", "problem_type", "phase", "record_id",
+                "feature_id", "page_id", "state_id", "env_id", "failed_verification_id",
+                "responsible_role", "responsible_agent", "completion_condition", "status",
+                "opened_by", "opened_at", "confirmed_by", "confirmed_at",
+                "resolution_verification_id", "closed_by", "closed_at", "notes",
             ]
             controller_fields = [
                 "rework_id", "created_at", "phase", "record_id", "feature_id", "page_id", "state_id",
@@ -172,17 +229,17 @@ class WorkflowTest(unittest.TestCase):
             base_open = (
                 sys.executable, str(INVENTORY_SKILL / "scripts" / "manage_recheck.py"),
                 "--workspace", str(workspace), "--action", "open",
-                "--reviewer", "coverage-checker-1", "--inventory-id", "INV-RECHECK-001",
+                "--reviewer", "coverage-checker-1", "--record-id", "INV-RECHECK-001",
                 "--severity", "HIGH", "--reason", "fixture problem",
                 "--completion-condition", "capture replacement evidence",
             )
             run(
-                *base_open, "--rework-id", "RW-WRONG-REVIEWER", "--problem-code", "STATE",
+                *base_open, "--ticket-id", "RW-WRONG-REVIEWER", "--problem-type", "STATE",
                 "--reviewer", "runtime-state-agent-1", expect=2,
             )
             run(
-                *base_open, "--rework-id", "RW-WRONG-ROUTE", "--problem-code", "STATE",
-                "--assigned-to", "code-map-agent-1", expect=2,
+                *base_open, "--ticket-id", "RW-WRONG-ROUTE", "--problem-type", "STATE",
+                "--responsible-agent", "code-map-agent-1", expect=2,
             )
             self.assertEqual(list(csv.DictReader((workspace / "rechecks.csv").read_text().splitlines())), [])
             self.assertEqual(list(csv.DictReader((controller / "rework-log.csv").read_text().splitlines())), [])
@@ -195,49 +252,52 @@ class WorkflowTest(unittest.TestCase):
                 "API": "data-dependency-agent-1",
                 "HASH": "evidence-administrator-1",
             }
-            for number, (problem_code, expected_owner) in enumerate(routes.items(), start=1):
+            for number, (problem_type, expected_owner) in enumerate(routes.items(), start=1):
                 command = [
-                    *base_open, "--rework-id", f"RW-ROUTE-{number:03d}",
-                    "--problem-code", problem_code,
+                    *base_open, "--ticket-id", f"RW-ROUTE-{number:03d}",
+                    "--problem-type", problem_type,
                 ]
-                if problem_code == "CODE":
-                    command.extend(["--assigned-to", expected_owner])
+                if problem_type == "CODE":
+                    command.extend(["--responsible-agent", expected_owner])
                 run(*command)
 
             local_rows = {
-                row["problem_code"]: row
+                row["problem_type"]: row
                 for row in csv.DictReader((workspace / "rechecks.csv").read_text().splitlines())
             }
             controller_rows = {
                 row["gate_rule"]: row
                 for row in csv.DictReader((controller / "rework-log.csv").read_text().splitlines())
             }
-            self.assertEqual({code: row["assigned_to"] for code, row in local_rows.items()}, routes)
+            self.assertEqual(
+                {code: row["responsible_agent"] for code, row in local_rows.items()}, routes
+            )
             self.assertEqual({code: row["assigned_to"] for code, row in controller_rows.items()}, routes)
+            self.assertEqual({row["phase"] for row in local_rows.values()}, {"2"})
             self.assertEqual({row["status"] for row in local_rows.values()}, {"OPEN"})
             self.assertEqual({row["status"] for row in controller_rows.values()}, {"REWORK"})
             self.assertEqual(
                 {row["reviewed_by"] for row in controller_rows.values()}, {"coverage-checker-1"}
             )
 
-            runtime_rework_id = local_rows["STATE"]["rework_id"]
+            runtime_rework_id = local_rows["STATE"]["ticket_id"]
             close_base = (
                 sys.executable, str(INVENTORY_SKILL / "scripts" / "manage_recheck.py"),
                 "--workspace", str(workspace), "--action", "close",
-                "--rework-id", runtime_rework_id, "--resolution-evidence-id", "EVD-NEW-001",
+                "--ticket-id", runtime_rework_id, "--resolution-verification-id", "EVD-NEW-001",
             )
             run(*close_base, "--reviewer", "runtime-state-agent-1", expect=2)
             run(
                 *close_base, "--reviewer", "coverage-checker-1",
-                "--assigned-to", "code-map-agent-1", expect=2,
+                "--responsible-agent", "code-map-agent-1", expect=2,
             )
             run(
                 *close_base, "--reviewer", "coverage-checker-1",
-                "--assigned-to", "runtime-state-agent-1",
+                "--responsible-agent", "runtime-state-agent-1",
             )
             closed_local = next(
                 row for row in csv.DictReader((workspace / "rechecks.csv").read_text().splitlines())
-                if row["rework_id"] == runtime_rework_id
+                if row["ticket_id"] == runtime_rework_id
             )
             closed_controller = next(
                 row for row in csv.DictReader((controller / "rework-log.csv").read_text().splitlines())
@@ -247,9 +307,11 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(closed_controller["status"], "CLOSED")
             self.assertEqual(closed_local["closed_by"], "coverage-checker-1")
             self.assertEqual(closed_controller["reviewed_by"], "coverage-checker-1")
-            self.assertEqual(closed_local["resolved_at"], closed_controller["resolved_at"])
-            self.assertEqual(closed_local["resolution_evidence_id"], "EVD-NEW-001")
-            self.assertEqual(closed_controller["resolution_evidence_id"], "EVD-NEW-001")
+            self.assertEqual(closed_local["closed_at"], closed_controller["resolved_at"])
+            self.assertEqual(
+                closed_local["resolution_verification_id"], closed_controller["resolution_evidence_id"]
+            )
+            self.assertEqual(closed_local["resolution_verification_id"], "EVD-NEW-001")
 
     def test_hardened_controller_inventory_and_closure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="android-migration-skill-test-") as temp_name:
@@ -575,21 +637,9 @@ class WorkflowTest(unittest.TestCase):
                     "responsible_agent": "runtime-state-agent-1", "row_status": "CAPTURED",
                 },
             ]
-            claims_path = workspace / "claims" / "auth.json"
-            claims_path.write_text(json.dumps(claims, indent=2) + "\n", encoding="utf-8")
-
-            invalid_claims = json.loads(json.dumps(claims))
-            invalid_claims[1]["transition_from_state_id"] = "STATE-DOES-NOT-EXIST"
-            claims_path.write_text(json.dumps(invalid_claims, indent=2) + "\n", encoding="utf-8")
-            run(
-                sys.executable, str(INVENTORY_SKILL / "scripts" / "build_inventory.py"),
-                "--workspace", str(workspace), "--claims", str(claims_path), expect=2,
-            )
-            claims_path.write_text(json.dumps(claims, indent=2) + "\n", encoding="utf-8")
-            run(
-                sys.executable, str(INVENTORY_SKILL / "scripts" / "build_inventory.py"),
-                "--workspace", str(workspace), "--claims", str(claims_path),
-            )
+            # Claims are normalized directly into the frozen inventory outputs
+            # (the retired claim-builder script owned this step).
+            write_inventory_outputs(workspace, claims)
 
             coverage_fields = [
                 "feature_id", "feature_name", "applicable_env_ids", "code_mapped", "runtime_states_captured",
@@ -774,16 +824,7 @@ class WorkflowTest(unittest.TestCase):
 
             index_original_bytes = (workspace / "evidence-index.csv").read_bytes()
             index_original = index_original_bytes.decode("utf-8")
-            index_rows = read_rows = list(csv.DictReader(index_original.splitlines()))
-            for row in index_rows:
-                if row["evidence_id"] == default_evidence:
-                    row["relative_path"] = "../outside"
-            write_csv(workspace / "evidence-index.csv", list(read_rows[0].keys()), index_rows)
-            run(
-                sys.executable, str(INVENTORY_SKILL / "scripts" / "build_inventory.py"),
-                "--workspace", str(workspace), "--claims", str(claims_path), expect=2,
-            )
-            (workspace / "evidence-index.csv").write_bytes(index_original_bytes)
+
 
             active_index = next(row for row in csv.DictReader(index_original.splitlines()) if row["evidence_id"] == default_evidence)
             evidence_dir = workspace / active_index["relative_path"]
@@ -846,14 +887,17 @@ class WorkflowTest(unittest.TestCase):
 
             recheck_fields = (workspace / "rechecks.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
             write_csv(workspace / "rechecks.csv", recheck_fields, [{
-                "rework_id": "RW-CRITICAL-001", "opened_at": "2026-01-01T00:00:00Z",
-                "inventory_id": "INV-AUTH-LOGIN-ERROR", "feature_id": "FEATURE-AUTH",
+                "ticket_id": "RW-CRITICAL-001", "severity": "CRITICAL", "problem_type": "STATE",
+                "phase": "2", "record_id": "INV-AUTH-LOGIN-ERROR", "feature_id": "FEATURE-AUTH",
                 "page_id": "PAGE-LOGIN", "state_id": "STATE-INVALID-CODE", "env_id": "ENV-001",
-                "evidence_id": second_evidence, "severity": "CRITICAL", "problem_code": "STATE",
-                "reason": "fixture probe", "assigned_to": "runtime-state-agent-1",
+                "failed_verification_id": second_evidence, "responsible_role": "runtime-state-agent",
+                "responsible_agent": "runtime-state-agent-1",
                 "completion_condition": "new evidence", "status": "CLOSED",
-                "resolved_at": "2026-01-01T01:00:00Z", "resolution_evidence_id": second_evidence,
-                "closed_by": "runtime-state-agent-1",
+                "opened_by": "coverage-checker-1", "opened_at": "2026-01-01T00:00:00Z",
+                "confirmed_by": "coverage-checker-1", "confirmed_at": "2026-01-01T00:00:00Z",
+                "resolution_verification_id": second_evidence,
+                "closed_by": "coverage-checker-1", "closed_at": "2026-01-01T01:00:00Z",
+                "notes": "fixture probe",
             }])
             run(
                 sys.executable, str(INVENTORY_SKILL / "scripts" / "validate_evidence.py"),

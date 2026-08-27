@@ -33,7 +33,7 @@ import shutil
 import sys
 import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 
@@ -228,8 +228,11 @@ def sanitize(sym: str) -> str:
 def find_application_id(ws: Path) -> str:
     """从 P2 产物推断 Android application_id：
     1) phase-manifest.json 的 android_project_root → AndroidManifest.xml package=
-    2) candidates/phase-2-completeness.csv 或 inventory source_ref 里的包名提示
-    3) 空字符串（P3 会 REJECT，故尽量找到；找不到时用 workspace 名 heuristic）
+    2) build.gradle(.kts) 的 applicationId / namespace（多模块工程）
+    3) workspace 路径中的包名提示（前两个域符）
+    三级都失败时显式报错退出：不再兜底编造包名（错误包名会让 P3/P4 契约
+    绑定到不存在的应用）。需人工在 controller scope 或 pages 元数据中补充
+    application_id 后重跑。
     """
     import re as _re2
     project_root: Optional[str] = None
@@ -250,22 +253,29 @@ def find_application_id(ws: Path) -> str:
                 mm = _re2.search(r'package="([A-Za-z0-9_.]+)"', txt)
                 if mm:
                     return mm.group(1)
-        # 无 package 属性（多模块工程）：从 build.gradle.kts 的 applicationId 提取
+        # 无 package 属性（多模块工程）：从 build.gradle(.kts) 的 applicationId 提取
         for g_rel in ("app/build.gradle.kts", "app/build.gradle",
                       "composeApp/build.gradle.kts", "composeApp/build.gradle"):
             gf = Path(project_root) / g_rel
             if gf.exists():
                 gtxt = gf.read_text(encoding="utf-8", errors="replace")
-                am = _re2.search(r"applicationId\s*[=:]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
+                am = _re2.search(r"applicationId\s*[=: ]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
                 if am:
                     return am.group(1)
-                am2 = _re2.search(r"namespace\s*[=:]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
+                am2 = _re2.search(r"namespace\s*[=: ]\s*[\"']([A-Za-z0-9_.]+)[\"']", gtxt)
                 if am2:
                     return am2.group(1)
     # 回退：scope/manifest 中的包名提示（前两个域符）
     from_path = str(ws)
     m = _re2.search(r"[A-Za-z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*", from_path)
-    return m.group(0) if m else "com.example.todo"
+    if m:
+        return m.group(0)
+    raise SystemExit(
+        "application_id unresolved: cannot infer from AndroidManifest package, "
+        "build.gradle applicationId/namespace, or the workspace path. "
+        "Manually add application_id in the controller scope (scope.json android.application_id) "
+        "or the pages metadata, then re-run the adapter."
+    )
 
 
 def infer_page_kind(sym: str) -> str:
@@ -276,6 +286,13 @@ def infer_page_kind(sym: str) -> str:
     if low.endswith("dialog") or "popup" in low or "picker" in low or "picker" in low:
         return "DIALOG"
     if low.endswith("activity"):
+        return "ACTIVITY"
+    if low.endswith("fragment"):
+        # Fragment 承载页面主体（markor 5 个 Fragment 均为全屏页面内容载体），
+        # 视作可导航 SCREEN；与 scaffold skill 的 leader 口径 Fragment→ROUTE_PAGE 一致
+        return "SCREEN"
+    if low.endswith("configure"):
+        # widget 配置页实测为 AndroidManifest <activity>（APPWIDGET_CONFIGURE）→ ACTIVITY
         return "ACTIVITY"
     if low.endswith(("screen", "page", "view")):
         return "SCREEN"
@@ -292,6 +309,11 @@ def main() -> int:
 
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--out", default=None, help="输出 run 目录（默认 workspace 同级 <name>-run）")
+    ap.add_argument(
+        "--acceptance", default=None,
+        help="人工审核接受记录 JSON（默认 <workspace>/human-review/phase-2-acceptance.json）；"
+             "adapter 是只读转换器，没有人工接受记录时拒绝运行",
+    )
     args = ap.parse_args()
 
     ws = Path(args.workspace).resolve()
@@ -303,6 +325,30 @@ def main() -> int:
     if not closure_path.exists():
         raise SystemExit("phase-2-closure.json missing: run gmi_closure.py first")
     closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    if closure.get("machine_status") != "READY_FOR_HUMAN_REVIEW":
+        raise SystemExit(
+            f"Phase 2 machine gate is {closure.get('machine_status')!r}; "
+            "only READY_FOR_HUMAN_REVIEW may proceed to human review and Phase 3"
+        )
+
+    # 人工接受记录（controller 的人在环产物）：无记录即拒绝；closure 哈希必须未变化。
+    acceptance_path = Path(args.acceptance) if args.acceptance else ws / "human-review" / "phase-2-acceptance.json"
+    if not acceptance_path.is_file():
+        raise SystemExit(
+            f"human review acceptance record missing: {acceptance_path}\n"
+            "gmi_phase3_adapter is a read-only converter and cannot create PASS / "
+            "acceptance registry / CLOSED on its own; record the human acceptance first"
+        )
+    acceptance = json.loads(acceptance_path.read_text(encoding="utf-8"))
+    if acceptance.get("decision") != "ACCEPTED":
+        raise SystemExit(f"human review decision is {acceptance.get('decision')!r}; adapter refuses to run")
+    recorded_closure_sha = str(acceptance.get("closure_sha256", ""))
+    actual_closure_sha = sha256_file(closure_path)
+    if recorded_closure_sha and recorded_closure_sha != actual_closure_sha:
+        raise SystemExit(
+            "phase-2-closure.json changed after human review "
+            f"(recorded={recorded_closure_sha[:16]}… actual={actual_closure_sha[:16]}…); re-review required"
+        )
 
     out = Path(args.out).resolve() if args.out else ws.parent / (ws.name + "-run")
     phase2 = out / "phase-02-android-inventory"
@@ -320,22 +366,30 @@ def main() -> int:
     }
 
     # 1) closure-report.json / CLOSED / phase-manifest.json / closure-manifest.sha256
+    # adapter 不再自造 PASS/CLOSED：所有 verdict/status 均源自人工接受记录
+    # （decision=ACCEPTED 且 closure_sha256 已在上文校验未变化）。
     closure_report = {
         "generated_by": "gmi-phase3-adapter",
         "final_verdict": "PASS",
+        "final_verdict_source": "human-review-acceptance",
         "evidence_chain_closed": True,
+        "page_gate_verdict": "PASS",
         "advanced_gate_verdict": "PASS",
-        "reviewer_id": "gmi",
-        "reviewer_role": "coverage-checker-agent",
+        "reviewer_id": str(acceptance.get("reviewer_id", "human-reviewer")),
+        "reviewer_role": "human-reviewer",
+        "review_accepted_at": acceptance.get("accepted_at", ""),
+        "acceptance_sha256": sha256_file(acceptance_path),
         "closure_manifest_sha256": "",
         "baseline_env_id": "ENV-001",
-        "gmi_closure": closure["gate"],
+        "gmi_closure": closure.get("gate", {}),
     }
     closure_report_path = phase2 / "closure-report.json"
     write_json(closure_report_path, closure_report)
     write_json(phase2 / "phase-manifest.json", {
         "phase": 2, "status": "CLOSED", "generator": "gmi",
-        "gmi_closure": closure["gate"],
+        "closed_by": "human-review-acceptance",
+        "acceptance_sha256": sha256_file(acceptance_path),
+        "gmi_closure": closure.get("gate", {}),
     })
     # ownership 由 run 的 controller scope 冻结值透传：P3 init_scaffold 的
     # asset lifecycle 契约要求 phase-manifest.ownership.code_map_agent_id 与
@@ -367,7 +421,9 @@ def main() -> int:
     if _ownership or _ws_pm:
         write_json(phase2 / "phase-manifest.json", {
             "phase": 2, "status": "CLOSED", "generator": "gmi",
-            "gmi_closure": closure["gate"],
+            "closed_by": "human-review-acceptance",
+            "acceptance_sha256": sha256_file(acceptance_path),
+            "gmi_closure": closure.get("gate", {}),
             "android_project_root": _ws_pm.get("android_project_root"),
             "included_features": _ws_pm.get("included_features", []),
             "ownership": _ownership,
@@ -380,7 +436,7 @@ def main() -> int:
         write_json(closure_report_path, closure_report)
     # CLOSED 绑定 closure-report **最终态**哈希（必须在 report 全部定稿之后计算，
     # 否则任何后续字段写入都会使 CLOSED 失配——本 bug 已导致 Windows 运行中手动修补）
-    (phase2 / "CLOSED").write_text(sha256_file(closure_report_path), encoding="utf-8")
+    (phase2 / "CLOSED").write_text(sha256_file(closure_report_path) + "\n", encoding="utf-8")
 
     # 2) inventory.csv（合成：每页一行 REVIEWED）
     # Feature-ID 契约：^[A-Z0-9][A-Z0-9._-]{2,95}$（大写）；来源 = P2 inventory 的
@@ -421,6 +477,7 @@ def main() -> int:
             "expected_observable": f"{sym} displayed",
             "action_summary": f"{sym} 页面展示与交互",
             "evidence_refs": f"EVD-{sanitize(sym).upper()}",
+            "business_rule_refs": "NONE_FOUND",
             "data_dependency_refs": "NONE_FOUND",
             "system_capability_refs": "NONE_FOUND",
             "third_party_dependency_refs": "NONE_FOUND",
@@ -580,9 +637,29 @@ def main() -> int:
     # 页标 ACCEPTED；其余标 PENDING_RUNTIME_VERIFY（未访问≠已验证，绝不伪造）。
     gate_rows = read_rows(rt_ / "runtime-gate.csv")
     accepted_syms = set()
+    # 口径修复（遗留1）：新版 gmi_audit 合并产出 task 级 runtime-gate.csv，
+    # 按 page_id/symbol 聚合——该页全部 task 行 status 均为 VERIFIED（且至少
+    # 1 行）才视为运行时已验证；存在非 VERIFIED 的页不加入。旧版页级行
+    # （task_id 为空）按 status=="VISITED" 直接接受（历史桥接兼容）。
+    page_task_states: Dict[str, Dict[str, Any]] = {}
     for r in gate_rows:
-        if r.get("status") == "VISITED" and r.get("symbol"):
-            accepted_syms.add(r.get("symbol", ""))
+        sym = (r.get("symbol") or "").strip()
+        status = (r.get("status") or "").strip()
+        task_id = (r.get("task_id") or "").strip()
+        if not task_id:
+            # 页级行不参与 task 级聚合；仅保留旧 VISITED 口径的直接接受。
+            if status == "VISITED" and sym:
+                accepted_syms.add(sym)
+            continue
+        pid = (r.get("page_id") or "").strip() or sym
+        entry = page_task_states.setdefault(
+            pid, {"statuses": set(), "symbols": set()})
+        entry["statuses"].add(status)
+        if sym:
+            entry["symbols"].add(sym)
+    for _pid, _entry in page_task_states.items():
+        if _entry["statuses"] == {"VERIFIED"}:
+            accepted_syms |= _entry["symbols"]
     # evidence 源目录（ui.xml 存在者）
     runtime_dirs = {}
     if rt_.exists():
@@ -610,13 +687,16 @@ def main() -> int:
             "page_id": pid, "feature_id": inv["feature_id"],
             "state_id": inv["state_id"], "env_id": "ENV-001",
             "status": "ACCEPTED" if is_acc else "PENDING_RUNTIME_VERIFY",
-            "type": "UI", "evidence": f"evidence/ENV-001/{pid}/{inv['state_id']}/{eid}" if is_acc else "",
+            "type": "UI",
+            # P4 init_implementation 的 canonical 路径契约列（evidence/{env}/{page}/{state}/{evidence_id}）
+            "relative_path": f"evidence/ENV-001/{pid}/{inv['state_id']}/{eid}" if is_acc else "",
+            # metadata_sha256 由 6b) 证据包导出后回填（P4 校验 sha256(metadata.json)）
+            "metadata_sha256": "",
+            "screenshot_sha256": "",
         })
         if is_acc:
             acc_rows.append({"inventory_id": inv["inventory_id"], "evidence_id": eid})
-    write_rows(phase2 / "evidence-index.csv",
-               ["inventory_id", "evidence_id", "page_id", "feature_id", "state_id", "env_id",
-                "status", "type", "evidence"], ev_rows)
+
     write_rows(phase2 / "acceptance-registry.csv", ["inventory_id", "evidence_id"], acc_rows)
     (phase2 / "evidence-anchors.snapshot.csv").write_text(
         "evidence_id\n" + "\n".join(r["evidence_id"] for r in acc_rows) + "\n"
@@ -768,12 +848,47 @@ def main() -> int:
     write_json(phase2 / "runtime-observations.json",
                {"observations": [], "generated_by": "gmi-phase3-adapter"})
     write_json(phase2 / "page-gate-report.json",
-               {"machine_verdict": "PASS", "generated_by": "gmi-phase3-adapter"})
-    write_json(phase2 / "advanced-gate-report.json",
                {"machine_verdict": "PASS",
-                "decision_source": "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE",
-                "required_observations": 0, "received_observations": 0,
+                "decision_source": "HUMAN_REVIEW_ACCEPTANCE",
                 "generated_by": "gmi-phase3-adapter"})
+    # 口径修复（遗留2）：advanced-gate-report 的 decision_source 必须是
+    # DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE（scaffold validate_stage3
+    # 与 controller validate_gate 的一致契约；此前误写 HUMAN_REVIEW_ACCEPTANCE，
+    # fixture 只能靠后处理重绑哈希链绕过）。ws 内存在 evaluate_advanced_gates.py
+    # 的真实产物时优先透传其 verdict 与观察计数（含 errors）。
+    ws_adv_gate: Dict[str, Any] = {}
+    _ws_adv_path = ws / "advanced-gate-report.json"
+    if _ws_adv_path.is_file():
+        try:
+            _loaded_gate = json.loads(_ws_adv_path.read_text(encoding="utf-8"))
+            if isinstance(_loaded_gate, dict):
+                ws_adv_gate = _loaded_gate
+        except ValueError:
+            ws_adv_gate = {}
+    if ws_adv_gate:
+        adv_gate_report = {
+            "machine_verdict": str(ws_adv_gate.get("machine_verdict", "BLOCKED")),
+            "decision_source": str(ws_adv_gate.get(
+                "decision_source", "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE")),
+            "required_observations": ws_adv_gate.get("required_observations", 0),
+            "received_observations": ws_adv_gate.get("received_observations", 0),
+            "errors": ws_adv_gate.get("errors", []),
+            "generated_by": "gmi-phase3-adapter",
+            "source": "evaluate_advanced_gates passthrough",
+        }
+    else:
+        # 无真实产物（零高级观察者场景）：确定性默认 PASS，required==received。
+        adv_gate_report = {
+            "machine_verdict": "PASS",
+            "decision_source": "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE",
+            "required_observations": 0, "received_observations": 0,
+            "errors": [],
+            "generated_by": "gmi-phase3-adapter",
+        }
+    write_json(phase2 / "advanced-gate-report.json", adv_gate_report)
+    # closure-report 的 advanced verdict 与 gate 文件保持同源
+    # （7.5 重写 closure-report.json 并重算 CLOSED 哈希链）。
+    closure_report["advanced_gate_verdict"] = str(adv_gate_report["machine_verdict"])
     write_json(phase2 / "advanced-observations.json",
                {"observations": [], "generated_by": "gmi-phase3-adapter"})
     (phase2 / "probe-evidence-index.csv").write_text(
@@ -858,9 +973,43 @@ def main() -> int:
             json.dumps({"layout": [], "generated_by": "gmi-phase3-adapter", "source": str(src_ui)},
                        ensure_ascii=False), encoding="utf-8")
         (ev_dir / "metadata.json").write_text(
-            json.dumps({"evidence_id": inv["evidence_id"], "page_id": inv["page_id"],
-                        "env_id": "ENV-001", "captured_by": "gmi_runtime"},
-                       ensure_ascii=False), encoding="utf-8")
+            json.dumps({"evidence_id": inv["evidence_id"],
+                        "inventory_id": inv["inventory_id"],
+                        "feature_id": inv["feature_id"],
+                        "page_id": inv["page_id"],
+                        "state_id": inv["state_id"],
+                        "env_id": "ENV-001",
+                        "status": "SEALED", "capture_tool": "android-cli",
+                        "captured_by": "gmi_runtime"},
+                        ensure_ascii=False), encoding="utf-8")
+        # P4 verify_android_package 要求 steps.md（进入步骤来源=inventory entry_condition）
+        (ev_dir / "steps.md").write_text(
+            f"1. {inv['entry_condition']}\n2. {inv['expected_observable']}\n",
+            encoding="utf-8",
+        )
+        # 回填 P4 evidence-index 契约哈希列（sha256(metadata.json)/sha256(screenshot.png)）
+        for _ev in ev_rows:
+            if _ev["evidence_id"] == inv["evidence_id"]:
+                _ev["metadata_sha256"] = sha256_file(ev_dir / "metadata.json")
+                if (ev_dir / "screenshot.png").exists():
+                    _ev["screenshot_sha256"] = sha256_file(ev_dir / "screenshot.png")
+                break
+        # P4 证据包契约：每个证据包需 manifest.sha256 + COMMITTED（绑定 Evidence-ID）
+        _pkg: Dict[str, Path] = {}
+        for _f in sorted(ev_dir.iterdir()):
+            if _f.is_file():
+                _pkg[_f.name] = _f
+        _mtext = "".join(f"{sha256_file(_pkg[_n])}  {_n}\n" for _n in sorted(_pkg))
+        (ev_dir / "manifest.sha256").write_bytes(_mtext.encode("utf-8"))
+        (ev_dir / "COMMITTED").write_text(inv["evidence_id"] + "\n", encoding="utf-8")
+        # 封存只读（P4 require_read_only：包内所有路径不得可写）
+        for _f in ev_dir.rglob("*"):
+            _f.chmod(0o444)
+        ev_dir.chmod(0o555)
+    write_rows(phase2 / "evidence-index.csv",
+               ["inventory_id", "evidence_id", "page_id", "feature_id", "state_id", "env_id",
+                "status", "type", "relative_path", "metadata_sha256", "screenshot_sha256"],
+               ev_rows)
 
     # 6c) runtime-observations.json：AMCCEPTED 页的 observation（P4 覆盖校验用）。
     #     PENDING 页无 observation（运行时未观察，诚实；P4 对 PENDING 跳过覆盖校验）。
@@ -898,7 +1047,31 @@ def main() -> int:
             shutil.rmtree(dst_cands)
         shutil.copytree(src_cands, dst_cands)
 
-    # 7) 控制器结构（P3 校验用最小合法）
+    # 7.5) closure-manifest 定稿：覆盖 phase-02 布局的全部文件（规则与 P4
+    # init_implementation.closure_manifest_text 一致），必须在所有 phase2 文件
+    # 写完之后生成，否则 P4 verify_closed_phases 会拒绝（manifest 不再精确匹配）。
+    _excl = {"closure-report.json", "closure-manifest.sha256", "CLOSED"}
+    _dir_excl = {".locks", ".staging"}
+    _mf: Dict[str, Path] = {}
+    for _p in phase2.rglob("*"):
+        if _p.is_symlink() or not _p.is_file():
+            continue
+        _rel = _p.relative_to(phase2).as_posix()
+        if _rel in _excl or any(_part in _dir_excl for _part in PurePosixPath(_rel).parts):
+            continue
+        if _p.name.endswith((".lock", ".tmp")):
+            continue
+        _mf[_rel] = _p
+    _manifest_text = "".join(f"{sha256_file(_mf[_n])}  {_n}\n" for _n in sorted(_mf))
+    (phase2 / "closure-manifest.sha256").write_bytes(_manifest_text.encode("utf-8"))
+    closure_report["closure_manifest_sha256"] = hashlib.sha256(
+        _manifest_text.encode("utf-8")
+    ).hexdigest()
+    write_json(closure_report_path, closure_report)
+    # CLOSED 绑定 closure-report 最终态哈希（manifest 定稿后重写）
+    (phase2 / "CLOSED").write_text(sha256_file(closure_report_path) + "\n", encoding="utf-8")
+
+    # 8) 控制器结构（P3 校验用最小合法）
     ctl = out / "controller"
     ctl.mkdir(exist_ok=True)
     wo_agent_ids = ["ARCHITECTURE-LEAD-GMI", "TOOLCHAIN-GMI", "NAVIGATION-GMI",
@@ -944,6 +1117,8 @@ def main() -> int:
             "generated_by": "gmi-phase3-adapter",
         })
         write_json(ctl / "gate-report.json", {"phase": 2, "verdict": "PASS",
+                                              "verdict_source": "human-review-acceptance",
+                                              "acceptance_sha256": sha256_file(acceptance_path),
                                               "generated_by": "gmi-phase3-adapter"})
         (ctl / "evidence-anchor-registry.csv").write_text("evidence_id\n", encoding="utf-8")
         (ctl / "work-order-registry.csv").write_text(

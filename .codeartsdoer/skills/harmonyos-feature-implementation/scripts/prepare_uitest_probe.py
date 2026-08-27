@@ -103,16 +103,7 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
     # Android evidence is entirely PENDING_RUNTIME_VERIFY truthfully carries
     # no component facts; its probes degrade to cold-start arrival asserts
     # with empty required_components.
-    # R13: the plan producer nests android_evidence_hashes under source_refs
-    # (arkts_page_plan); read it from there, tolerating a top-level key for
-    # forward compatibility.
-    evidence_hashes = (
-        (plan.get("source_refs") or {}).get("android_evidence_hashes")
-        if isinstance(plan.get("source_refs"), dict)
-        else None
-    )
-    if evidence_hashes is None:
-        evidence_hashes = plan.get("android_evidence_hashes")
+    evidence_hashes = plan.get("android_evidence_hashes")
     pending_only_baseline = (
         isinstance(evidence_hashes, list)
         and bool(evidence_hashes)

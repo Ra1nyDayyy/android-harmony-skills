@@ -22,7 +22,7 @@ COMPARISON_POLICY = {
 }
 REGISTRY_FIELDS = [
     "page_id", "page_name", "relative_path", "contract_sha256", "state_count",
-    "feature_ids", "required_h4env_ids", "status",
+    "feature_ids", "required_h4env_ids", "verification_tier", "status",
 ]
 CONTRACT_KEYS = {
     "schema_version", "page_id", "page_name", "carrier_type", "feature_ids", "states", "components",
@@ -34,7 +34,19 @@ CONTRACT_KEYS = {
 }
 # 可选对象键（具名偏差块，SKILL.md person-approval clause）：不计入必填键集，
 # 也不属于数组字段；存在时按 _validate_contract 内的显式形状校验裁决。
-OPTIONAL_CONTRACT_KEYS = {"carrier_deviation"}
+# verification_tier（P4 分层验证）：CORE=全证据深验；LITE=轻证。缺省视为 CORE
+# （向后兼容：无 tier 的旧合同编译/发布行为保持不变）。
+OPTIONAL_CONTRACT_KEYS = {"carrier_deviation", "verification_tier"}
+# 分层验证值域：非此两值在 _validate_contract / apply_verification_tiers 处拒绝。
+VERIFICATION_TIERS = ("CORE", "LITE")
+
+
+def normalize_verification_tier(value: object) -> str:
+    """Return a canonical verification tier ("CORE"|"LITE") or fail closed."""
+    tier = str(value or "").strip().upper()
+    if tier not in VERIFICATION_TIERS:
+        raise ValueError(f"verification_tier must be one of {list(VERIFICATION_TIERS)}: {value!r}")
+    return tier
 CONTRACT_LIST_FIELDS = CONTRACT_KEYS - {"schema_version", "page_id", "page_name", "carrier_type", "comparison_policy"}
 PAGE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -338,9 +350,11 @@ def compile_page_contracts(
         feature_ids = _unique_sorted([row["feature_id"] for row in page_rows] + _multi(page.get("candidate_feature_ids", [])))
         asset_ids = _unique_sorted([asset_id for row in page_rows for asset_id in _multi(row.get("asset_ids", "")) if asset_id != "NONE_FOUND"])
         _require_known(asset_ids, assets, page_id, "asset")
-        rule_ids = _unique_sorted([rule for row in page_rows for rule in _multi(row.get("business_rule_refs", ""))])
-        data_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("data_dependency_refs", ""))])
-        capability_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("system_capability_refs", ""))])
+        # NONE_FOUND 是 gmi 合成表的显式"无此项"哨兵（与 asset_ids 同一约定），
+        # 哨兵本身不是目录引用，不得进入按 ID 取记录的列表。
+        rule_ids = _unique_sorted([rule for row in page_rows for rule in _multi(row.get("business_rule_refs", "")) if rule != "NONE_FOUND"])
+        data_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("data_dependency_refs", "")) if item != "NONE_FOUND"])
+        capability_ids = _unique_sorted([item for row in page_rows for item in _multi(row.get("system_capability_refs", "")) if item != "NONE_FOUND"])
         if not gmi_mode:
             _require_known(rule_ids, business_rules, page_id, "business rule")
             _require_known(data_ids, data_dependencies, page_id, "data dependency")
@@ -423,6 +437,35 @@ def apply_carrier_deviations(
     return applied
 
 
+def apply_verification_tiers(
+    contracts: list[dict[str, object]],
+    tiers: dict[str, str],
+) -> int:
+    """Stamp the controller-derived P4 verification tier onto every page contract.
+
+    P4 分层验证的生产侧入口：CORE 保持全证据深验；LITE 降为轻证
+    （结构化组件树对比 + 截图 + 行为断言）。``tiers`` 必须为每个页合同提供
+    显式 tier（init_implementation.derive_verification_tiers 的产出，缺省 CORE
+    也显式给出），使 canonical json 与三处哈希绑定（registry/lock/manifest）
+    确定。值域外拒绝；未知页拒绝（fail-closed）。
+    """
+    if not isinstance(contracts, list):
+        raise ValueError("Page contracts must be a list")
+    applied = 0
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        page_id = str(contract.get("page_id", ""))
+        if page_id not in tiers:
+            raise ValueError(f"Verification tier is missing for page: {page_id}")
+        contract["verification_tier"] = normalize_verification_tier(tiers[page_id])
+        applied += 1
+    declared_extra = sorted(set(map(str, tiers)) - {str(item.get("page_id", "")) for item in contracts if isinstance(item, dict)})
+    if declared_extra:
+        raise ValueError(f"Verification tier declares unknown pages: {declared_extra}")
+    return applied
+
+
 def publish_page_contracts(contracts: list[dict[str, object]], destination: Path) -> list[dict[str, object]]:
     """Validate a complete staged set and atomically publish its files and registry."""
     destination = Path(destination)
@@ -445,6 +488,7 @@ def publish_page_contracts(contracts: list[dict[str, object]], destination: Path
                 "state_count": len(contract["states"]),
                 "feature_ids": json.dumps(contract["feature_ids"], ensure_ascii=False, separators=(",", ":")),
                 "required_h4env_ids": json.dumps(contract["required_h4env_ids"], separators=(",", ":")),
+                "verification_tier": str(contract.get("verification_tier") or "CORE"),
                 "status": "FROZEN",
             })
         _write_csv(staged / "page-contract-registry.csv", registry)
@@ -487,7 +531,7 @@ def _records_for_page(rows: list[dict[str, object]], page_id: str, page_field: s
 
 
 def _components_from_gmi_fields(page_id: str, fields: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Deterministically bridge gmi field facts into the legacy component contract."""
+    """Deterministically bridge gmi field facts into the component contract."""
     def ark_source_type(raw: object) -> str:
         low = str(raw or "").casefold()
         if any(token in low for token in ("input", "edit", "field", "textarea")):
@@ -609,6 +653,9 @@ def _validate_contract(contract: dict[str, object]) -> None:
         if any(not isinstance(record, dict) for record in contract[field]):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
     _validate_source_geometry(str(contract["page_id"]), contract)
+    if "verification_tier" in contract:
+        # 缺省视为 CORE（向后兼容）；存在则必须是 CORE|LITE，非此两值拒绝。
+        normalize_verification_tier(contract.get("verification_tier"))
     deviation = contract.get("carrier_deviation")
     if deviation is not None:
         required_dev_fields = (

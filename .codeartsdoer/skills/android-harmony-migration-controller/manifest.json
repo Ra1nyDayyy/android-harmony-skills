@@ -10,9 +10,8 @@
   "lifecycle_stage": "governed",
   "context_budget_tier": "production",
   "skill_archetype": "workflow-orchestrator",
-  "skill_ir_source": "reports/skill-ir.json",
   "capability_scope": "phases-1-4-human-gated",
   "resource_policy": "current-capabilities-only",
   "target_platforms": ["openai", "claude", "agent-skills", "vscode", "generic"],
-  "factory_components": ["references", "scripts", "assets", "evals", "reports"]
+  "factory_components": ["references", "scripts", "assets"]
 }

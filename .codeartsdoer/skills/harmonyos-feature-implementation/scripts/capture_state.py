@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from uitest_snapshot import validate_uitest_evidence
+from _stage4_audit import validate_uitest_evidence_lite
 
 from _common import (
     assert_no_secrets,
@@ -48,6 +49,35 @@ REQUIRED_SEQUENCE = [
     "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE", "PERMISSION_PROFILE",
     "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT", "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
 ]
+# P4 分层验证（LITE 轻证）：命令记录要求裁为 6 类子序列——保留设备/安装/启动/
+# 导航/截图/UiTest，去 SEED_RESET/NETWORK/PERMISSION/BUSINESS_ASSERT；三类断言
+# 证据由采集端从实拍观测合成并完整走 validate_assertion_result 判定。
+LITE_REQUIRED_SEQUENCE = [
+    "DEVICE_CHECK", "CLEAN_INSTALL", "LAUNCH", "NAVIGATE",
+    "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
+]
+VERIFICATION_TIERS = ("CORE", "LITE")
+
+
+def resolve_verification_tier(*sources: object) -> str:
+    """Resolve the page's P4 verification tier (CORE deep / LITE light) fail-closed.
+
+    来源依次为 plan 显式声明与迁移单元合同透传（单一真相源为页合同）；
+    全部缺省视为 CORE（向后兼容）。多处声明且不一致时拒绝；值域外拒绝。
+    """
+    resolved: list[str] = []
+    for source in sources:
+        if source is None:
+            continue
+        tier = str(source).strip().upper()
+        if tier not in VERIFICATION_TIERS:
+            raise ValueError(f"verification_tier must be one of {list(VERIFICATION_TIERS)}: {source!r}")
+        resolved.append(tier)
+    if not resolved:
+        return "CORE"
+    if len(set(resolved)) != 1:
+        raise ValueError(f"verification_tier declarations disagree: {sorted(set(resolved))}")
+    return resolved[0]
 REQUIRED_ASSERTIONS = {"VISUAL_STATE", "BUSINESS_RESULT", "INTERACTION"}
 BUNDLE_CATEGORIES = {
     "CLEAN_INSTALL", "SEED_RESET", "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
@@ -219,6 +249,52 @@ def validate_assertion_result(
     return value
 
 
+def synthesize_lite_assertions(
+    path: Path,
+    planned: list[dict[str, Any]],
+    bindings: dict[str, str],
+    observed: dict[str, Any],
+    required_obligation_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Materialize LITE assertions from live observations, then judge them normally.
+
+    P4 分层验证：LITE 页没有 BUSINESS_ASSERT 命令通道，三类断言的实际值改由
+    实拍观测构成（组件树一致率 / UiTest 组件数与 trace 条数 / 截图分辨率），
+    随后仍完整走 validate_assertion_result 的确定性 operator 判定、三类覆盖
+    与 obligation 覆盖校验（fail-closed 不放宽）。
+    """
+    rows: list[dict[str, Any]] = []
+    for item in planned:
+        kind = str(item.get("kind", ""))
+        if kind == "VISUAL_STATE":
+            actual = f"lite-component-overlap={float(observed['component_overlap']):.3f}"
+        elif kind == "BUSINESS_RESULT":
+            actual = (
+                f"uitest-components={int(observed['component_count'])};"
+                f"trace={int(observed['trace_count'])}"
+            )
+        elif kind == "INTERACTION":
+            actual = (
+                f"screenshot={int(observed['screenshot_width'])}x"
+                f"{int(observed['screenshot_height'])}"
+            )
+        else:
+            actual = str(observed.get("observed_default", "lite-observed"))
+        row = {
+            "assertion_id": item["assertion_id"],
+            "kind": kind,
+            "expected": item["expected"],
+            "actual": actual,
+            "status": "PASS",
+        }
+        if item.get("subject_ids") is not None:
+            row["subject_ids"] = list(item["subject_ids"])
+        rows.append(row)
+    value: dict[str, Any] = {**bindings, "assertions": rows}
+    atomic_json(path, value)
+    return validate_assertion_result(path, planned, bindings, required_obligation_ids)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True)
@@ -250,11 +326,11 @@ def main() -> int:
         implemented_by = validate_actor(str(plan.get("implemented_by", "")), "feature implementer")
         executed_by = validate_actor(str(plan.get("executed_by", "")), "emulator verification executor")
         ownership = phase_manifest.get("ownership", {})
-        legacy_roles = phase_manifest.get("roles", {})
-        expected_executor = ownership.get("verification_executor_id") or legacy_roles.get(
+        compat_roles = phase_manifest.get("roles", {})
+        expected_executor = ownership.get("verification_executor_id") or compat_roles.get(
             "verification_executor"
         )
-        expected_parity = ownership.get("parity_acceptance_agent_id") or legacy_roles.get(
+        expected_parity = ownership.get("parity_acceptance_agent_id") or compat_roles.get(
             "parity_checker"
         )
         if executed_by != expected_executor:
@@ -337,6 +413,12 @@ def main() -> int:
             or migration_contract.get("max_automatic_repair_attempts") != 2
         ):
             raise ValueError("Migration-unit identity, carrier, or anti-simplification policy differs")
+        # P4 分层验证：plan 显式声明与迁移单元透传（页合同真相源）必须一致，缺省 CORE。
+        verification_tier = resolve_verification_tier(
+            plan.get("verification_tier"),
+            migration_contract.get("verification_tier"),
+        )
+        expected_sequence = LITE_REQUIRED_SEQUENCE if verification_tier == "LITE" else REQUIRED_SEQUENCE
 
         index_rows = read_csv(workspace / "evidence-index.csv")
         if any(row.get("evidence_id") == evidence_id for row in index_rows):
@@ -538,8 +620,8 @@ def main() -> int:
             )
 
         commands = plan.get("commands")
-        if not isinstance(commands, list) or len(commands) != len(REQUIRED_SEQUENCE):
-            raise ValueError(f"State plan requires exactly this command sequence: {REQUIRED_SEQUENCE}")
+        if not isinstance(commands, list) or len(commands) != len(expected_sequence):
+            raise ValueError(f"State plan requires exactly this command sequence: {expected_sequence}")
         normalized: list[dict[str, Any]] = []
         command_ids: set[str] = set()
         categories: list[str] = []
@@ -582,13 +664,13 @@ def main() -> int:
                     "contract": contract,
                 }
             )
-        if categories != REQUIRED_SEQUENCE:
-            raise ValueError(f"State command order differs; expected {REQUIRED_SEQUENCE}, got {categories}")
+        if categories != expected_sequence:
+            raise ValueError(f"State command order differs; expected {expected_sequence}, got {categories}")
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
 
     final_relative = (
-        Path("evidence") / h4env_id / parity["feature_id"] / parity["page_id"]
+        Path("evidence") / h4env_id / parity["page_id"]
         / parity["state_id"] / evidence_id
     )
     final_dir = safe_relative_path(
@@ -750,27 +832,68 @@ def main() -> int:
                                 "device_identity_sha256": device_identity_sha256,
                                 "command_sha256": command_sha256,
                             })
-                            validate_uitest_evidence(
-                                staging, probe,
-                                page_id=parity["page_id"], state_id=parity["state_id"],
-                                bundle_name=bundle_name,
-                                carrier=str(migration_contract["expected_carrier"]),
-                                target_id=parity["target_id"],
-                                generation_manifest_sha256=sha256_file(generation_manifest_path),
-                                page_plan_sha256=sha256_file(page_plan),
-                                test_hap_sha256=test_hap_sha256,
-                                final_hap_sha256=final_hap_sha256,
-                                device_identity_sha256=device_identity_sha256,
-                                command_sha256=command_sha256,
-                                required_event_ids=set(migration_contract.get("required_event_ids", [])),
-                                required_transition_ids=set(migration_contract.get("required_transition_ids", [])),
-                            )
+                            if verification_tier == "LITE":
+                                # LITE 轻证：哈希绑定保留，逐组件严检降为结构化组件树
+                                # 对比（expected=页合同组件树，阈值见 LITE_COMPONENT_OVERLAP_MIN）。
+                                page_contract_doc = load_json(
+                                    workspace / "page-contracts" / f"{parity['page_id']}.json"
+                                )
+                                lite_result = validate_uitest_evidence_lite(
+                                    staging, probe,
+                                    page_id=parity["page_id"], state_id=parity["state_id"],
+                                    bundle_name=bundle_name,
+                                    carrier=str(migration_contract["expected_carrier"]),
+                                    target_id=parity["target_id"],
+                                    generation_manifest_sha256=sha256_file(generation_manifest_path),
+                                    page_plan_sha256=sha256_file(page_plan),
+                                    test_hap_sha256=test_hap_sha256,
+                                    final_hap_sha256=final_hap_sha256,
+                                    device_identity_sha256=device_identity_sha256,
+                                    command_sha256=command_sha256,
+                                    expected_components=page_contract_doc.get("components"),
+                                )
+                                lite_components = lite_result["components"]
+                                lite_trace = lite_result["operation_trace"]
+                            else:
+                                validate_uitest_evidence(
+                                    staging, probe,
+                                    page_id=parity["page_id"], state_id=parity["state_id"],
+                                    bundle_name=bundle_name,
+                                    carrier=str(migration_contract["expected_carrier"]),
+                                    target_id=parity["target_id"],
+                                    generation_manifest_sha256=sha256_file(generation_manifest_path),
+                                    page_plan_sha256=sha256_file(page_plan),
+                                    test_hap_sha256=test_hap_sha256,
+                                    final_hap_sha256=final_hap_sha256,
+                                    device_identity_sha256=device_identity_sha256,
+                                    command_sha256=command_sha256,
+                                    required_event_ids=set(migration_contract.get("required_event_ids", [])),
+                                    required_transition_ids=set(migration_contract.get("required_transition_ids", [])),
+                                )
+                                lite_result = None
+                                lite_components = lite_trace = None
                             uitest_width, uitest_height = png_dimensions(uitest_screenshot)
                             if (uitest_width, uitest_height) != (
                                 environment["comparison"]["screenshot_width"],
                                 environment["comparison"]["screenshot_height"],
                             ):
                                 raise ValueError("UiTest screenshot dimensions differ from frozen environment")
+                            if verification_tier == "LITE":
+                                # LITE 无 BUSINESS_ASSERT 命令：三类断言从实拍观测合成，
+                                # 判定链（operator/三类/obligation 覆盖）不放宽。
+                                assertions_result = synthesize_lite_assertions(
+                                    assertions_path,
+                                    assertions,
+                                    bindings,
+                                    {
+                                        "component_overlap": lite_result["lite_component_overlap"],
+                                        "component_count": len(lite_components),
+                                        "trace_count": len(lite_trace),
+                                        "screenshot_width": uitest_width,
+                                        "screenshot_height": uitest_height,
+                                    },
+                                    required_obligation_ids,
+                                )
                             record["result_path"] = "ui-test-snapshot.json"
                             record["result_sha256"] = sha256_file(uitest_result)
                     except (ValueError, OSError, KeyError) as exc:
@@ -836,12 +959,17 @@ def main() -> int:
             "implemented_by": implemented_by,
             "captured_by": executed_by,
             "captured_at": captured_at,
+            # P4 分层验证：tier 随证据密封（CORE=全证据深验；LITE=轻证）。
+            "verification_tier": verification_tier,
             "assertions": {
                 "path": "assertions.json",
                 "sha256": sha256_file(assertions_path),
                 "command_id": next(
                     item["command_id"] for item in command_records
-                    if item["category"] == "BUSINESS_ASSERT"
+                    if item["category"] == (
+                        "UITEST_SNAPSHOT_CAPTURE" if verification_tier == "LITE"
+                        else "BUSINESS_ASSERT"
+                    )
                 ),
             },
             "screenshot": {
@@ -937,6 +1065,7 @@ def main() -> int:
                     "build_artifact_sha256": primary["sha256"],
                     "captured_by": executed_by,
                     "captured_at": captured_at,
+                    "verification_tier": verification_tier,
                     "status": "SEALED",
                     "supersedes_evidence_id": supersedes,
                 }

@@ -1,6 +1,0 @@
-{
-  "optimizer_hints": {"capability":"Build the non-business HarmonyOS Phase 3 scaffold","inputs":["Phase 2 inventory","ArkUI template"],"trigger_actions":["generate scaffold","create route shells","verify build and launch"],"exclusions":["business implementation"],"artifacts":["HarmonyOS project","HENV","HVER"]},
-  "fallback_positive_concepts": ["scaffold_job"],
-  "positive_concepts": {"scaffold_job":{"weight":0.8,"phrases":["non-business HarmonyOS NEXT project scaffold","鸿蒙基座","模块、路由落点、公共 UI 和能力接口","编译、安装、启动并打开所有页面壳"]}},
-  "negative_concepts": {}
-}

@@ -1,8 +1,23 @@
 # Phase 2 handoff
 
+Phase 2 is the gmi sole path: invoke `$android-migration-inventory` in gmi mode. The work order created by `issue_phase2_work_order.py` is an authorization record only; the Phase 2 data input and output are always the gmi artifact chain, not manual page enumeration.
+
+## gmi artifact chain returned by Android inventory
+
+Expect these artifacts below `phase-02-android-inventory/gmi/`:
+
+- `candidates/` — the 13 candidate tables (code-map, business-rules, asset-mapping, inventory, page-fields, third-party-dependencies, field-options, navigation-relations, behavior, risk-probes, color-palette, motion, phase-2-completeness) plus `manifest.sha256`;
+- `coverage/coverage-ledger.csv`;
+- `runtime-evidence/` — `runtime-gate.csv` and `audit-replay.csv`;
+- `audit-replay.csv`;
+- `phase-2-closure.json` (`unmapped=0`, `audit_discrepancy=0`);
+- `phase-manifest.json` with `generator=gmi`.
+
+After the gmi run closes automatically, the controller recomputes Gate 2 from this chain (conditions in [phase-gates.md](phase-gates.md)); the human checkpoint follows the machine closure.
+
 ## Work order sent to Android inventory
 
-Pass the migration run directory, frozen `controller/scope.json`, and the immutable JSON work order created by `issue_phase2_work_order.py`. The work order includes:
+Pass the migration run directory, frozen `controller/scope.json`, and the immutable JSON work order. The work order includes:
 
 - Project and run IDs.
 - Android project root, source revision, installable APK, app version, build, application ID, and build variant.
@@ -18,39 +33,6 @@ Do not dispatch Phase 2 when Phase 1 is not `PASS`.
 
 Dispatch every ownership entry as a distinct real CodeArts task. After deterministic closure, record one immutable team-execution receipt per assigned actor. Phase 3 work-order issuance rejects missing receipts, duplicate platform task IDs, actor/role mismatches, and changed artifact hashes.
 
-## Package returned by Android inventory
+## Legacy asset chain (pre-gmi runs only)
 
-Expect these files below `phase-02-android-inventory/`:
-
-- `environments.json`
-- `coverage-ledger.csv`
-- `catalogs/`
-- `inventory.csv`
-- `asset-inventory.csv`
-- `asset-package/manifest.sha256`
-- `asset-package/COMMITTED`
-- `static-analysis/`（页面、组件、事件、跳转、状态候选和高级风险）
-- `runtime-observations.json`
-- `page-gate-report.json`
-- `advanced-observations.json`
-- `probe-evidence-index.csv`
-- `advanced-gate-report.json`
-- `evidence-anchors.snapshot.csv`
-- `evidence-index.csv`
-- `acceptance-registry.csv`
-- `evidence/`
-- `rechecks.csv`
-- `closure-report.json`
-- `closure-manifest.sha256`
-- `CLOSED`
-
-The inventory formula is fixed:
-
-> One row = one `Feature-ID` x one `Page-ID` x one `State-ID` x one `ENV-ID` x one `Evidence-ID`.
-
-The closure report must name the coverage checker, match the baseline environment in `scope.json`, and state that the evidence chain is closed.
-The controller recomputes the closure manifest and rejects any package changed after review.
-
-`page-gate-report.json` 和 `advanced-gate-report.json` 必须由确定性脚本计算为 `PASS`。模型给出的总结、置信度或“看起来正确”不能代替门禁结果。每个静态页面对象必须关联真实运行证据；事件和跳转还必须同时提供操作前、操作后的证据。
-
-Each active inventory row has a nonempty JSON `asset_ids` array: exactly `["NONE_FOUND"]` or real Asset-IDs. Each real asset is reviewed, linked back to at least one feature/page/state row, archived below `asset-package/files/<Asset-ID>/`, listed exactly once in the asset-package manifest, and sealed by `COMMITTED`.
+Legacy runs additionally return `environments.json`, `inventory.csv`, `asset-inventory.csv`, `asset-package/{manifest.sha256,COMMITTED}`, static-analysis records, runtime observations, gate reports, `evidence-index.csv`, `acceptance-registry.csv`, `rechecks.csv`, `closure-report.json`, `closure-manifest.sha256`, and `CLOSED` below `phase-02-android-inventory/`. Anchor every sealed Android evidence package with `scripts/anchor_phase2_evidence.py`. The controller recomputes the closure manifest and rejects any package changed after review. Each active legacy inventory row has a nonempty JSON `asset_ids` array: exactly `["NONE_FOUND"]` or real Asset-IDs, each reviewed, linked, archived below `asset-package/files/<Asset-ID>/`, listed exactly once in the manifest, and sealed by `COMMITTED`.

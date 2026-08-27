@@ -33,7 +33,7 @@ CANONICAL = {
     ),
     4: (
         "phase-04-harmony-implementation/phase-manifest.json",
-        "phase-04-harmony-implementation/implementation-ledger.csv",
+        "phase-04-harmony-implementation/page-implementation-ledger.csv",
         "phase-04-harmony-implementation/parity-map.csv",
         "phase-04-harmony-implementation/visual-elements.csv",
         "phase-04-harmony-implementation/acceptance-ledger.csv",
@@ -68,6 +68,21 @@ def walk_values(value: Any, path: str = "$") -> list[tuple[str, str]]:
     elif isinstance(value, str) and value.strip().upper() in NON_FINAL_VALUES:
         found.append((path, value))
     return found
+
+
+def _gmi_run(run_dir: Path) -> bool:
+    """gmi 模式判别（与 validate_gate._gmi_run 一致）：
+    phase-02-android-inventory/phase-manifest.json 存在 generator==gmi，
+    或 gmi/phase-2-closure.json 存在。gmi run 的 Phase 2 由 gmi 自闭合，
+    没有 controller Phase 2 工单与 controller 签发的 Phase 1/2 gate 快照。"""
+    p2 = run_dir / "phase-02-android-inventory"
+    if (p2 / "gmi" / "phase-2-closure.json").is_file():
+        return True
+    try:
+        manifest = json.loads((p2 / "phase-manifest.json").read_text(encoding="utf-8"))
+        return str(manifest.get("generator", "")).startswith("gmi")
+    except (ValueError, OSError):
+        return False
 
 
 def active_orders(run_dir: Path, phase: int) -> list[Path]:
@@ -147,6 +162,10 @@ def delivery_gate_reports(
     }
     for phase in range(1, through_phase):
         next_phase, field = downstream[phase]
+        # gmi run：Phase 2 由 gmi 自闭合，controller 不签发 Phase 1/2 工单，
+        # 因此没有下游工单内嵌的 gate 快照可审计（Phase 3/4 仍严格审计）。
+        if _gmi_run(run_dir) and phase in (1, 2):
+            continue
         orders = active_orders(run_dir, next_phase)
         if len(orders) != 1:
             errors.append(f"Cannot locate the unique Phase {phase} gate snapshot for human approval audit")
@@ -205,10 +224,15 @@ def main() -> int:
     except OSError as exc:
         errors.append(f"Cannot read controller task ledger: {exc}")
 
+    gmi_mode = _gmi_run(run_dir)
     for phase in range(2, args.through_phase + 1):
         for relative in CANONICAL[phase]:
             if not (run_dir / relative).is_file():
                 errors.append(f"Missing canonical Phase {phase} artifact: {relative}")
+        # gmi run：Phase 2 无 controller 工单（gmi 唯一路径契约）；
+        # Phase 3/4 的工单与回执仍严格校验。
+        if gmi_mode and phase == 2:
+            continue
         orders = active_orders(run_dir, phase)
         if len(orders) != 1:
             errors.append(f"Phase {phase} must have exactly one active controller work order")

@@ -1,18 +1,18 @@
 {
   "name": "android-migration-inventory",
-  "version": "2.1.0-generic",
+  "description": "Automatically build a migration-grade semantic inventory of a frozen Android app using source discovery, Android CLI traversal, source-runtime binding, state evidence, dynamic-risk probes, and deterministic coverage gates. Use before Android-to-HarmonyOS implementation; do not write HarmonyOS code.",
+  "version": "2.2.0-gmi",
   "owner": "Android-Harmony Migration Maintainers",
-  "updated_at": "2026-08-26",
-  "review_due": "2026-11-24",
+  "updated_at": "2026-08-27",
+  "review_due": "2026-11-25",
   "review_cadence": "per-release",
   "status": "active",
   "maturity_tier": "governed",
   "lifecycle_stage": "governed",
   "context_budget_tier": "production",
   "skill_archetype": "evidence-backed-analyzer",
-  "skill_ir_source": "reports/skill-ir.json",
   "capability_scope": "phase-2-android-inventory",
   "resource_policy": "current-capabilities-only",
   "target_platforms": ["openai", "claude", "agent-skills", "vscode", "generic"],
-  "factory_components": ["references", "scripts", "assets", "evals", "reports"]
+  "factory_components": ["references", "scripts", "assets"]
 }

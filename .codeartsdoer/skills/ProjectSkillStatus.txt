@@ -1,0 +1,4 @@
+harmonyos-feature-implementation=true
+harmonyos-migration-scaffold=true
+android-migration-inventory=true
+android-harmony-migration-controller=true

@@ -139,6 +139,9 @@ def parser() -> argparse.ArgumentParser:
     screenshot.add_argument("--output", required=True)
     screenshot.add_argument("--width", type=int, required=True)
     screenshot.add_argument("--height", type=int, required=True)
+    apkanalyzer = sub.add_parser("manifest")
+    apkanalyzer.add_argument("kind", choices=("application-id", "version-name", "version-code"))
+    apkanalyzer.add_argument("apk")
     return root
 
 
@@ -147,6 +150,14 @@ def main() -> int:
     if maybe_error_zero(args.action):
         return 0
     try:
+        if args.action == "manifest":
+            values = {
+                "application-id": BUNDLE,
+                "version-name": "1.0.0",
+                "version-code": "1",
+            }
+            print(values[args.kind])
+            return 0
         if args.action == "toolchain":
             print("TOOLCHAIN_OK version=fixture-1")
             return 0
@@ -248,8 +259,8 @@ def main() -> int:
                     {
                         "assertion_id": "ASSERT-ANDROID-OBSERVABLE",
                         "kind": "ANDROID_EXPECTED_OBSERVABLE",
-                        "expected": "Login form is visible", "actual": "Login form is visible",
-                        "subject_ids": ["INV-AUTH-LOGIN-DEFAULT"], "status": "PASS",
+                        "expected": "LoginActivity displayed", "actual": "LoginActivity displayed",
+                        "subject_ids": ["INV-LOGINACTIVITY"], "status": "PASS",
                     },
                 ],
             }

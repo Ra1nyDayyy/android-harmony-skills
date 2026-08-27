@@ -1,6 +1,6 @@
 # Governed execution contract
 
-- `input_files: file-backed fixture`: immutable Phase 2 inventory/evidence/assets, accepted Phase 3 project and landing registry, Phase 4 work order, H4ENV configurations, migration-unit contracts, and feature work orders.
+- `input_files: file-backed fixture`: Phase 3 sealed artifacts (accepted scaffold project and registries), the gmi Phase 2 handoff (`runtime-gate.csv`, `audit-replay.csv` with 0 discrepancies, `phase-2-closure.json`, frozen page contracts), immutable Phase 2 evidence/assets, page and shared-capability work orders, and H4ENV configurations.
 - `owner`: Android-Harmony Migration Maintainers.
 - `review cadence`: every release and after parity schema, visual carrier rules, UiTest binding, assertion, retry-budget, asset, build, or Gate 4 changes.
 - `output contract`: one implemented parity row for every active Android state and required environment, exact carrier/component/function/transition/side-effect preservation, source-bound visual and capability records, final HBUILD/HEVD/HREV evidence, closed rework, and exact Gate 4 plus delivery-audit `PASS`.

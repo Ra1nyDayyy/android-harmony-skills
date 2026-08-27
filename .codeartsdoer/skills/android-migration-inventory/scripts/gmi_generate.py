@@ -356,6 +356,8 @@ def make_page_field_rows(comps: List[Dict[str, Any]], pages: List[Dict[str, Any]
             "field_type": t.split(".")[-1], "field_label": c.get("text", ""),
             "icon_resource": icon, "layout_ref": c["layout"],
             "source_ref": c["source_ref"],
+            # 非 preference 源：default_value/summary/category 记空串（表列对齐）
+            "default_value": "", "summary": "", "category": "",
         })
     # compose field nodes (ordered)
     for n in compose_nodes or []:
@@ -370,6 +372,8 @@ def make_page_field_rows(comps: List[Dict[str, Any]], pages: List[Dict[str, Any]
             "field_label": attrs.get("label", "") or n.get("text", ""),
             "icon_resource": ("R.drawable." + attrs["icon"]) if attrs.get("icon") else "",
             "layout_ref": n["layout"], "source_ref": n["source_ref"],
+            # 非 preference 源：default_value/summary/category 记空串（表列对齐）
+            "default_value": "", "summary": "", "category": "",
         })
     rows.sort(key=lambda r: (r["page_id"], r["order_index"]))
     return rows
@@ -398,10 +402,12 @@ def _page_for_source_hint(source: str, pages: List[Dict[str, Any]]) -> str:
         if score:
             ranked.append((score, str(page.get("page_id", ""))))
     if not ranked:
-        return "PAGE-NONE"
+        # 未绑定（空 page_id）：gmi_closure 会拦截 unbound 行，必须先补 page↔feature 映射
+        return ""
     ranked.sort(reverse=True)
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
-        return "PAGE-NONE"
+        # 歧义：保持未绑定（blocking），禁止猜测归属流入 P4
+        return ""
     return ranked[0][1]
 
 
@@ -646,6 +652,10 @@ def make_pref_concat_rows(pref_rows: List[Dict[str, Any]], pages: List[Dict[str,
                 "field_type": p["tag"], "field_label": p.get("title", "") or p.get("key", ""),
                 "icon_resource": p.get("icon", ""), "layout_ref": p["file"],
                 "source_ref": p["source_ref"],
+                # 三列增强（设置语义）：原样收录，资源引用保持 @string/xxx 形式
+                "default_value": p.get("defaultValue", ""),
+                "summary": p.get("summary", ""),
+                "category": p.get("category", ""),
             })
     return rows
 
@@ -898,7 +908,8 @@ def generate(project: str, workspace: str, features: Optional[List[str]] = None,
                 "env_id", "entry_condition", "expected_observable", "source_ref"], inv_rows)
     _csv_write(out_cand / "page-fields.candidates.csv",
                ["page_id", "page_symbol", "order_index", "field_id", "field_type",
-                "field_label", "icon_resource", "layout_ref", "source_ref"], field_rows)
+                "field_label", "icon_resource", "layout_ref", "source_ref",
+                "default_value", "summary", "category"], field_rows)
     _csv_write(out_cand / "third-party-dependencies.candidates.csv",
                ["candidate_id", "source_ref", "group", "artifact", "version", "resolution",
                 "scope", "condition", "example_rule", "feature_hint"], dep_rows)

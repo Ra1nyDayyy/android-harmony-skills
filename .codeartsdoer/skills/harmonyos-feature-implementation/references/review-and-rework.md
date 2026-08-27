@@ -20,12 +20,12 @@ The first three rows are upstream blockers: stop the current Phase 4 and return 
 | Problem | Return to |
 | --- | --- |
 | Scope, account, seed, environment conflict | Phase 1 controller |
-| Android state, rule, dependency, evidence, or asset fact | Phase 2 inventory lead |
+| Android state, rule, dependency, evidence, or asset fact | Phase 2 inventory lead (gmi) |
 | Module, route, surface, public UI, contract, asset landing | Phase 3 architecture lead |
-| Feature integration or source | Phase 4 feature owner |
-| UI, visual, interaction | Phase 4 UI agent |
-| Business, data, state | Phase 4 business/data agent |
-| Native capability or permission | Phase 4 native-capability agent |
+| Page integration or source | Phase 4 page owner |
+| UI, visual, interaction | Phase 4 page UI agent |
+| Business, data, state | Phase 4 page owner |
+| Native capability or permission | Phase 4 shared capability specialist |
 | Asset copy/conversion/provenance | Phase 4 visual-asset agent |
 | Build, install, device, environment, screenshot, UI tree, assertion, evidence | Phase 4 verification executor |
 
@@ -38,16 +38,16 @@ python3 scripts/manage_stage4_rework.py \
   --workspace <phase-04-workspace> --action open \
   --reviewer <parity-acceptance-agent-id> \
   --confirmed-by <implementation-lead-id> \
-  --ticket-id <new-ticket-id> --feature-id <Feature-ID> \
+  --ticket-id <new-ticket-id> --page-id <Page-ID> \
   --problem-type <fixed-problem-type> \
-  --parity-or-record-id <PAR-ID-or-record-ID> \
-  --failed-evidence-id <failed-HEVD-ID> \
+  --record-id <PAR-ID-or-record-ID> \
+  --failed-verification-id <failed-HEVD-ID> \
   --severity <CRITICAL|HIGH|MEDIUM|LOW> \
   --reason <observed-problem> \
   --completion-condition <measurable-pass-condition>
 ```
 
-Supported problem types are `FEATURE`, `INTEGRATION`, `SOURCE`, `UI`, `VISUAL`, `INTERACTION`, `BUSINESS`, `DATA`, `STATE`, `NATIVE`, `CAPABILITY`, `PERMISSION`, `ASSET`, `PROVENANCE`, `CONVERSION`, `BUILD`, `INSTALL`, `DEVICE`, `ENVIRONMENT`, `SCREENSHOT`, `UI_TREE`, `ASSERTION`, and `EVIDENCE`. The type fixes the responsible role; free-form routing is rejected.
+Supported problem types are `INTEGRATION`, `SOURCE`, `UI`, `VISUAL`, `INTERACTION`, `BUSINESS`, `DATA`, `STATE`, `NATIVE`, `CAPABILITY`, `PERMISSION`, `ASSET`, `PROVENANCE`, `CONVERSION`, `BUILD`, `INSTALL`, `DEVICE`, `ENVIRONMENT`, `SCREENSHOT`, `UI_TREE`, `ASSERTION`, and `EVIDENCE`. The type fixes the responsible role; free-form routing is rejected.
 
 After correction, create a new HBUILD and HEVD, then close:
 
@@ -57,11 +57,10 @@ python3 scripts/manage_stage4_rework.py \
   --reviewer <parity-acceptance-agent-id> \
   --confirmed-by <implementation-lead-id> \
   --ticket-id <ticket-id> \
-  --resolution-build-id <new-HBUILD-ID> \
-  --resolution-evidence-id <new-HEVD-ID>
+  --resolution-verification-id <new-HEVD-ID>
 ```
 
-`BUILD`, `INSTALL`, `DEVICE`, and `ENVIRONMENT` tickets require the build argument explicitly; other types may derive it from the new HEVD. Review the parity again after closing. The new accepted HREV supersedes the earlier failed review.
+The resolution HEVD must bind a new HBUILD created after the ticket was opened; the script derives and verifies the build binding from the sealed HEVD metadata, so no separate build argument exists. Review the parity again after closing. The new accepted HREV supersedes the earlier failed review.
 
 ## Closure
 

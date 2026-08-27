@@ -14,9 +14,10 @@ from _common import load_json, read_csv, utc_now, validate_id, write_csv
 
 
 FIELDS = [
-    "ticket_id", "severity", "problem_type", "source_or_mapping_id",
-    "failed_verification_id", "responsible_role", "responsible_agent", "confirmed_by",
-    "status", "opened_by", "opened_at", "correction_verification_id", "closed_by",
+    "ticket_id", "severity", "problem_type", "phase", "record_id", "feature_id",
+    "page_id", "state_id", "env_id", "failed_verification_id", "responsible_role",
+    "responsible_agent", "completion_condition", "status", "opened_by", "opened_at",
+    "confirmed_by", "confirmed_at", "resolution_verification_id", "closed_by",
     "closed_at", "notes",
 ]
 CONTROLLER_FIELDS = [
@@ -79,6 +80,12 @@ def read_header(path: Path) -> list[str]:
         return list(csv.DictReader(handle).fieldnames or [])
 
 
+def ensure_controller_ledger(controller_path: Path) -> None:
+    """Bootstrap the controller mirror with the frozen header when absent (gmi path)."""
+    if not controller_path.exists():
+        write_csv(controller_path, CONTROLLER_FIELDS, [])
+
+
 def route(problem_type: str, ownership: dict[str, str]) -> tuple[str, str]:
     definition = ROUTES.get(problem_type)
     if not definition:
@@ -107,11 +114,11 @@ def controller_row(
         "rework_id": local["ticket_id"],
         "created_at": local["opened_at"],
         "phase": "3",
-        "record_id": local["source_or_mapping_id"],
-        "feature_id": "",
-        "page_id": "",
-        "state_id": "",
-        "env_id": "",
+        "record_id": local["record_id"],
+        "feature_id": local["feature_id"],
+        "page_id": local["page_id"],
+        "state_id": local["state_id"],
+        "env_id": local["env_id"],
         "evidence_id": local["failed_verification_id"],
         "gate_rule": local["problem_type"],
         "reason": reason,
@@ -129,10 +136,15 @@ def validate_mirror(local: dict[str, str], controller: dict[str, str]) -> None:
         "rework_id": local["ticket_id"],
         "created_at": local["opened_at"],
         "phase": "3",
-        "record_id": local["source_or_mapping_id"],
+        "record_id": local["record_id"],
+        "feature_id": local["feature_id"],
+        "page_id": local["page_id"],
+        "state_id": local["state_id"],
+        "env_id": local["env_id"],
         "evidence_id": local["failed_verification_id"],
         "gate_rule": local["problem_type"],
         "assigned_to": local["responsible_agent"],
+        "completion_condition": local["completion_condition"],
     }
     differences = [
         key for key, value in expected.items() if controller.get(key, "") != value
@@ -168,14 +180,18 @@ def main() -> int:
     parser.add_argument("--reviewer", required=True)
     parser.add_argument("--ticket-id", required=True)
     parser.add_argument("--problem-type")
-    parser.add_argument("--source-or-mapping-id")
+    parser.add_argument("--record-id")
     parser.add_argument("--failed-verification-id")
     parser.add_argument("--severity", choices=("CRITICAL", "HIGH", "MEDIUM", "LOW"))
     parser.add_argument("--reason")
     parser.add_argument("--completion-condition")
     parser.add_argument("--confirmed-by")
+    parser.add_argument("--feature-id")
+    parser.add_argument("--page-id")
+    parser.add_argument("--state-id")
+    parser.add_argument("--env-id")
     parser.add_argument("--responsible-agent")
-    parser.add_argument("--correction-verification-id")
+    parser.add_argument("--resolution-verification-id")
     args = parser.parse_args()
 
     workspace_input = Path(args.workspace).expanduser().absolute()
@@ -209,6 +225,7 @@ def main() -> int:
     try:
         if read_header(local_path) != FIELDS:
             raise ValueError("Phase 3 rework-tickets.csv header differs from the contract")
+        ensure_controller_ledger(controller_path)
         if read_header(controller_path) != CONTROLLER_FIELDS:
             raise ValueError("Controller rework-log.csv header differs from the contract")
     except (OSError, ValueError) as exc:
@@ -230,7 +247,7 @@ def main() -> int:
             if args.action == "open":
                 required = {
                     "problem_type": args.problem_type,
-                    "source_or_mapping_id": args.source_or_mapping_id,
+                    "record_id": args.record_id,
                     "failed_verification_id": args.failed_verification_id,
                     "severity": args.severity,
                     "reason": args.reason,
@@ -244,12 +261,16 @@ def main() -> int:
                     parser.error("Ticket-ID already exists; overwrite is prohibited")
                 problem_type = str(args.problem_type).upper()
                 try:
-                    source_id = validate_id(
-                        str(args.source_or_mapping_id), "source_or_mapping_id"
-                    )
+                    source_id = validate_id(str(args.record_id), "record_id")
                     failed_id = validate_id(
                         str(args.failed_verification_id), "failed HVER-ID"
                     )
+                    for optional_id, optional_value in (
+                        ("feature_id", args.feature_id), ("page_id", args.page_id),
+                        ("state_id", args.state_id), ("env_id", args.env_id),
+                    ):
+                        if optional_value:
+                            validate_id(optional_value, optional_id)
                     failed = load_hver(workspace, failed_id)
                     responsible_role, responsible_agent = route(problem_type, ownership)
                 except ValueError as exc:
@@ -278,15 +299,22 @@ def main() -> int:
                     "ticket_id": args.ticket_id,
                     "severity": str(args.severity),
                     "problem_type": problem_type,
-                    "source_or_mapping_id": source_id,
+                    "phase": "3",
+                    "record_id": source_id,
+                    "feature_id": str(args.feature_id or ""),
+                    "page_id": str(args.page_id or ""),
+                    "state_id": str(args.state_id or ""),
+                    "env_id": str(args.env_id or ""),
                     "failed_verification_id": failed_id,
                     "responsible_role": responsible_role,
                     "responsible_agent": responsible_agent,
-                    "confirmed_by": str(lead),
+                    "completion_condition": str(args.completion_condition),
                     "status": "OPEN",
                     "opened_by": str(acceptance),
                     "opened_at": opened_at,
-                    "correction_verification_id": "",
+                    "confirmed_by": str(lead),
+                    "confirmed_at": opened_at,
+                    "resolution_verification_id": "",
                     "closed_by": "",
                     "closed_at": "",
                     "notes": str(args.reason),
@@ -314,11 +342,12 @@ def main() -> int:
                     or local.get("responsible_agent") != responsible_agent
                     or local.get("confirmed_by") != lead
                     or local.get("opened_by") != acceptance
+                    or local.get("phase") != "3"
                 ):
                     parser.error("Stored ticket authority or frozen routing differs")
-                correction_id = str(args.correction_verification_id or "")
+                correction_id = str(args.resolution_verification_id or "")
                 if not correction_id:
-                    parser.error("Closing Phase 3 rework requires --correction-verification-id")
+                    parser.error("Closing Phase 3 rework requires --resolution-verification-id")
                 if correction_id == local.get("failed_verification_id"):
                     parser.error("Correction evidence must use a new HVER-ID")
                 try:
@@ -340,7 +369,7 @@ def main() -> int:
                 local.update(
                     {
                         "status": "CLOSED",
-                        "correction_verification_id": correction_id,
+                        "resolution_verification_id": correction_id,
                         "closed_by": str(acceptance),
                         "closed_at": closed_at,
                     }

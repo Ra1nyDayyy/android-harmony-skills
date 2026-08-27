@@ -39,7 +39,7 @@ class GmiGateTest(unittest.TestCase):
             p2 = run / "phase-02-android-inventory"
             write_json(p2 / "closure-report.json", {
                 "generated_by": "gmi-phase3-adapter",
-                "gmi_closure": {"unmapped": 0, "audit_discrepancy": 0},
+                "gmi_closure": {"unmapped": 0, "audit_passed": True, "audit_discrepancy": 0},
             })
             for name in validate_gate.GMI_REQUIRED_CANDIDATES:
                 write_csv(run / "candidates" / name, ["id"])
@@ -50,6 +50,43 @@ class GmiGateTest(unittest.TestCase):
 
             errors, _ = validate_gate._validate_gmi_equivalent(run, 2)
             self.assertEqual([], errors)
+
+    def test_phase2_audit_gate_uses_audit_passed_only(self) -> None:
+        """A1：新版 gmi_closure 只产出布尔 audit_passed（无 audit_discrepancy 字段）；
+        validate --phase 2 必须以 audit_passed 为主判定，不得因缺少数值型
+        audit_discrepancy 报 audit 类错误；audit_passed 非 True 时仍须阻断。"""
+        with tempfile.TemporaryDirectory(prefix="gmi-audit-passed-") as temp_name:
+            run = Path(temp_name)
+            p2 = run / "phase-02-android-inventory"
+
+            def build_closure(gate: dict) -> None:
+                write_json(p2 / "closure-report.json", {
+                    "generated_by": "gmi-phase3-adapter",
+                    "gmi_closure": gate,
+                })
+                for name in validate_gate.GMI_REQUIRED_CANDIDATES:
+                    write_csv(run / "candidates" / name, ["id"])
+                (run / "candidates" / "manifest.sha256").write_text("fixture", encoding="utf-8")
+                write_csv(run / "coverage" / "coverage-ledger.csv", ["status", "disposition"])
+                write_csv(run / "runtime-evidence" / "runtime-gate.csv", ["status"])
+                write_csv(run / "runtime-evidence" / "audit-replay.csv", ["discrepancy"])
+
+            # 只有 audit_passed=True，完全没有 audit_discrepancy 字段
+            build_closure({"unmapped": 0, "audit_passed": True})
+            errors, _ = validate_gate._validate_gmi_equivalent(run, 2)
+            self.assertEqual(
+                [], [e for e in errors if "audit" in e.lower()],
+                f"no audit-class error is allowed when audit_passed=True: {errors}",
+            )
+            self.assertEqual([], errors)
+
+            # 反向对照：audit_passed=False 必须产生 audit 类错误
+            build_closure({"unmapped": 0, "audit_passed": False})
+            errors, _ = validate_gate._validate_gmi_equivalent(run, 2)
+            self.assertTrue(
+                any("audit_passed" in e for e in errors),
+                f"audit_passed=False must be blocked: {errors}",
+            )
 
     def test_phase4_rejects_forged_pass_without_real_implementation_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="gmi-gate-") as temp_name:
@@ -98,6 +135,27 @@ class GmiGateTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertIn("Route-ID/Page-ID", validate_gate._gmi_placeholder_page(source, "PAGE-DEMO"))
+
+    def test_reviewed_visual_ids_branch_by_verification_tier(self) -> None:
+        """P4 分层验证（validate_phase4 :4151 分支的判定核）：
+
+        - LITE：非空抽样子集通过、全集亦通过、空集与未知元素被拒；
+        - CORE：必须精确等于全集（子集被拒）。
+        """
+        universe = {"VEL-A", "VEL-B", "VEL-C"}
+        accept = validate_gate.reviewed_visual_ids_are_acceptable
+        # LITE 分支
+        self.assertTrue(accept(["VEL-A"], universe, "LITE"))
+        self.assertTrue(accept(["VEL-A", "VEL-C"], universe, "LITE"))
+        self.assertTrue(accept(["VEL-A", "VEL-B", "VEL-C"], universe, "LITE"))
+        self.assertFalse(accept([], universe, "LITE"))            # 空抽样被拒
+        self.assertFalse(accept(["VEL-GHOST"], universe, "LITE"))  # 超出全集被拒
+        self.assertFalse(accept("VEL-A", universe, "LITE"))        # 非列表被拒
+        # CORE 分支（默认，与旧行为一致）
+        self.assertTrue(accept(["VEL-A", "VEL-B", "VEL-C"], universe, "CORE"))
+        self.assertFalse(accept(["VEL-A"], universe, "CORE"))      # 子集被拒
+        self.assertFalse(accept(["VEL-A", "VEL-B", "VEL-C", "VEL-GHOST"], universe, "CORE"))
+        self.assertFalse(accept([], universe, "CORE"))
 
 
 if __name__ == "__main__":

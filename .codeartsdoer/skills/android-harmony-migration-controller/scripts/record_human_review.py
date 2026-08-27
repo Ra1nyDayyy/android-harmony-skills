@@ -79,6 +79,45 @@ def main() -> int:
         if not args.reviewer.strip():
             raise ValueError("reviewer must be nonempty")
 
+        # gmi 布局双写：Phase 2 批准时为 gmi_phase3_adapter 额外固化人工验收记录；
+        # run 下无 gmi phase-2 closure 时视为 legacy 流程，仅提示、不阻断
+        acceptance_path: Path | None = None
+        acceptance_content = ""
+        if args.phase == 2 and args.decision in APPROVAL_DECISIONS:
+            gmi_closure_path = run_dir / "phase-02-android-inventory" / "phase-2-closure.json"
+            if gmi_closure_path.is_file():
+                gmi_closure = load_json_object(gmi_closure_path, "gmi phase-2 closure")
+                if gmi_closure.get("machine_status") != "READY_FOR_HUMAN_REVIEW":
+                    raise ValueError(
+                        "gmi phase-2 closure machine_status is "
+                        f"{gmi_closure.get('machine_status')!r}; only READY_FOR_HUMAN_REVIEW may be accepted"
+                    )
+                acceptance_path = (
+                    run_dir / "phase-02-android-inventory" / "human-review" / "phase-2-acceptance.json"
+                )
+                if acceptance_path.exists():
+                    raise ValueError(f"gmi phase-2 acceptance already exists: {acceptance_path}")
+                acceptance_recorded_at = utc_now()
+                # decision/closure_sha256 为 gmi_phase3_adapter 的强制校验字段；
+                # reviewer_id/accepted_at 是 adapter 读取的字段名，与 reviewer/recorded_at 同源
+                acceptance_record = {
+                    "decision": "ACCEPTED",
+                    "closure_sha256": sha256_file(gmi_closure_path),
+                    "reviewer": args.reviewer.strip(),
+                    "reviewer_id": args.reviewer.strip(),
+                    "review_id": args.review_id,
+                    "recorded_at": acceptance_recorded_at,
+                    "accepted_at": acceptance_recorded_at,
+                    "source_decision": args.decision,
+                    "reason": args.reason,
+                }
+                acceptance_content = json.dumps(acceptance_record, indent=2, ensure_ascii=False) + "\n"
+            else:
+                print(
+                    "note: gmi phase-2 closure not found; skipping gmi acceptance dual-write",
+                    file=sys.stderr,
+                )
+
         directory = review_directory(run_dir, args.phase).resolve()
         try:
             directory.relative_to(run_dir)
@@ -106,6 +145,15 @@ def main() -> int:
         except Exception:
             record_path.unlink(missing_ok=True)
             raise
+        if acceptance_path is not None:
+            try:
+                exclusive_write(acceptance_path, acceptance_content)
+            except Exception:
+                # 验收记录写出失败时连同主记录一起回滚，保持 run 可重试
+                record_path.unlink(missing_ok=True)
+                seal_path.unlink(missing_ok=True)
+                raise
+            print(acceptance_path)
         print(record_path)
         return 0
     except (OSError, ValueError) as exc:

@@ -1,5 +1,5 @@
 code_ref,feature_id,page_id,state_candidate_id,component_type,symbol,file_path,line,coverage_disposition,owner,status,notes
-# === 候选驱动：先跑 scripts/generate_candidates.py 产 candidates/code-map.candidates.full.csv，再对每行打勾 ===
+# === 候选驱动：先跑 scripts/gmi.py 产 candidates/code-map.candidates.full.csv，再对每行打勾 ===
 # 选择题模式：choices_feature=<included_features> choices_disposition=IN_SCOPE|NON_VISUAL|OUT_OF_SCOPE
 # 示例（照抄格式，file:line必须可grep）：
 # app/src/main/java/com/decimalab/todokotlin/fragments/list/ListFragment.kt:68,TODO-LIST,PAGE-LISTFRAGMENT-9A225EE2,STATE-LIST-DATA,page,ListFragment,app/src/main/java/com/decimalab/todokotlin/fragments/list/ListFragment.kt,68,IN_SCOPE,CODEMAP-001,VERIFIED,StaggeredGridLayoutManager(2) 2列瀑布流

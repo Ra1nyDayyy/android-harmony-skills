@@ -1,1 +1,1 @@
-evidence_id,inventory_id,feature_id,page_id,state_id,env_id,captured_at,relative_path,metadata_sha256,status,supersedes_evidence_id
+page_id,tag,foreground,ui_sha256,png_sha256,screen_resolution,screen_density

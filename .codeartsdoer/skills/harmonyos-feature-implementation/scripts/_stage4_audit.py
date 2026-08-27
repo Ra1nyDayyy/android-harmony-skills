@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from uitest_snapshot import validate_uitest_evidence
+from uitest_snapshot import METADATA_FIELDS, validate_uitest_evidence
 
 from _common import (
     PHASE4_CATEGORY_ORDER,
@@ -36,6 +36,25 @@ from _common import (
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 BUILD_SEQUENCE = list(PHASE4_CATEGORY_ORDER[:4])
 EVIDENCE_SEQUENCE = list(PHASE4_CATEGORY_ORDER[4:])
+# P4 分层验证（LITE 轻证）：设备/安装/启动/导航/截图/UiTest 保留，
+# SEED_RESET/NETWORK/PERMISSION/BUSINESS_ASSERT 命令降抽样（三类断言证据仍保留）。
+LITE_EVIDENCE_SEQUENCE = [
+    category for category in EVIDENCE_SEQUENCE if category in {
+        "DEVICE_CHECK", "CLEAN_INSTALL", "LAUNCH", "NAVIGATE",
+        "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
+    }
+]
+# LITE 组件树结构化一致率阈值（1 - |differences| / max(1, |expected|)）。
+LITE_COMPONENT_OVERLAP_MIN = 0.8
+VERIFICATION_TIERS = ("CORE", "LITE")
+
+
+def evidence_sequence_for(tier: str) -> list[str]:
+    """Return the frozen HEVD command sequence for a verification tier."""
+    normalized = str(tier or "CORE").strip().upper()
+    if normalized not in VERIFICATION_TIERS:
+        raise ValueError(f"verification tier must be one of {list(VERIFICATION_TIERS)}: {tier!r}")
+    return LITE_EVIDENCE_SEQUENCE if normalized == "LITE" else EVIDENCE_SEQUENCE
 REQUIRED_ASSERTION_KINDS = {"VISUAL_STATE", "BUSINESS_RESULT", "INTERACTION"}
 SERIAL_CATEGORIES = {
     "BUNDLE_CHECK", "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
@@ -58,13 +77,13 @@ def ownership_from(manifest: dict[str, Any]) -> dict[str, str]:
     value = manifest.get("ownership")
     if isinstance(value, dict):
         return {str(key): str(item) for key, item in value.items()}
-    legacy = manifest.get("roles")
-    if isinstance(legacy, dict):
+    compat_roles = manifest.get("roles")
+    if isinstance(compat_roles, dict):
         return {
-            "implementation_lead_id": str(legacy.get("implementation_lead", "")),
-            "visual_asset_agent_id": str(legacy.get("asset_agent", "")),
-            "verification_executor_id": str(legacy.get("verification_executor", "")),
-            "parity_acceptance_agent_id": str(legacy.get("parity_checker", "")),
+            "implementation_lead_id": str(compat_roles.get("implementation_lead", "")),
+            "visual_asset_agent_id": str(compat_roles.get("asset_agent", "")),
+            "verification_executor_id": str(compat_roles.get("verification_executor", "")),
+            "parity_acceptance_agent_id": str(compat_roles.get("parity_checker", "")),
         }
     return {}
 
@@ -315,6 +334,157 @@ def validate_assertions(
     return value, result
 
 
+_LITE_TYPE_MAP = {
+    "textview": "text", "edittext": "textinput", "imageview": "image",
+    "recyclerview": "list", "checkbox": "checkbox", "switch": "toggle",
+    "framelayout": "stack", "button": "button", "text": "text",
+    "textinput": "textinput", "image": "image", "list": "list",
+    "toggle": "toggle", "stack": "stack", "column": "column", "row": "row",
+}
+
+
+def _lite_normalized_type(component: dict[str, Any]) -> str:
+    raw = str(component.get("type", component.get("class_name", ""))).split(".")[-1].lower()
+    if raw == "linearlayout":
+        return "row" if str(component.get("orientation", "")).lower() == "horizontal" else "column"
+    return _LITE_TYPE_MAP.get(raw, raw)
+
+
+def _lite_component_overlap(
+    expected_rows: Any,
+    actual_rows: Any,
+) -> tuple[float, list[dict[str, object]]]:
+    """Structured component-tree comparison for LITE pages (P4 分层验证).
+
+    内联自 compare_component_tree.compare_components（备份
+    /tmp/skills-backup-20260828-024354，2026-08-28 移植）：按 component_id 求
+    MISSING/UNEXPECTED 差集，交集比对归一化 type 与 text（实拍快照无
+    parent_component_id/order 字段，故较蓝本裁剪字段面）。一致率
+    = 1 - |differences| / max(1, |expected|)。
+    """
+    expected_list = expected_rows if isinstance(expected_rows, list) else []
+    actual_list = actual_rows if isinstance(actual_rows, list) else []
+    expected = {
+        str(row.get("component_id", "")): row
+        for row in expected_list if isinstance(row, dict) and row.get("component_id")
+    }
+    actual = {
+        str(row.get("component_id", "")): row
+        for row in actual_list if isinstance(row, dict) and row.get("component_id")
+    }
+    differences: list[dict[str, object]] = []
+    for component_id in sorted(set(expected) - set(actual)):
+        differences.append({"kind": "MISSING_COMPONENT", "component_id": component_id})
+    for component_id in sorted(set(actual) - set(expected)):
+        differences.append({"kind": "UNEXPECTED_COMPONENT", "component_id": component_id})
+    for component_id in sorted(set(expected) & set(actual)):
+        wanted, observed = expected[component_id], actual[component_id]
+        if _lite_normalized_type(wanted) != _lite_normalized_type(observed):
+            differences.append({
+                "kind": "PROPERTY_MISMATCH", "component_id": component_id, "field": "type",
+                "expected": _lite_normalized_type(wanted), "actual": _lite_normalized_type(observed),
+            })
+            continue
+        wanted_text = str(wanted.get("text", ""))
+        if wanted_text and str(observed.get("text", "")) != wanted_text:
+            differences.append({
+                "kind": "PROPERTY_MISMATCH", "component_id": component_id, "field": "text",
+                "expected": wanted_text, "actual": str(observed.get("text", "")),
+            })
+    overlap = 1.0 - len(differences) / max(1, len(expected))
+    return overlap, differences
+
+
+def validate_uitest_evidence_lite(
+    directory: Path,
+    probe: dict[str, Any],
+    *,
+    page_id: str,
+    state_id: str,
+    bundle_name: str,
+    carrier: str,
+    target_id: str,
+    generation_manifest_sha256: str,
+    page_plan_sha256: str,
+    test_hap_sha256: str,
+    final_hap_sha256: str,
+    device_identity_sha256: str,
+    command_sha256: str,
+    expected_components: Any,
+) -> dict[str, Any]:
+    """LITE-tier UiTest evidence check: keep hash bindings, relax per-component strictness.
+
+    与 uitest_snapshot.validate_uitest_evidence 同构的哈希绑定段（metadata 字段
+    集/标量/文件哈希、probe 身份、快照身份）全部保留；放宽逐组件
+    match_count==1/text 严检与 EVENT/TRANSITION 集合精确相等，改用结构化组件树
+    对比（_lite_component_overlap），通过率 >= LITE_COMPONENT_OVERLAP_MIN 且
+    组件集合非空。
+    """
+
+    directory = Path(directory).resolve(strict=True)
+    metadata_path = directory / "ui-test-snapshot-metadata.json"
+    result_path = directory / "ui-test-snapshot.json"
+    trace_path = directory / "ui-test-snapshot-operation-trace.json"
+    screenshot_path = directory / "ui-test-snapshot.png"
+    for path in (metadata_path, result_path, trace_path, screenshot_path):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"UiTest evidence file is missing or non-canonical: {path.name}")
+    metadata = load_json(metadata_path)
+    if not isinstance(metadata, dict) or set(metadata) != METADATA_FIELDS:
+        raise ValueError("UiTest metadata field set differs")
+    expected_scalars = {
+        "schema_version": "ui-test-snapshot-evidence-v1",
+        "probe_id": f"{page_id}::{state_id}", "page_id": page_id, "state_id": state_id,
+        "bundle_name": bundle_name, "carrier": carrier, "target_id": target_id,
+        "result_path": "ui-test-snapshot.json",
+        "operation_trace_path": "ui-test-snapshot-operation-trace.json",
+        "screenshot_path": "ui-test-snapshot.png",
+        "generation_manifest_sha256": generation_manifest_sha256,
+        "page_plan_sha256": page_plan_sha256,
+        "test_hap_sha256": test_hap_sha256, "final_hap_sha256": final_hap_sha256,
+        "device_identity_sha256": device_identity_sha256, "command_sha256": command_sha256,
+    }
+    for field, expected in expected_scalars.items():
+        if metadata.get(field) != expected:
+            raise ValueError(f"UiTest {field} differs from frozen execution")
+    for field, path in (
+        ("result_sha256", result_path),
+        ("operation_trace_sha256", trace_path),
+        ("screenshot_sha256", screenshot_path),
+    ):
+        if str(metadata.get(field, "")) != sha256_file(path):
+            raise ValueError(f"UiTest {field} differs")
+    if not isinstance(probe, dict) or probe.get("probe_id") != f"{page_id}::{state_id}":
+        raise ValueError("UiTest generated probe identity differs")
+    result = load_json(result_path)
+    components = result.get("components") if isinstance(result, dict) else None
+    if not isinstance(components, list) or result.get("probe_id") != probe["probe_id"]:
+        raise ValueError("UiTest component snapshot identity differs")
+    if not components or any(not isinstance(item, dict) for item in components):
+        raise ValueError("UiTest LITE component snapshot is empty or malformed")
+    for component in components:
+        if not isinstance(component, dict) or not str(component.get("component_id", "")):
+            raise ValueError("UiTest LITE component snapshot lacks component identity")
+    trace = load_json(trace_path)
+    if not isinstance(trace, list) or any(not isinstance(row, dict) for row in trace):
+        raise ValueError("UiTest operation trace is malformed")
+
+    overlap, differences = _lite_component_overlap(expected_components, components)
+    if overlap < LITE_COMPONENT_OVERLAP_MIN:
+        preview = json.dumps(differences[:5], ensure_ascii=False, sort_keys=True)
+        raise ValueError(
+            f"UiTest LITE component-tree overlap {overlap:.3f} is below "
+            f"{LITE_COMPONENT_OVERLAP_MIN}: {preview}"
+        )
+    return {
+        "metadata": metadata,
+        "components": components,
+        "operation_trace": trace,
+        "lite_component_overlap": overlap,
+        "lite_component_differences": differences,
+    }
+
+
 def validate_command_records(
     records: Any,
     expected_sequence: list[str],
@@ -445,7 +615,19 @@ def validate_hevd(
     expected_executor: str,
     input_lock_sha256: str,
     source_snapshot_sha256: str,
+    tier: str = "CORE",
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Validate one sealed HEVD package; ``tier`` selects CORE deep vs LITE light checks.
+
+    P4 分层验证：CORE（默认）保持全证据深验不变；LITE 时
+    a) EVIDENCE_SEQUENCE 校验用裁剪序列（evidence_sequence_for）；
+    b) validate_uitest_evidence 换为 lite 模式（结构化组件树对比，阈值
+       LITE_COMPONENT_OVERLAP_MIN）；
+    c) 哈希链/密封校验、三类断言 PASS、截图分辨率等式全部保留。
+    """
+    tier = str(tier or "CORE").strip().upper()
+    if tier not in VERIFICATION_TIERS:
+        raise ValueError(f"verification tier must be one of {list(VERIFICATION_TIERS)}: {tier!r}")
     verify_sealed_package(directory, evidence_id, "SEALED")
     metadata_path = directory / "metadata.json"
     metadata = load_json(metadata_path)
@@ -531,23 +713,38 @@ def validate_hevd(
         sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
     page_contract = load_json(workspace / "page-contracts" / f"{index['page_id']}.json")
-    validate_uitest_evidence(
-        directory, probes[0], page_id=index["page_id"], state_id=index["state_id"],
-        bundle_name=str(environment["base_application"]["bundle_name"]),
-        carrier=str(page_contract["carrier_type"]), target_id=str(parity["target_id"]),
-        generation_manifest_sha256=sha256_file(generation_manifest_path),
-        page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
-        final_hap_sha256=str(primary["sha256"]),
-        device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
-        required_event_ids={
-            str(row["event_id"]) for row in page_contract.get("interaction_bindings", [])
-            if isinstance(row, dict) and row.get("event_id")
-        },
-        required_transition_ids={
-            str(row["transition_id"]) for row in page_contract.get("transitions", [])
-            if isinstance(row, dict) and row.get("transition_id")
-        },
-    )
+    if tier == "LITE":
+        # LITE 轻证：哈希绑定保留（见 validate_uitest_evidence_lite 前半段），
+        # 逐组件 match_count==1/text 严检与 EVENT/TRANSITION 集合精确相等降为
+        # 结构化组件树对比（expected=合同组件树）。
+        validate_uitest_evidence_lite(
+            directory, probes[0], page_id=index["page_id"], state_id=index["state_id"],
+            bundle_name=str(environment["base_application"]["bundle_name"]),
+            carrier=str(page_contract["carrier_type"]), target_id=str(parity["target_id"]),
+            generation_manifest_sha256=sha256_file(generation_manifest_path),
+            page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+            final_hap_sha256=str(primary["sha256"]),
+            device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+            expected_components=page_contract.get("components"),
+        )
+    else:
+        validate_uitest_evidence(
+            directory, probes[0], page_id=index["page_id"], state_id=index["state_id"],
+            bundle_name=str(environment["base_application"]["bundle_name"]),
+            carrier=str(page_contract["carrier_type"]), target_id=str(parity["target_id"]),
+            generation_manifest_sha256=sha256_file(generation_manifest_path),
+            page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+            final_hap_sha256=str(primary["sha256"]),
+            device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+            required_event_ids={
+                str(row["event_id"]) for row in page_contract.get("interaction_bindings", [])
+                if isinstance(row, dict) and row.get("event_id")
+            },
+            required_transition_ids={
+                str(row["transition_id"]) for row in page_contract.get("transitions", [])
+                if isinstance(row, dict) and row.get("transition_id")
+            },
+        )
     bindings = {
         "parity_id": parity["parity_id"], "hbuild_id": index["hbuild_id"],
         "h4env_id": index["h4env_id"], "device_id": str(environment["device_id"]),
@@ -568,7 +765,10 @@ def validate_hevd(
         or uitest_meta.get("final_hap_sha256") != primary.get("sha256")
     ):
         raise ValueError(f"HEVD UiTest snapshot hashes differ: {evidence_id}")
-    validate_command_records(metadata.get("commands"), EVIDENCE_SEQUENCE, environment, directory, evidence_id)
+    validate_command_records(
+        metadata.get("commands"), evidence_sequence_for(tier),
+        environment, directory, evidence_id,
+    )
     result_categories = {
         "BUSINESS_ASSERT": ("assertions.json", directory / "assertions.json"),
         "SCREENSHOT_CAPTURE": ("screenshot.png", screenshot),

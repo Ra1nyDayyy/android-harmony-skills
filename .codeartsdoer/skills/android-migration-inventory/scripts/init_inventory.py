@@ -224,13 +224,20 @@ def main() -> int:
         ):
             (temp_dir / name).mkdir()
         (temp_dir / "asset-package" / "files").mkdir()
+        def copy_template(source: str, target: Path) -> None:
+            # 模板中的 `#` 注释行仅供人工阅读；复制到工作区时剥离，避免被当成数据行
+            lines = [
+                line for line in (ASSETS / source).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+            atomic_text(target, "\n".join(lines) + "\n")
         for source, target in (
             ("inventory.template.csv", "inventory.csv"),
             ("asset-inventory.template.csv", "asset-inventory.csv"),
             ("evidence-index.template.csv", "evidence-index.csv"),
             ("rechecks.template.csv", "rechecks.csv"),
         ):
-            shutil.copyfile(ASSETS / source, temp_dir / target)
+            copy_template(source, temp_dir / target)
         for source, target in (
             ("code-map.template.csv", "code-map.csv"),
             ("business-rules.template.csv", "business-rules.csv"),
@@ -238,7 +245,7 @@ def main() -> int:
             ("system-capabilities.template.csv", "system-capabilities.csv"),
             ("third-party-dependencies.template.csv", "third-party-dependencies.csv"),
         ):
-            shutil.copyfile(ASSETS / source, temp_dir / "catalogs" / target)
+            copy_template(source, temp_dir / "catalogs" / target)
         coverage_fields = [
             "feature_id", "feature_name", "applicable_env_ids", "code_mapped", "runtime_states_captured",
             "business_rules_mapped", "data_dependencies_mapped", "status", "owner", "notes",

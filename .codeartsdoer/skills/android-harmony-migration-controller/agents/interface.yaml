@@ -10,7 +10,7 @@ compatibility:
     paths: []
   execution:
     context: "inline"
-    shell: "bash"
+    shell: "powershell"
   trust:
     source_tier: "local"
     remote_inline_execution: "forbid"

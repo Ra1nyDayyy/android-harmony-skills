@@ -1,1 +1,0 @@
-# Standard-library production scripts; PyYAML is required only by external YAO validation tooling.

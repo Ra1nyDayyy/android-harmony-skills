@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sys
 import tempfile
@@ -35,7 +36,19 @@ class GmiPhase3AdapterTest(unittest.TestCase):
             workspace = root / "gmi"
             out = root / "run"
             candidates = workspace / "candidates"
-            write_json(workspace / "phase-2-closure.json", {"gate": {"unmapped": 0, "audit_discrepancy": 0}})
+            # 新版 adapter 契约：closure 必须处于 READY_FOR_HUMAN_REVIEW，且必须
+            # 存在绑定 closure 哈希的人工接受记录（decision=ACCEPTED）才肯运行。
+            closure_path = workspace / "phase-2-closure.json"
+            write_json(closure_path, {
+                "machine_status": "READY_FOR_HUMAN_REVIEW",
+                "gate": {"unmapped": 0, "audit_discrepancy": 0},
+            })
+            write_json(workspace / "human-review" / "phase-2-acceptance.json", {
+                "decision": "ACCEPTED",
+                "reviewer_id": "adapter-tester",
+                "accepted_at": "2026-08-28T00:00:00Z",
+                "closure_sha256": hashlib.sha256(closure_path.read_bytes()).hexdigest(),
+            })
             (candidates / "manifest.sha256").parent.mkdir(parents=True, exist_ok=True)
             (candidates / "manifest.sha256").write_text("fixture", encoding="utf-8")
             completeness = [

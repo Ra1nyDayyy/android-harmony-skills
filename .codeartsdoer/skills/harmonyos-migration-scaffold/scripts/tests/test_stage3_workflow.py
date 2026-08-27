@@ -1,13 +1,14 @@
-#!/usr/bin/env python3
-"""End-to-end and adversarial tests for the governed Phase 3 scaffold."""
+﻿#!/usr/bin/env python3
+"""End-to-end and adversarial tests for the governed Phase 3 scaffold (gmi path)."""
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import importlib.util
 import json
 import os
+import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -18,11 +19,26 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from phase2_fixture import CONTROLLER_SKILL, build_closed_phase2, sha256, write_csv
+from gmi_phase2_fixture import (
+    AMBIGUOUS_PAGE,
+    DIALOG_PAGE,
+    LOGIN_PAGE,
+    OWNERSHIP,
+    build_gmi_run,
+    sha256,
+    write_rows,
+)
 
 
 SKILL = HERE.parents[1]
 FAKE_HARMONY = (HERE / "fake_harmony.py").resolve()
+# freeze_environment.resolve_frozen_executable requires the executable bit;
+# keep the checked-in fake executable regardless of how the repo was synced.
+FAKE_HARMONY.chmod(FAKE_HARMONY.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+ROUTE_ID = "ROUTE-LOGINACTIVITY"
+PAGE_SHELL_ID = "PAGESHELL-LOGINACTIVITY"
+PAGE_ID = "PAGE-LOGIN-A1"
 
 
 def run_cmd(
@@ -48,48 +64,36 @@ def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         return list(reader.fieldnames or []), list(reader)
 
 
-def issue_phase3(run_dir: Path) -> Path:
-    issued = run_cmd(
-        sys.executable,
-        str(CONTROLLER_SKILL / "scripts" / "issue_phase3_work_order.py"),
-        "--run-dir", str(run_dir),
-        "--issued-by", "migration-controller-1",
-        "--architecture-lead-id", "architecture-lead-1",
-        "--toolchain-agent-id", "toolchain-agent-1",
-        "--navigation-agent-id", "navigation-agent-1",
-        "--public-ui-agent-id", "public-ui-agent-1",
-        "--capability-contract-agent-id", "capability-agent-1",
-        "--architecture-acceptance-agent-id", "architecture-acceptance-1",
-    )
-    return Path(json.loads(issued.stdout)["work_order"])
-
-
-def initialize_phase3(run_dir: Path, work_order: Path) -> Path:
+def initialize_phase3(run_dir: Path) -> Path:
     initialized = run_cmd(
         sys.executable, str(SKILL / "scripts" / "init_scaffold.py"),
-        "--run-dir", str(run_dir), "--work-order", str(work_order),
-        "--architecture-lead", "architecture-lead-1",
+        "--run-dir", str(run_dir),
+        "--work-order", str(run_dir / "controller" / "work-orders" / "PHASE3-GMI-FIXTURE.json"),
+        "--architecture-lead", OWNERSHIP["architecture_lead_id"],
     )
-    return Path(json.loads(initialized.stdout)["workspace"])
+    payload = initialized.stdout.strip().splitlines()[-1]
+    return Path(json.loads(payload)["workspace"])
 
 
 def create_project_and_registries(workspace: Path) -> None:
+    """Simulate the Phase 3 logical roles completing the seeded registries."""
     project = workspace / "harmony-project"
-    entry = project / "entry"
-    source = entry / "src"
-    source.mkdir(parents=True, exist_ok=True)
-    (entry / "module.json5").write_text("{ module: { name: 'entry' } }\n", encoding="utf-8")
+    entry_src = project / "entry" / "src"
+    entry_src.mkdir(parents=True, exist_ok=True)
     (project / "oh-package-lock.json5").write_text("{ lockfileVersion: 3 }\n", encoding="utf-8")
-    (source / "LoginShell.ets").write_text(
+    (entry_src / "LoginShell.ets").write_text(
         "const FEATURE_ID = 'FEATURE-AUTH'\n"
-        "const PAGE_ID = 'PAGE-LOGIN'\n"
-        "const PAGE_SHELL_ID = 'PSHELL-LOGIN'\n"
-        "const ROUTE_ID = 'ROUTE-LOGIN'\n"
+        f"const PAGE_ID = '{PAGE_ID}'\n"
+        f"const PAGE_SHELL_ID = '{PAGE_SHELL_ID}'\n"
+        f"const ROUTE_ID = '{ROUTE_ID}'\n"
         "export struct LoginShell {}\n",
         encoding="utf-8",
     )
-    (source / "Routes.ets").write_text(
-        "export const LoginRouteRegistry = 'ROUTE-LOGIN'\n", encoding="utf-8"
+    (project / "entry" / "src" / "main" / "ets" / "pages").mkdir(parents=True, exist_ok=True)
+    (project / "entry" / "src" / "main" / "ets" / "pages" / "loginactivity.ets").write_text(
+        f"export const LOGINACTIVITY_ROUTE = '{ROUTE_ID}'\n"
+        "export struct LoginActivity {}\n",
+        encoding="utf-8",
     )
     foundation_symbols = {
         "COLOR": "ColorTokens",
@@ -102,78 +106,50 @@ def create_project_and_registries(workspace: Path) -> None:
         "ERROR_SHELL": "CommonErrorShell",
         "RESPONSIVE_RULE": "ResponsiveRules",
     }
-    (source / "Foundation.ets").write_text(
+    (entry_src / "Foundation.ets").write_text(
         "\n".join(f"export interface {symbol} {{}}" for symbol in foundation_symbols.values()) + "\n",
         encoding="utf-8",
     )
 
-    write_csv(
-        workspace / "module-registry.csv",
-        [
-            "harmony_module_id", "module_name", "layer", "module_path", "build_config_path",
-            "feature_ids", "declared_dependencies", "created_by", "status", "notes",
-        ],
-        [
-            {
-                "harmony_module_id": "HMOD-ENTRY", "module_name": "entry", "layer": "app",
-                "module_path": "entry", "build_config_path": "entry/module.json5",
-                "feature_ids": "FEATURE-AUTH", "declared_dependencies": "",
-                "created_by": "toolchain-agent-1", "status": "READY", "notes": "",
-            }
-        ],
-    )
     asset_fields, asset_rows = read_csv(workspace / "asset-registry.csv")
-    if len(asset_rows) != 1 or asset_rows[0]["asset_id"] != "ASSET-AUTH-LOGO":
+    if len(asset_rows) != 1:
         raise AssertionError("Phase 3 did not seed one row for the real Phase 2 asset")
     asset_rows[0].update(
         {
-            "target_module_id": "HMOD-ENTRY",
+            "target_module_id": "ENTRY",
             "target_path": "entry/src/main/resources/base/media/login_logo.svg",
             "target_symbol": "login_logo",
             "planned_mode": "DIRECT_COPY",
             "decision": "COPY_UNCHANGED",
-            "created_by": "architecture-lead-1",
+            "created_by": OWNERSHIP["architecture_lead_id"],
             "status": "READY",
             "notes": "Planned landing only; Phase 3 does not copy the asset into implementation.",
         }
     )
-    write_csv(workspace / "asset-registry.csv", asset_fields, asset_rows)
+    write_rows(workspace / "asset-registry.csv", asset_fields, asset_rows)
+
     architecture_fields, architecture = read_csv(workspace / "architecture-map.csv")
     if len(architecture) != 1:
         raise AssertionError(f"Expected one frozen Phase 2 source row, got {len(architecture)}")
+    if architecture[0]["mapping_type"] != "ROUTE_PAGE":
+        raise AssertionError(
+            f"LoginActivity carrier must map ROUTE_PAGE, got {architecture[0]['mapping_type']}"
+        )
     architecture[0].update(
         {
-            "mapping_type": "ROUTE_PAGE",
-            "harmony_module_id": "HMOD-ENTRY",
-            "route_id": "ROUTE-LOGIN",
-            "surface_shell_id": "",
-            "page_shell_id": "PSHELL-LOGIN",
             "shell_file": "entry/src/LoginShell.ets",
             "screenshot_ids": "HSCREEN-LOGIN",
             "verification_id": "HVER-001",
-            "mapped_by": "navigation-agent-1",
             "mapping_status": "SHELL_CREATED_PENDING_IMPLEMENTATION",
         }
     )
-    write_csv(workspace / "architecture-map.csv", architecture_fields, architecture)
-    write_csv(
-        workspace / "route-registry.csv",
-        [
-            "route_id", "page_id", "page_shell_id", "harmony_module_id", "route_pattern",
-            "registry_file", "registry_symbol", "page_shell_file", "feature_ids", "created_by",
-            "status", "notes",
-        ],
-        [
-            {
-                "route_id": "ROUTE-LOGIN", "page_id": "PAGE-LOGIN",
-                "page_shell_id": "PSHELL-LOGIN", "harmony_module_id": "HMOD-ENTRY",
-                "route_pattern": "/login", "registry_file": "entry/src/Routes.ets",
-                "registry_symbol": "LoginRouteRegistry", "page_shell_file": "entry/src/LoginShell.ets",
-                "feature_ids": "FEATURE-AUTH", "created_by": "navigation-agent-1",
-                "status": "READY", "notes": "",
-            }
-        ],
-    )
+    write_rows(workspace / "architecture-map.csv", architecture_fields, architecture)
+
+    route_fields, route_rows = read_csv(workspace / "route-registry.csv")
+    if len(route_rows) != 1 or route_rows[0]["route_id"] != ROUTE_ID:
+        raise AssertionError("gmi seeding did not produce the expected route row")
+    route_rows[0]["page_shell_file"] = "entry/src/LoginShell.ets"
+    write_rows(workspace / "route-registry.csv", route_fields, route_rows)
 
     public_rows: list[dict[str, str]] = []
     for number, (foundation_type, symbol) in enumerate(foundation_symbols.items(), start=1):
@@ -181,19 +157,38 @@ def create_project_and_registries(workspace: Path) -> None:
             {
                 "foundation_id": f"FOUNDATION-{number:03d}",
                 "foundation_type": foundation_type,
-                "harmony_module_id": "HMOD-ENTRY",
+                "harmony_module_id": "ENTRY",
                 "file_path": "entry/src/Foundation.ets",
                 "symbol": symbol,
                 "may_bind_to_placeholder": (
                     "false" if foundation_type in {"LOADING_SHELL", "EMPTY_SHELL", "ERROR_SHELL"}
                     else "true"
                 ),
-                "created_by": "public-ui-agent-1",
+                "created_by": OWNERSHIP["public_ui_agent_id"],
                 "status": "READY",
                 "notes": "",
             }
         )
-    write_csv(
+    write_csv_public(workspace, public_rows)
+
+    _, capabilities = read_csv(workspace / "capability-contracts.csv")
+    if capabilities:
+        raise AssertionError("Explicit gmi NONE sentinels must not create Harmony capability work")
+    status_fields, statuses = read_csv(workspace / "migration-status.csv")
+    if len(statuses) != 1 or statuses[0]["source_kind"] != "INVENTORY_ROW":
+        raise AssertionError("Phase 3 status seed does not match the one visual source row")
+    statuses[0].update(
+        {
+            "target_id": ROUTE_ID,
+            "status": "SHELL_CREATED_PENDING_IMPLEMENTATION",
+            "updated_by": OWNERSHIP["navigation_agent_id"],
+        }
+    )
+    write_rows(workspace / "migration-status.csv", status_fields, statuses)
+
+
+def write_csv_public(workspace: Path, public_rows: list[dict[str, str]]) -> None:
+    write_rows(
         workspace / "public-ui-registry.csv",
         [
             "foundation_id", "foundation_type", "harmony_module_id", "file_path", "symbol",
@@ -201,21 +196,6 @@ def create_project_and_registries(workspace: Path) -> None:
         ],
         public_rows,
     )
-
-    _, capabilities = read_csv(workspace / "capability-contracts.csv")
-    if capabilities:
-        raise AssertionError("Explicit Phase 2 NONE sentinels must not create Harmony capability work")
-    status_fields, statuses = read_csv(workspace / "migration-status.csv")
-    if len(statuses) != 1 or statuses[0]["source_kind"] != "INVENTORY_ROW":
-        raise AssertionError("Phase 3 status seed does not match the one visual source row")
-    statuses[0].update(
-        {
-            "target_id": "ROUTE-LOGIN",
-            "status": "SHELL_CREATED_PENDING_IMPLEMENTATION",
-            "updated_by": "navigation-agent-1",
-        }
-    )
-    write_csv(workspace / "migration-status.csv", status_fields, statuses)
 
 
 def freeze_environment(workspace: Path, config_path: Path) -> dict[str, object]:
@@ -255,7 +235,7 @@ def freeze_environment(workspace: Path, config_path: Path) -> dict[str, object]:
     environment = {
         "henv_id": "HENV-001",
         "created_at": "2026-08-23T00:00:00Z",
-        "created_by": "architecture-lead-1",
+        "created_by": OWNERSHIP["architecture_lead_id"],
         "host": {"os": "test", "os_version": "1", "architecture": "arm64"},
         "toolchain": {
             "deveco_studio_version": "fixture",
@@ -307,7 +287,7 @@ def freeze_environment(workspace: Path, config_path: Path) -> dict[str, object]:
     run_cmd(
         sys.executable, str(SKILL / "scripts" / "freeze_environment.py"),
         "--workspace", str(workspace), "--config", str(config_path),
-        "--frozen-by", "architecture-lead-1",
+        "--frozen-by", OWNERSHIP["architecture_lead_id"],
     )
     return environment
 
@@ -317,7 +297,7 @@ def verification_plan(
     screenshot_id: str,
     suffix: str,
     *,
-    executed_by: str = "toolchain-agent-1",
+    executed_by: str = OWNERSHIP["toolchain_agent_id"],
 ) -> dict[str, object]:
     executable = str(FAKE_HARMONY)
     result_path = f"build/results/route-{suffix}.json"
@@ -371,26 +351,26 @@ def verification_plan(
             {
                 "command_id": f"CMD-{suffix}-SMOKE", "category": "ROUTE_SMOKE",
                 "device_id": "HDEVICE-001", "target_kind": "ROUTE_PAGE",
-                "target_id": "ROUTE-LOGIN", "page_id": "PAGE-LOGIN",
-                "page_shell_id": "PSHELL-LOGIN", "result_output_path": result_path,
+                "target_id": ROUTE_ID, "page_id": PAGE_ID,
+                "page_shell_id": PAGE_SHELL_ID, "result_output_path": result_path,
                 "cwd": ".",
                 "argv": [
                     executable, "smoke", "--serial", "fixture-001",
                     "--bundle", "com.example.fixture", "--kind", "ROUTE_PAGE",
-                    "--target", "ROUTE-LOGIN", "--page", "PAGE-LOGIN",
-                    "--shell", "PSHELL-LOGIN", "--result", result_path,
+                    f"--target", ROUTE_ID, f"--page", PAGE_ID,
+                    f"--shell", PAGE_SHELL_ID, "--result", result_path,
                 ],
             },
             {
                 "command_id": f"CMD-{suffix}-SCREEN", "category": "SCREENSHOT_CAPTURE",
                 "device_id": "HDEVICE-001", "screenshot_id": screenshot_id,
-                "target_kind": "ROUTE_PAGE", "target_id": "ROUTE-LOGIN",
-                "feature_ids": ["FEATURE-AUTH"], "page_id": "PAGE-LOGIN",
-                "page_shell_id": "PSHELL-LOGIN", "smoke_command_id": f"CMD-{suffix}-SMOKE",
+                "target_kind": "ROUTE_PAGE", "target_id": ROUTE_ID,
+                "feature_ids": ["FEATURE-AUTH"], "page_id": PAGE_ID,
+                "page_shell_id": PAGE_SHELL_ID, "smoke_command_id": f"CMD-{suffix}-SMOKE",
                 "output_path": screenshot_path, "cwd": ".",
                 "argv": [
                     executable, "screenshot", "--serial", "fixture-001",
-                    "--target", "ROUTE-LOGIN", "--output", screenshot_path,
+                    f"--target", ROUTE_ID, "--output", screenshot_path,
                     "--width", "320", "--height", "640",
                 ],
             },
@@ -402,8 +382,8 @@ def verification_plan(
 class Stage3WorkflowTest(unittest.TestCase):
     def test_initialization_creates_template_project_and_locks_advanced_handoff(self) -> None:
         with tempfile.TemporaryDirectory(prefix="stage3-template-test-") as temp_name:
-            run_dir, _ = build_closed_phase2(Path(temp_name))
-            workspace = initialize_phase3(run_dir, issue_phase3(run_dir))
+            run_dir, _ws = build_gmi_run(Path(temp_name), [LOGIN_PAGE])
+            workspace = initialize_phase3(run_dir)
             for relative in (
                 "AppScope/app.json5", "build-profile.json5", "entry/src/main/module.json5",
                 "entry/src/main/ets/entryability/EntryAbility.ets",
@@ -417,6 +397,7 @@ class Stage3WorkflowTest(unittest.TestCase):
             input_lock = json.loads((workspace / "stage-03-input-lock.json").read_text(encoding="utf-8"))
             self.assertIn("phase2_advanced", input_lock)
             self.assertIn("arkui_template", input_lock)
+            self.assertEqual(input_lock["gmi_gate"]["audit"], "clean")
             obligations = json.loads((workspace / "advanced-obligations.json").read_text(encoding="utf-8"))
             self.assertEqual(obligations["obligations"], [])
 
@@ -448,16 +429,92 @@ class Stage3WorkflowTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 common.png_dimensions(truncated)
 
-    def test_governed_stage3_and_controller_tamper_detection(self) -> None:
+    def test_gmi_gate_missing_inputs_block_initialization(self) -> None:
+        gate_files = (
+            "runtime-evidence/audit-replay.csv",
+            "coverage/coverage-ledger.csv",
+            "runtime-evidence/runtime-gate.csv",
+            "candidates/phase-2-completeness.csv",
+        )
+        with tempfile.TemporaryDirectory(prefix="stage3-gate-block-test-") as temp_name:
+            run_dir, _ws = build_gmi_run(Path(temp_name), [LOGIN_PAGE])
+            for relative in gate_files:
+                target = run_dir / relative
+                self.assertTrue(target.is_file(), relative)
+                backup = target.with_suffix(target.suffix + ".bak")
+                shutil.move(str(target), str(backup))
+                completed = subprocess.run(
+                    [
+                        sys.executable, str(SKILL / "scripts" / "init_scaffold.py"),
+                        "--run-dir", str(run_dir),
+                        "--work-order", str(
+                            run_dir / "controller" / "work-orders" / "PHASE3-GMI-FIXTURE.json"
+                        ),
+                        "--architecture-lead", OWNERSHIP["architecture_lead_id"],
+                    ],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                self.assertNotEqual(completed.returncode, 0, relative)
+                self.assertIn("gmi-gate-incomplete", completed.stderr, relative)
+                shutil.move(str(backup), str(target))
+                # The blocked run must not have produced any Phase 3 workspace content
+                # (the adapter's empty placeholder directory may remain).
+                phase3_dir = run_dir / "phase-03-harmony-scaffold"
+                self.assertFalse(
+                    phase3_dir.exists() and any(phase3_dir.iterdir()), relative
+                )
+
+    def test_carrier_decides_mapping_type_and_routes_composable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage3-carrier-test-") as temp_name:
+            run_dir, _ws = build_gmi_run(Path(temp_name), [LOGIN_PAGE, DIALOG_PAGE], with_asset=False)
+            workspace = initialize_phase3(run_dir)
+            _, architecture = read_csv(workspace / "architecture-map.csv")
+            mapping = {row["page_id"]: row for row in architecture}
+            self.assertEqual(mapping[LOGIN_PAGE["page_id"]]["mapping_type"], "ROUTE_PAGE")
+            self.assertEqual(mapping[LOGIN_PAGE["page_id"]]["route_id"], ROUTE_ID)
+            self.assertEqual(mapping[LOGIN_PAGE["page_id"]]["surface_shell_id"], "")
+            self.assertEqual(mapping[DIALOG_PAGE["page_id"]]["mapping_type"], "VISUAL_SURFACE")
+            self.assertEqual(mapping[DIALOG_PAGE["page_id"]]["surface_shell_id"], "SURFACE-FILTERDIALOG")
+            self.assertEqual(mapping[DIALOG_PAGE["page_id"]]["route_id"], "")
+            _, surfaces = read_csv(workspace / "surface-registry.csv")
+            self.assertEqual(
+                {row["surface_kind"] for row in surfaces}, {"DIALOG"},
+                "non-routable carriers must surface as their detected kind",
+            )
+
+        with tempfile.TemporaryDirectory(prefix="stage3-composable-test-") as temp_name:
+            # A3 semantic fix: a COMPOSABLE carrier (Jetpack Compose screen) is
+            # normalized to SCREEN semantics and routed — no longer blocked as
+            # carrier-undecidable; the COMPOSABLE->SCREEN decision stays on the
+            # seeded mapping rows as an audit trail.
+            run_dir, _ws = build_gmi_run(Path(temp_name), [AMBIGUOUS_PAGE], with_asset=False)
+            workspace = initialize_phase3(run_dir)
+            _, architecture = read_csv(workspace / "architecture-map.csv")
+            mapping = {row["page_id"]: row for row in architecture}
+            composable = mapping[AMBIGUOUS_PAGE["page_id"]]
+            self.assertEqual(composable["mapping_type"], "ROUTE_PAGE")
+            self.assertEqual(composable["route_id"], "ROUTE-HELPCOMPOSABLE")
+            self.assertEqual(composable["surface_shell_id"], "")
+            self.assertIn("COMPOSABLE->SCREEN", composable["notes"])
+            _, routes = read_csv(workspace / "route-registry.csv")
+            route_rows = [row for row in routes if row["page_id"] == AMBIGUOUS_PAGE["page_id"]]
+            self.assertEqual(len(route_rows), 1)
+            self.assertIn("COMPOSABLE->SCREEN", route_rows[0]["notes"])
+            _, surfaces = read_csv(workspace / "surface-registry.csv")
+            self.assertEqual(
+                surfaces, [],
+                "a COMPOSABLE carrier must not surface as a non-routable surface",
+            )
+
+    def test_governed_stage3_full_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harmony-stage3-skill-test-") as temp_name:
             root = Path(temp_name)
-            run_dir, _scope_path = build_closed_phase2(root)
-            work_order = issue_phase3(run_dir)
-            workspace = initialize_phase3(run_dir, work_order)
+            run_dir, _ws = build_gmi_run(root, [LOGIN_PAGE])
+            workspace = initialize_phase3(run_dir)
             self.assertEqual(
                 json.loads((workspace / "phase-manifest.json").read_text())["ownership"]
                 ["architecture_acceptance_agent_id"],
-                "architecture-acceptance-1",
+                OWNERSHIP["architecture_acceptance_agent_id"],
             )
             create_project_and_registries(workspace)
             config_path = root / "henv.json"
@@ -468,7 +525,7 @@ class Stage3WorkflowTest(unittest.TestCase):
                 json.dumps(
                     verification_plan(
                         "HVER-WRONG", "HSCREEN-WRONG", "WRONG",
-                        executed_by="architecture-acceptance-1",
+                        executed_by=OWNERSHIP["architecture_acceptance_agent_id"],
                     ),
                     indent=2,
                 ) + "\n",
@@ -513,14 +570,22 @@ class Stage3WorkflowTest(unittest.TestCase):
                 sys.executable, str(SKILL / "scripts" / "manage_stage3_rework.py"),
                 "--workspace", str(workspace), "--action", "open",
                 "--ticket-id", "REWORK-STAGE3-001", "--problem-type", "BUILD",
-                "--source-or-mapping-id", "ROUTE-LOGIN",
+                "--record-id", ROUTE_ID,
+                "--feature-id", "FEATURE-AUTH", "--page-id", PAGE_ID,
                 "--failed-verification-id", "HVER-ERROR", "--severity", "HIGH",
                 "--reason", "Install output contained a frozen error marker",
                 "--completion-condition", "A new sealed HVER passes all nine categories",
-                "--confirmed-by", "architecture-lead-1",
+                "--confirmed-by", OWNERSHIP["architecture_lead_id"],
             )
-            run_cmd(*rework_open, "--reviewer", "navigation-agent-1", expect=2)
-            run_cmd(*rework_open, "--reviewer", "architecture-acceptance-1")
+            run_cmd(*rework_open, "--reviewer", OWNERSHIP["navigation_agent_id"], expect=2)
+            run_cmd(*rework_open, "--reviewer", OWNERSHIP["architecture_acceptance_agent_id"])
+
+            rework_fields, rework_rows = read_csv(workspace / "rework-tickets.csv")
+            self.assertEqual(rework_rows[0]["record_id"], ROUTE_ID)
+            self.assertEqual(rework_rows[0]["phase"], "3")
+            self.assertEqual(rework_rows[0]["completion_condition"],
+                             "A new sealed HVER passes all nine categories")
+            self.assertTrue(rework_rows[0]["confirmed_at"])
 
             good_plan = root / "verification-plan.json"
             good_plan.write_text(
@@ -539,10 +604,10 @@ class Stage3WorkflowTest(unittest.TestCase):
                 sys.executable, str(SKILL / "scripts" / "manage_stage3_rework.py"),
                 "--workspace", str(workspace), "--action", "close",
                 "--ticket-id", "REWORK-STAGE3-001",
-                "--correction-verification-id", "HVER-001",
+                "--resolution-verification-id", "HVER-001",
             )
-            run_cmd(*rework_close, "--reviewer", "navigation-agent-1", expect=2)
-            run_cmd(*rework_close, "--reviewer", "architecture-acceptance-1")
+            run_cmd(*rework_close, "--reviewer", OWNERSHIP["navigation_agent_id"], expect=2)
+            run_cmd(*rework_close, "--reviewer", OWNERSHIP["architecture_acceptance_agent_id"])
 
             validation_base = (
                 sys.executable, str(SKILL / "scripts" / "validate_stage3.py"),
@@ -552,8 +617,10 @@ class Stage3WorkflowTest(unittest.TestCase):
                 "--attest-contract-only", "--attest-dependency-review",
                 "--attest-runtime-smoke", "--attest-screenshot-review",
             )
-            run_cmd(*validation_base, "--reviewer", "navigation-agent-1", expect=2)
-            passed = run_cmd(*validation_base, "--reviewer", "architecture-acceptance-1")
+            run_cmd(*validation_base, "--reviewer", OWNERSHIP["navigation_agent_id"], expect=2)
+            passed = run_cmd(
+                *validation_base, "--reviewer", OWNERSHIP["architecture_acceptance_agent_id"]
+            )
             self.assertEqual(json.loads(passed.stdout)["counts"]["assets"], 1)
             self.assertTrue((workspace / "stage-03-closure-manifest.sha256").is_file())
             self.assertTrue((workspace / "CLOSED").is_file())
@@ -563,37 +630,12 @@ class Stage3WorkflowTest(unittest.TestCase):
                 "--workspace", str(workspace), "--plan", str(good_plan), expect=2,
             )
             run_cmd(
-                sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
-                "--run-dir", str(run_dir), "--phase", "3", "--write",
-            )
-            ledger = {
-                row["phase"]: row
-                for row in csv.DictReader(
-                    (run_dir / "controller" / "task-ledger.csv").read_text().splitlines()
-                )
-            }
-            self.assertEqual(ledger["3"]["status"], "PASS")
-            self.assertEqual(ledger["3"]["owner"], "architecture-lead-1")
-
-            controller_rework_path = run_dir / "controller" / "rework-log.csv"
-            rework_fields, rework_rows = read_csv(controller_rework_path)
-            self.assertEqual(len(rework_rows), 1)
-            original_assignee = rework_rows[0]["assigned_to"]
-            rework_rows[0]["assigned_to"] = "tampered-agent"
-            write_csv(controller_rework_path, rework_fields, rework_rows)
-            run_cmd(
-                sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
-                "--run-dir", str(run_dir), "--phase", "3", expect=1,
-            )
-            rework_rows[0]["assigned_to"] = original_assignee
-            write_csv(controller_rework_path, rework_fields, rework_rows)
-
-            shell = workspace / "harmony-project" / "entry" / "src" / "LoginShell.ets"
-            shell.chmod(0o644)
-            shell.write_text(shell.read_text(encoding="utf-8") + "// post-closure tamper\n", encoding="utf-8")
-            run_cmd(
-                sys.executable, str(CONTROLLER_SKILL / "scripts" / "validate_gate.py"),
-                "--run-dir", str(run_dir), "--phase", "3", expect=1,
+                sys.executable, str(SKILL / "scripts" / "manage_stage3_rework.py"),
+                "--workspace", str(workspace), "--action", "close",
+                "--ticket-id", "REWORK-STAGE3-001",
+                "--resolution-verification-id", "HVER-001",
+                "--reviewer", OWNERSHIP["architecture_acceptance_agent_id"],
+                expect=2,
             )
 
 

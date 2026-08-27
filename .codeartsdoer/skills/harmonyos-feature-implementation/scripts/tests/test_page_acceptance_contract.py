@@ -19,10 +19,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 import page_acceptance_contract as contract_module  # noqa: E402
 from page_acceptance_contract import (  # noqa: E402
+    apply_verification_tiers,
     canonical_contract_sha256,
     compile_page_contracts,
+    normalize_verification_tier,
     publish_page_contracts,
 )
+import init_implementation  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> None:
@@ -149,7 +152,7 @@ class PageAcceptanceContractTest(unittest.TestCase):
             state["state_id"] for state in first[0]["states"]
         ])
 
-    def test_gmi_fields_bridge_empty_legacy_components_and_keep_behavior(self) -> None:
+    def test_gmi_fields_bridge_empty_component_rows_and_keep_behavior(self) -> None:
         write_json(self.phase2 / "closure-report.json", {"generated_by": "gmi-phase3-adapter"})
         components = read_json(self.phase2 / "static-analysis" / "components.json")
         components["components"] = [
@@ -328,6 +331,99 @@ class PageAcceptanceContractTest(unittest.TestCase):
             contracts_before,
             {path.name: path.read_bytes() for path in (destination / "page-contracts").glob("*.json")},
         )
+
+    def test_lite_page_contract_carries_tier_and_registry_column(self) -> None:
+        """LITE 页合同编译含 verification_tier=LITE 且 registry 同步记列。"""
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        apply_verification_tiers(
+            contracts,
+            {"PAGE-CALCULATOR": "LITE", "PAGE-HISTORY": "CORE"},
+        )
+        lite = next(row for row in contracts if row["page_id"] == "PAGE-CALCULATOR")
+        core = next(row for row in contracts if row["page_id"] == "PAGE-HISTORY")
+        self.assertEqual("LITE", lite["verification_tier"])
+        self.assertEqual("CORE", core["verification_tier"])
+        destination = self.root / "published-lite"
+        registry = publish_page_contracts(contracts, destination)
+        tiers = {row["page_id"]: row["verification_tier"] for row in registry}
+        self.assertEqual({"PAGE-CALCULATOR": "LITE", "PAGE-HISTORY": "CORE"}, tiers)
+        registry_rows = read_csv(destination / "page-contract-registry.csv")
+        self.assertIn("verification_tier", registry_rows[0])
+        # 哈希确定性：tier 变更必须改变 canonical 哈希（同轮三处绑定可重算）。
+        self.assertNotEqual(
+            canonical_contract_sha256(lite),
+            canonical_contract_sha256(json.loads(json.dumps(lite)) | {"verification_tier": "CORE"}),
+        )
+
+    def test_default_tier_is_core_and_legacy_contracts_stay_compatible(self) -> None:
+        """无 tier 的旧合同默认 CORE：发布行为与旧版完全一致（registry 列记 CORE）。"""
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        self.assertTrue(all("verification_tier" not in row for row in contracts))
+        registry = publish_page_contracts(contracts, self.root / "published-core")
+        self.assertEqual(
+            {"PAGE-CALCULATOR": "CORE", "PAGE-HISTORY": "CORE"},
+            {row["page_id"]: row["verification_tier"] for row in registry},
+        )
+        # 显式打标 CORE 后哈希确定（默认 CORE 也显式写入）。
+        apply_verification_tiers(
+            contracts, {row["page_id"]: "CORE" for row in contracts}
+        )
+        self.assertTrue(all(row["verification_tier"] == "CORE" for row in contracts))
+
+    def test_verification_tier_value_domain_is_enforced(self) -> None:
+        contracts = compile_page_contracts(self.phase2, self.phase3, ("H4ENV-001",))
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            apply_verification_tiers(contracts, {"PAGE-CALCULATOR": "FAST"})
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            apply_verification_tiers(contracts, {"PAGE-CALCULATOR": ""})
+        with self.assertRaisesRegex(ValueError, "unknown pages"):
+            apply_verification_tiers(
+                contracts,
+                {"PAGE-CALCULATOR": "CORE", "PAGE-HISTORY": "CORE", "PAGE-GHOST": "LITE"},
+            )
+        with self.assertRaisesRegex(ValueError, "missing for page"):
+            apply_verification_tiers(contracts, {"PAGE-CALCULATOR": "LITE"})
+        contract = json.loads(json.dumps(contracts[0]))
+        contract["verification_tier"] = "FAST"
+        with self.assertRaisesRegex(ValueError, "verification_tier"):
+            publish_page_contracts([contract], self.root / "published-invalid")
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            normalize_verification_tier(None)
+        self.assertEqual("CORE", normalize_verification_tier(" core "))
+        self.assertEqual("LITE", normalize_verification_tier(" lite "))
+
+    def test_derives_tiers_from_required_task_density_with_fallback(self) -> None:
+        """优先级 a>b>c：显式声明 > P2 REQUIRED 任务密度 > 默认 CORE。"""
+        pages = ["PAGE-CALCULATOR", "PAGE-HISTORY"]
+        # c) 无 runtime-tasks.json：全部默认 CORE（旧工作区行为不变）。
+        self.assertEqual(
+            {"PAGE-CALCULATOR": "CORE", "PAGE-HISTORY": "CORE"},
+            init_implementation.derive_verification_tiers(self.phase2, pages),
+        )
+        # b) REQUIRED 密度：CALCULATOR 有 REQUIRED 任务 → CORE；HISTORY 仅 REVIEW → LITE。
+        write_json(self.phase2 / "static-analysis" / "runtime-tasks.json", {
+            "schema_version": 1,
+            "tasks": [
+                {"task_id": "RTASK-CALC", "page_id": "PAGE-CALCULATOR", "review_tier": "REQUIRED"},
+                {"task_id": "RTASK-HIST", "page_id": "PAGE-HISTORY", "review_tier": "REVIEW"},
+                {"task_id": "RTASK-GLOBAL", "page_id": "", "review_tier": "REQUIRED"},
+            ],
+        })
+        self.assertEqual(
+            {"PAGE-CALCULATOR": "CORE", "PAGE-HISTORY": "LITE"},
+            init_implementation.derive_verification_tiers(self.phase2, pages),
+        )
+        # a) 显式声明覆盖密度推导。
+        self.assertEqual(
+            {"PAGE-CALCULATOR": "LITE", "PAGE-HISTORY": "CORE"},
+            init_implementation.derive_verification_tiers(
+                self.phase2, pages, {"PAGE-CALCULATOR": "LITE", "PAGE-HISTORY": "CORE"},
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "unknown pages"):
+            init_implementation.derive_verification_tiers(
+                self.phase2, pages, {"PAGE-GHOST": "LITE"},
+            )
 
 
 def remove_android_evidence(phase2: Path, evidence_id: str) -> None:

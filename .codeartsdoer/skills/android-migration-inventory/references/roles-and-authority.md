@@ -4,7 +4,7 @@ Each heading below represents a separately dispatched worker task, not a persona
 
 ## Android inventory lead
 
-- Accept the controller work order, assign exclusive feature/page ranges, and freeze the environment registry.
+- Accept the controller Gate 2 authorization, assign exclusive feature/page ranges, and freeze the environment registry.
 - Arbitrate factual conflicts. When two environments conflict unexpectedly, the frozen baseline `ENV-ID` is authoritative; mark the other result `PENDING_CONFIRMATION` and route rework.
 - Create a new `ENV-ID` for any changed environment. Never edit an environment after capture.
 - Cannot close the evidence chain.

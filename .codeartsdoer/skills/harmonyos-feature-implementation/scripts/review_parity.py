@@ -32,6 +32,33 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = SKILL_ROOT / "assets"
 ACCEPTABLE_RESULTS = {"MATCH", "APPROVED_DIFFERENCE"}
 REVIEW_RESULTS = ACCEPTABLE_RESULTS | {"MISMATCH"}
+VERIFICATION_TIERS = ("CORE", "LITE")
+
+
+def page_verification_tier(workspace: Path, page_id: str) -> str:
+    """Read the page's frozen P4 verification tier from its sealed contract.
+
+    P4 分层验证：页合同是 tier 的单一真相源；合同缺失（旧工作区）或键缺省
+    一律视为 CORE（向后兼容，review 行为与旧版完全一致）。
+    """
+    contract_path = workspace / "page-contracts" / f"{page_id}.json"
+    if not contract_path.is_file():
+        return "CORE"
+    try:
+        contract = load_json(contract_path)
+    except (ValueError, OSError):
+        return "CORE"
+    tier = str((contract or {}).get("verification_tier") or "CORE").strip().upper()
+    if tier not in VERIFICATION_TIERS:
+        raise ValueError(f"verification_tier must be one of {list(VERIFICATION_TIERS)}: {tier!r}")
+    return tier
+
+
+def reviewed_visual_ids_are_acceptable(reviewed: set[str], expected: set[str], tier: str) -> bool:
+    """CORE: reviewed set must equal every visual element; LITE: non-empty subset."""
+    if tier == "LITE":
+        return bool(reviewed) and reviewed <= expected
+    return reviewed == expected
 
 
 def package_files(directory: Path) -> set[str]:
@@ -83,13 +110,13 @@ def ownership_from(manifest: dict[str, Any]) -> dict[str, str]:
     value = manifest.get("ownership")
     if isinstance(value, dict):
         return {str(key): str(item) for key, item in value.items()}
-    legacy = manifest.get("roles")
-    if isinstance(legacy, dict):
+    compat_roles = manifest.get("roles")
+    if isinstance(compat_roles, dict):
         return {
-            "implementation_lead_id": str(legacy.get("implementation_lead", "")),
-            "visual_asset_agent_id": str(legacy.get("asset_agent", "")),
-            "verification_executor_id": str(legacy.get("verification_executor", "")),
-            "parity_acceptance_agent_id": str(legacy.get("parity_checker", "")),
+            "implementation_lead_id": str(compat_roles.get("implementation_lead", "")),
+            "visual_asset_agent_id": str(compat_roles.get("asset_agent", "")),
+            "verification_executor_id": str(compat_roles.get("verification_executor", "")),
+            "parity_acceptance_agent_id": str(compat_roles.get("parity_checker", "")),
         }
     return {}
 
@@ -316,8 +343,16 @@ def main() -> int:
             )
         visual_ids = set(split_multi(parity.get("visual_element_ids", "")))
         reviewed_ids = comparison.get("reviewed_visual_element_ids")
-        if not isinstance(reviewed_ids, list) or set(reviewed_ids) != visual_ids:
-            raise ValueError("Comparison must review exactly every visual element of the parity row")
+        # P4 分层验证：CORE 必须覆盖全部视觉元素；LITE 允许非空抽样子集（⊆ 全集）。
+        verification_tier = page_verification_tier(workspace, str(parity.get("page_id", "")))
+        if not isinstance(reviewed_ids, list) or not reviewed_visual_ids_are_acceptable(
+            set(reviewed_ids), visual_ids, verification_tier
+        ):
+            raise ValueError(
+                "Comparison must review exactly every visual element of the parity row"
+                if verification_tier == "CORE"
+                else "Comparison must review a non-empty subset of the parity row's visual elements"
+            )
         differences = comparison.get("differences")
         if not isinstance(differences, list) or any(not isinstance(item, dict) for item in differences):
             raise ValueError("Comparison differences must be an object array")
@@ -398,6 +433,8 @@ def main() -> int:
         "reviewed_visual_element_ids": sorted(reviewed_ids),
         "review_id": review_id,
         "inventory_id": parity["inventory_id"],
+        # P4 分层验证：tier 落进 review JSON，controller 重放读取（缺省 CORE）。
+        "verification_tier": verification_tier,
         "android_evidence_id": android_evidence_id,
         "harmony_evidence_id": harmony_evidence_id,
         "android_manifest_sha256": sha256_file(android_dir / "manifest.sha256"),

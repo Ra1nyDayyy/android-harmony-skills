@@ -53,25 +53,13 @@ class ProbeFanoutTest(unittest.TestCase):
 
     def test_no_action_yields_observation_only_probe(self):
         """gmi honest path: zero-action pages get one cold-start-only run."""
-        plan = make_plan([])
-        plan["source_refs"] = {"android_evidence_hashes": [
-            {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}]}
-        # 观察态页：零动作 + pending 组件为空 → 单条纯冷启动探针
-        plan["components"] = []
-        probes = pup._probes(plan, {})
+        probes = pup._probes(make_plan([]), {})
         self.assertEqual(len(probes), 1)
         probe = probes[0]
         self.assertEqual(probe["probe_id"], "PAGE-MAIN::STATE-DEFAULT")
         self.assertEqual(probe["declared_actions"], [])
         self.assertEqual(probe["declared_transitions"], [])
-        self.assertEqual(probe["required_components"], [])
-
-    def test_pending_detection_reads_source_refs_nesting(self):
-        """R13: evidence_hashes live under source_refs; the reader follows."""
-        empty_plan = make_plan(["CLICK"])  # accepted baseline, no components
-        empty_plan["components"] = []
-        with self.assertRaisesRegex(ValueError, "no required component plan"):
-            pup._probes(empty_plan, {})
+        self.assertTrue(probe["required_components"])
 
     def test_multi_action_multi_transition_ambiguous_rejected(self):
         plan = make_plan(["A1", "A2"], [

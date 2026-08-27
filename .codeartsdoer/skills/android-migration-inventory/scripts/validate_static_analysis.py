@@ -13,6 +13,9 @@ from _common import load_json, sha256_file
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
+ALLOWED_VERIFICATION_MODES = {"SOURCE_ONLY", "RUNTIME_UI", "RUNTIME_EFFECT"}
+ALLOWED_REVIEW_TIERS = {"REQUIRED", "REVIEW"}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -24,6 +27,7 @@ def main() -> int:
     manifest = package / "manifest.sha256"
     committed = package / "COMMITTED"
     errors: list[str] = []
+    warnings: list[str] = []
     if phase.get("phase") != 2:
         errors.append("Workspace is not Phase 2")
     if not manifest.is_file() or not committed.is_file():
@@ -50,22 +54,27 @@ def main() -> int:
         }
         if listed != expected:
             errors.append("Static-analysis manifest does not exactly cover the required artifacts")
-        # Fidelity gate: non-visual tags must not dominate components
-        non_visual_count = sum(1 for c in components if c.get("type") in {"layout", "data", "variable", "import"} or c.get("is_visual") is False)
-        if non_visual_count > 0:
-            errors.append(f"Non-visual components leaked into components.json: {non_visual_count} (filter layout/data/variable)")
-        # Visual fidelity: every visual component must have fidelity_attrs
-        missing_fidelity = [c for c in components if c.get("is_visual") and not c.get("fidelity_attrs")]
-        if missing_fidelity:
-            errors.append(f"{len(missing_fidelity)} visual components lack fidelity_attrs (color/size/background)")
-        # Project-index must contain asset trace
-        if not project_index.get("fidelity_index") or not project_index.get("assets"):
-            errors.append("project-index.json missing fidelity_index/assets trace for 1:1 mapping")
 
     try:
         index = load_json(package / "project-index.json")
         pages = load_json(package / "pages.json").get("pages", [])
         components = load_json(package / "components.json").get("components", [])
+        # Fidelity gate: non-visual tags must not dominate components
+        non_visual_count = sum(
+            1 for c in components
+            if c.get("type") in {"layout", "data", "variable", "import"} or c.get("is_visual") is False
+        )
+        if non_visual_count > 0:
+            errors.append(
+                f"Non-visual components leaked into components.json: {non_visual_count} (filter layout/data/variable)"
+            )
+        # Visual fidelity: visual components must carry the fidelity_attrs key (may be empty)
+        missing_fidelity = [c for c in components if c.get("is_visual") is True and "fidelity_attrs" not in c]
+        if missing_fidelity:
+            errors.append(f"{len(missing_fidelity)} visual components lack fidelity_attrs (color/size/background)")
+        # Project-index must contain asset trace
+        if not index.get("fidelity_index") or not index.get("assets"):
+            errors.append("project-index.json missing fidelity_index/assets trace for 1:1 mapping")
         events = load_json(package / "events.json").get("events", [])
         transitions = load_json(package / "transitions.json").get("transitions", [])
         states = load_json(package / "state-candidates.json").get("states", [])
@@ -116,7 +125,11 @@ def main() -> int:
         known_pages = set(page_ids)
         if any(row.get("page_id") not in known_pages for row in components):
             errors.append("A component references an unknown page")
-        allowed_page_bindings = known_pages | {"PENDING_SOURCE_BINDING"}
+        # PENDING_HOST is the explicit human-resolution marker (zero/ambiguous
+        # host references); it is accepted here so the subject reaches the human
+        # queue instead of being silently rebound to a guessed page. A plainly
+        # missing Page-ID (None/"") still fails below.
+        allowed_page_bindings = known_pages | {"PENDING_SOURCE_BINDING", "PENDING_HOST"}
         if any(row.get("page_id") not in allowed_page_bindings for row in events):
             errors.append("An event has an invalid source-page binding")
         if any(row.get("page_id") not in allowed_page_bindings for row in states):
@@ -138,10 +151,59 @@ def main() -> int:
             errors.append(
                 "Static analysis contains a blocking discovery gap; fix the source or scanner and recapture"
             )
+        # Dual-gate contract: every runtime task carries verification_mode / review_tier
+        bad_mode = [row for row in tasks if row.get("verification_mode") not in ALLOWED_VERIFICATION_MODES]
+        if bad_mode:
+            errors.append(
+                f"{len(bad_mode)} runtime tasks have an invalid verification_mode "
+                "(must be SOURCE_ONLY | RUNTIME_UI | RUNTIME_EFFECT)"
+            )
+        bad_tier = [row for row in tasks if row.get("review_tier") not in ALLOWED_REVIEW_TIERS]
+        if bad_tier:
+            errors.append(
+                f"{len(bad_tier)} runtime tasks have an invalid review_tier (must be REQUIRED | REVIEW)"
+            )
+        # SOURCE_ONLY tasks never enter an emulator queue. VERIFY_STATE_BRANCH is
+        # the single type with a conservative static proof path (compile-time
+        # constant conditions, see analyze_static_pages.is_compile_time_constant_condition);
+        # any other VERIFY_* task marked SOURCE_ONLY is an illegal downgrade.
+        statically_provable_types = {"VERIFY_STATE_BRANCH"}
+        source_only_runtime = [
+            row for row in tasks
+            if row.get("verification_mode") == "SOURCE_ONLY"
+            and str(row.get("task_type", "")).startswith("VERIFY_")
+            and row.get("task_type") not in statically_provable_types
+        ]
+        if source_only_runtime:
+            errors.append(
+                f"{len(source_only_runtime)} SOURCE_ONLY tasks still demand runtime verification; "
+                "reclassify them or downgrade the task type"
+            )
+        # REQUIRED tasks must be executable and bound to a real page and source location.
+        # PENDING_HOST tasks are downgraded from FAIL to WARNING (待人工归属):
+        # their host page could not be resolved deterministically and a human
+        # must assign it via advanced-analysis.json needs_human_resolution.
+        pending_required = [
+            row for row in tasks
+            if row.get("review_tier") == "REQUIRED"
+            and (row.get("page_id") in (None, "", "PENDING_SOURCE_BINDING") or not row.get("source_refs"))
+        ]
+        if pending_required:
+            errors.append(
+                f"{len(pending_required)} REQUIRED tasks lack a Page-ID or source binding; "
+                "PENDING pages must not enter the runtime stage"
+            )
+        pending_host_tasks = [row for row in tasks if row.get("page_id") == "PENDING_HOST"]
+        if pending_host_tasks:
+            warnings.append(
+                f"{len(pending_host_tasks)} tasks await human host resolution "
+                "(page_id=PENDING_HOST, 待人工归属); assign hosts via advanced-analysis.json "
+                "needs_human_resolution before the runtime stage"
+            )
     except (AttributeError, ValueError) as exc:
         errors.append(str(exc))
 
-    report = {"verdict": "FAIL" if errors else "PASS", "errors": errors}
+    report = {"verdict": "FAIL" if errors else "PASS", "errors": errors, "warnings": warnings}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if errors else 0
 

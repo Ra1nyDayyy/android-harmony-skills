@@ -21,6 +21,13 @@ COMMITTED
 MP4 files and MP4 references are prohibited.
 
 `metadata.json` binds one inventory, feature, page, state, environment, and evidence ID. It records issuer, collector, UTC timestamps, Android CLI version, device serial, app/source/APK identity, predecessor evidence, actual command argument arrays, artifact sizes, MIME types, and SHA-256 hashes.
+
+## Lane evidence (dual Android emulators)
+
+Lane workers write isolated `runtime-evidence/lane-a/` and `lane-b/` packages. Every lane evidence row additionally records `capture_slot` (A/B) and the real `device_serial` that executed the ADB command; the declared serial/slot must match the lane's `lane-meta.json`, otherwise the audit blocks. Lane evidence is never consumed directly by gates: `gmi_audit.py` first audits each lane independently (hash recomputation, page-identity replay, slot/serial verification), then merges the canonical `runtime-evidence/evidence-index.csv`, `runtime-gate.csv`, and `audit-replay.csv`. Later gates read only the merged files.
+
+Functional completion is stronger than UI presence: a popup being open proves only the popup UI, not the menu function; selecting a sort option must show the list order actually changed; save must be verified after restart from a dirty state; delete must confirm the data is gone (restart re-check when necessary). Only `RUNTIME_EFFECT` evidence chains (before/after probes, foreground identity, restart re-checks) close such claims.
+
 Validation compares the index, metadata, manifest, actual bytes, frozen environment, scope digest, device check, and source check in both directions.
 The migration controller additionally records the sealed package manifest and metadata digests in `controller/evidence-anchor-registry.csv`. Phase 2 copies the verified rows into `evidence-anchors.snapshot.csv` at closure. Both the Phase 2 validator and controller gate require an exact match, so changing the package and its local index together is still detected.
 

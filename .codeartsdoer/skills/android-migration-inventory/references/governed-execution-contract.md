@@ -1,6 +1,6 @@
 # Governed execution contract
 
-- `input_files: file-backed fixture`: frozen Android source/APK, Phase 1 scope and gate report, Phase 2 work order, Android CLI configuration, environments, accounts, and seed-data readiness.
+- `input_files: file-backed fixture`: frozen Android source/APK, Phase 1 scope and gate report, controller Gate 2 authorization, the gmi artifact chain (`candidates/` 13 tables + `coverage/coverage-ledger.csv`), Android CLI configuration, environments, accounts, and seed-data readiness.
 - `owner`: Android-Harmony Migration Maintainers.
 - `review cadence`: every release and after scanner, evidence, page-gate, advanced-probe, or inventory-schema changes.
 - `output contract`: complete static and runtime-correlated catalogs for every included feature/page/state/environment, immutable evidence packages and controller anchors, deterministic page/advanced gate reports, and exact Phase 2 `PASS`; otherwise a blocking backlog with no invented coverage.

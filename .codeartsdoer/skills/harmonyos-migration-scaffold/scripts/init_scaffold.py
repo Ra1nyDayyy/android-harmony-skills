@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Initialize Phase 3 from a controller work order and a closed Phase 2."""
+"""Initialize Phase 3 (gmi path only) from a frozen gmi Phase 2 closure.
+
+Input contract (the only accepted entry): the run directory produced by the
+gmi Phase 2 chain — `phase-2-closure.json` + `candidates/` 13 tables +
+`runtime-evidence/` (evidence-index.csv, runtime-gate.csv, audit-replay.csv)
++ `coverage/coverage-ledger.csv`, synthesized into `phase-02-android-inventory/`
+by `gmi_phase3_adapter.py`. The former controller/REVIEWED-chain entry is
+rejected.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +15,6 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
-import sys
 import tempfile
 import re
 from pathlib import Path, PurePosixPath
@@ -27,7 +33,6 @@ from _common import (
     source_row_key,
     utc_now,
     validate_id,
-    verify_closure_manifest,
     write_csv,
 )
 
@@ -35,12 +40,7 @@ from _common import (
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = SKILL_ROOT / "assets"
 ARKUI_TEMPLATE = ASSETS / "arkui-stage-template"
-CONTROLLER_VALIDATE = (
-    SKILL_ROOT.parent / "android-harmony-migration-controller" / "scripts" / "validate_gate.py"
-)
 PHASE_NAME = "phase-03-harmony-scaffold"
-PHASE2_CLOSURE_EXCLUDES = frozenset({"closure-report.json", "closure-manifest.sha256", "CLOSED"})
-PHASE2_CLOSURE_DIR_EXCLUDES = frozenset({".locks", ".staging"})
 PHASE3_ROLES = (
     "architecture_lead_id",
     "toolchain_agent_id",
@@ -49,16 +49,6 @@ PHASE3_ROLES = (
     "capability_contract_agent_id",
     "architecture_acceptance_agent_id",
 )
-ASSET_INVENTORY_FIELDS = [
-    "asset_id", "source_path", "archive_path", "sha256", "asset_type",
-    "feature_ids", "page_ids", "state_ids", "created_by", "created_at",
-    "reviewed_by", "reviewed_at", "status", "notes",
-]
-ASSET_REGISTRY_FIELDS = [
-    "asset_id", "phase2_archive_path", "asset_sha256", "asset_type",
-    "feature_ids", "page_ids", "state_ids", "target_module_id", "target_path",
-    "target_symbol", "planned_mode", "decision", "created_by", "status", "notes",
-]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TEMPLATE_EXCLUDES = {
     ".git", ".idea", ".hvigor", "oh_modules", "node_modules", "build", "dist",
@@ -70,6 +60,19 @@ TEMPLATE_REQUIRED = {
     "entry/src/main/ets/entryability/EntryAbility.ets",
     "entry/src/main/ets/pages/Index.ets",
 }
+# Carrier kinds that can never become a HarmonyOS route (non-routable surfaces).
+NON_ROUTE_CARRIER_KINDS = {
+    "DIALOG", "BOTTOM_SHEET", "SHEET", "OVERLAY", "WIDGET", "POPUP", "PICKER",
+    "EMBEDDED", "TAB_BODY",
+}
+# Carrier kinds proven to be independently navigable on Android.
+ROUTABLE_CARRIER_KINDS = {"ACTIVITY", "SCREEN", "PAGE", "VIEW"}
+# A3 mapping decision: a Jetpack Compose screen carrier is normalized to the
+# SCREEN semantics (static analysis proved it independently navigable), so it
+# routes like any other routable page. The COMPOSABLE->SCREEN decision trail
+# is recorded on the seeded mapping rows (architecture-map/route-registry notes).
+COMPOSABLE_CARRIER_KIND = "COMPOSABLE"
+COMPOSABLE_SCREEN_KIND = "SCREEN"
 
 
 def parse_refs(value: str) -> list[str]:
@@ -82,20 +85,6 @@ def parse_refs(value: str) -> list[str]:
     if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
         raise ValueError(f"Inventory reference cell must be an array of strings: {value}")
     return [item for item in parsed if item]
-
-
-def parse_asset_refs(value: str, label: str) -> list[str]:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} must be a JSON string array") from exc
-    if (
-        not isinstance(parsed, list) or not parsed
-        or not all(isinstance(item, str) and item for item in parsed)
-        or parsed != sorted(set(parsed))
-    ):
-        raise ValueError(f"{label} must be a non-empty sorted JSON string array")
-    return parsed
 
 
 def requirement_id(feature_id: str, source_kind: str, source_ref: str) -> str:
@@ -187,7 +176,9 @@ def require_object(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
-def validate_phase3_ownership(work_order: dict[str, Any], scope: dict[str, Any]) -> dict[str, str]:
+def validate_gmi_ownership(work_order: dict[str, Any]) -> dict[str, str]:
+    """Six logical Phase 3 responsibilities must be named; IDs may be reused
+    by one worker (logical-role policy), but every role key needs an owner."""
     ownership = require_object(work_order.get("ownership"), "Phase 3 work-order ownership")
     normalized: dict[str, str] = {}
     for role in PHASE3_ROLES:
@@ -195,42 +186,7 @@ def validate_phase3_ownership(work_order: dict[str, Any], scope: dict[str, Any])
         if not isinstance(actor, str) or not actor.strip():
             raise ValueError(f"Phase 3 work order is missing ownership.{role}")
         normalized[role] = actor.strip()
-    if len(set(normalized.values())) != len(PHASE3_ROLES):
-        raise ValueError("All six frozen Phase 3 role IDs must be distinct")
-    previous = scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {}
-    previous_ids = {
-        actor
-        for value in previous.values()
-        for actor in (value if isinstance(value, list) else [value])
-        if isinstance(actor, str) and actor
-    }
-    overlap = sorted(set(normalized.values()) & previous_ids)
-    if overlap:
-        raise ValueError(f"Phase 3 roles must be independent from frozen Phase 1/2 roles: {overlap}")
     return normalized
-
-
-def run_phase2_gate_recheck(run_dir: Path) -> dict[str, Any]:
-    if not CONTROLLER_VALIDATE.is_file():
-        raise ValueError(f"Controller gate validator is missing: {CONTROLLER_VALIDATE}")
-    completed = subprocess.run(
-        [sys.executable, str(CONTROLLER_VALIDATE), "--run-dir", str(run_dir), "--phase", "2"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    try:
-        report = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise ValueError(f"Controller Phase 2 recheck returned invalid output: {detail[:500]}") from exc
-    if completed.returncode != 0 or not isinstance(report, dict) or report.get("verdict") != "PASS":
-        detail = report.get("errors") if isinstance(report, dict) else completed.stderr.strip()
-        raise ValueError(f"Controller Phase 2 recheck failed: {detail}")
-    return report
 
 
 def catalog_index(
@@ -268,165 +224,140 @@ def input_record(
     return record
 
 
-def validate_phase2_assets(
-    phase2: Path,
-    phase2_manifest: dict[str, Any],
-    active_inventory: list[dict[str, str]],
-    expected_reviewer: str,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    inventory_path = phase2 / "asset-inventory.csv"
-    package = phase2 / "asset-package"
-    manifest_path = package / "manifest.sha256"
-    committed_path = package / "COMMITTED"
-    if csv_fieldnames(inventory_path) != ASSET_INVENTORY_FIELDS:
-        raise ValueError("Phase 2 asset-inventory.csv header differs from the handoff contract")
-    if not manifest_path.is_file() or not committed_path.is_file():
-        raise ValueError("Phase 2 asset package is not committed")
-    if committed_path.read_text(encoding="utf-8") != sha256_file(manifest_path) + "\n":
-        raise ValueError("Phase 2 asset COMMITTED marker differs from manifest.sha256")
-    manifest_entries: dict[str, str] = {}
-    lines = manifest_path.read_text(encoding="utf-8").splitlines()
-    if lines != sorted(lines, key=lambda line: line.split("  ", 1)[-1]):
-        raise ValueError("Phase 2 asset manifest is not sorted")
-    for number, line in enumerate(lines, start=1):
-        if "  " not in line:
-            raise ValueError(f"Malformed Phase 2 asset manifest line {number}")
-        digest, relative = line.split("  ", 1)
-        pure = PurePosixPath(relative)
-        if (
-            not SHA256_RE.fullmatch(digest) or pure.is_absolute() or len(pure.parts) != 3
-            or pure.parts[0] != "files" or any(part in {"", ".", ".."} for part in pure.parts)
-            or relative in manifest_entries
-        ):
-            raise ValueError(f"Unsafe or duplicate Phase 2 asset manifest entry: {relative!r}")
-        artifact = safe_relative_path(package, relative, "Phase 2 archived asset")
-        if not artifact.is_file() or sha256_file(artifact) != digest:
-            raise ValueError(f"Phase 2 archived asset hash differs: {relative}")
-        manifest_entries[relative] = digest
-    actual = {
-        path.relative_to(package).as_posix()
-        for path in (package / "files").rglob("*") if path.is_file()
-    }
-    if actual != set(manifest_entries):
-        raise ValueError("Phase 2 asset manifest does not exactly cover asset-package/files")
-
-    rows = read_csv(inventory_path)
-    by_id: dict[str, dict[str, str]] = {}
-    file_records: list[dict[str, str]] = []
-    creator = phase2_manifest.get("ownership", {}).get("code_map_agent_id")
-    for row in rows:
-        asset_id = validate_id(row.get("asset_id", ""), "Asset-ID")
-        if asset_id == "NONE_FOUND" or asset_id in by_id:
-            raise ValueError(f"Sentinel or duplicate Phase 2 Asset-ID: {asset_id!r}")
-        source = PurePosixPath(row.get("source_path", ""))
-        archive = PurePosixPath(row.get("archive_path", ""))
-        if (
-            source.is_absolute() or not source.parts or ".." in source.parts
-            or archive.as_posix() != f"asset-package/files/{asset_id}/{source.name}"
-        ):
-            raise ValueError(f"Non-canonical Phase 2 asset path: {asset_id}")
-        digest = row.get("sha256", "")
-        relative = archive.relative_to("asset-package").as_posix()
-        artifact = safe_relative_path(phase2, archive.as_posix(), "Phase 2 asset archive")
-        if not SHA256_RE.fullmatch(digest) or manifest_entries.get(relative) != digest or sha256_file(artifact) != digest:
-            raise ValueError(f"Phase 2 asset hash chain differs: {asset_id}")
-        if (
-            not row.get("asset_type")
-            or row.get("created_by") != creator
-            or row.get("status") != "REVIEWED"
-            or row.get("reviewed_by") != expected_reviewer
-            or not row.get("reviewed_at")
-        ):
-            raise ValueError(f"Phase 2 asset lifecycle or role differs: {asset_id}")
-        for field in ("feature_ids", "page_ids", "state_ids"):
-            refs = parse_asset_refs(row.get(field, ""), f"{asset_id}.{field}")
-            for ref in refs:
-                validate_id(ref, field)
-        by_id[asset_id] = row
-        file_records.append({
-            "asset_id": asset_id,
-            "archive_path": archive.as_posix(),
-            "path": str(artifact),
-            "sha256": digest,
-        })
-    if len(rows) != len(manifest_entries):
-        raise ValueError("Phase 2 asset inventory and package are not one-to-one")
-
-    referenced: set[str] = set()
-    for row in active_inventory:
-        inventory_id = row.get("inventory_id", "<unknown>")
-        refs = parse_asset_refs(row.get("asset_ids", ""), f"{inventory_id}.asset_ids")
-        if "NONE_FOUND" in refs:
-            if refs != ["NONE_FOUND"]:
-                raise ValueError(f"{inventory_id}: NONE_FOUND cannot be mixed with Asset-IDs")
-            continue
-        for asset_id in refs:
-            asset = by_id.get(asset_id)
-            if asset is None:
-                raise ValueError(f"{inventory_id}: unknown Phase 2 Asset-ID {asset_id}")
-            for inventory_field, asset_field in (
-                ("feature_id", "feature_ids"), ("page_id", "page_ids"), ("state_id", "state_ids")
-            ):
-                if row.get(inventory_field) not in parse_asset_refs(
-                    asset.get(asset_field, ""), f"{asset_id}.{asset_field}"
-                ):
-                    raise ValueError(f"{inventory_id}: {asset_id} does not cover {inventory_field}")
-            referenced.add(asset_id)
-    if referenced != set(by_id):
-        raise ValueError("Every Phase 2 asset must be referenced by active inventory")
-    return sorted(rows, key=lambda row: row["asset_id"]), sorted(file_records, key=lambda row: row["asset_id"])
-
-
 def _sanitize_pid(sym: str) -> str:
     import re as _re2
     return _re2.sub(r"[^A-Z0-9a-z]", "-", sym or "")[:64].strip("-") or "X"
 
 
-def _fill_gmi_registries(temp_dir: Path, architecture_rows: list[dict[str, str]],
-                         source_rows: list[dict[str, str]]) -> None:
-    """gmi 模式：确定性填充 module/route/surface/architecture-map 注册表。
-    单模块 entry：每 inventory 页一条 route + 一个 surface（避免手填）。
+def gmi_carrier_kinds(phase2: Path) -> dict[str, set[str]]:
+    """page_id -> carrier kinds, read from the adapter's static-analysis pages.json."""
+    pages_path = phase2 / "static-analysis" / "pages.json"
+    kinds: dict[str, set[str]] = {}
+    if pages_path.is_file():
+        pages = require_object(load_json(pages_path), "Phase 2 pages.json").get("pages", [])
+        if isinstance(pages, list):
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_id = str(page.get("page_id", ""))
+                raw = page.get("kinds", [])
+                if page_id and isinstance(raw, list):
+                    kinds[page_id] = {str(item).upper() for item in raw if item}
+    return kinds
+
+
+def gmi_mapping_type(page_id: str, kinds: set[str]) -> str:
+    """Decide mapping_type from the Phase 2 carrier evidence; never default silently.
+
+    - dialog/sheet/overlay/widget/... carriers are non-routable -> VISUAL_SURFACE;
+    - only proven routable carriers (activity/screen/...) become ROUTE_PAGE;
+    - COMPOSABLE is normalized to the SCREEN semantics and treated as routable
+      (A3 decision; the COMPOSABLE->SCREEN trail is recorded on the mapping rows
+      by the caller via ``composable_screen_decision``);
+    - an unknown, empty, or ambiguous carrier is BLOCKED with the missing field named.
+    """
+    non_route = kinds & NON_ROUTE_CARRIER_KINDS
+    if non_route:
+        return "VISUAL_SURFACE"
+    # A3: COMPOSABLE -> SCREEN normalization before the routability check.
+    effective = set(kinds)
+    if COMPOSABLE_CARRIER_KIND in effective:
+        effective.discard(COMPOSABLE_CARRIER_KIND)
+        effective.add(COMPOSABLE_SCREEN_KIND)
+    routable = effective & ROUTABLE_CARRIER_KINDS
+    if routable and routable == effective:
+        return "ROUTE_PAGE"
+    detail = f"page_id={page_id}, carrier kinds={sorted(kinds) or 'missing'}"
+    raise ValueError(
+        "BLOCKED - carrier-undecidable: cannot decide ROUTE_PAGE vs VISUAL_SURFACE "
+        f"from Phase 2 static-analysis pages.json kinds ({detail}); "
+        "add an explicit carrier kind (ACTIVITY/SCREEN/PAGE/VIEW/COMPOSABLE for "
+        "routable, DIALOG/BOTTOM_SHEET/OVERLAY/WIDGET/... for non-routable surfaces)"
+    )
+
+
+def composable_screen_decision(kinds: set[str]) -> str:
+    """Decision trail marker for the seeded mapping rows when the A3
+    COMPOSABLE->SCREEN normalization fired for this page's carrier kinds."""
+    if COMPOSABLE_CARRIER_KIND in (kinds or set()):
+        return "gmi auto; carrier kind COMPOSABLE->SCREEN (A3 routable)"
+    return "gmi auto"
+
+
+def _fill_gmi_registries(
+    temp_dir: Path,
+    architecture_rows: list[dict[str, str]],
+    source_rows: list[dict[str, str]],
+    carrier_kinds: dict[str, set[str]],
+    ownership: dict[str, str],
+) -> None:
+    """gmi mode: deterministically seed module/route/surface/architecture-map.
+
+    One `entry` module; per inventory page exactly one landing shell side:
+    ROUTE_PAGE pages get a route row (no surface), VISUAL_SURFACE pages get a
+    surface row (no route). mapping_type comes from the Phase 2 carrier kinds.
     """
     mod_fields = csv_fieldnames(ASSETS / "module-registry.template.csv")
     rt_fields = csv_fieldnames(ASSETS / "route-registry.template.csv")
     sf_fields = csv_fieldnames(ASSETS / "surface-registry.template.csv")
 
     rows_module = [{
-        "harmony_module_id": "entry", "module_name": "entry",
+        "harmony_module_id": "ENTRY", "module_name": "entry",
         "layer": "app", "module_path": "entry", "build_config_path": "entry/build-profile.json5",
-        "feature_ids": "", "declared_dependencies": "", "created_by": "gmi",
+        "feature_ids": join_multi({row.get("feature_id", "") for row in source_rows}),
+        "declared_dependencies": "", "created_by": ownership["toolchain_agent_id"],
         "status": "READY", "notes": "gmi auto",
     }]
-    rows_route, rows_surface = [], []
+    rows_route: list[dict[str, str]] = []
+    rows_surface: list[dict[str, str]] = []
     for row in source_rows:
         inv_id = row.get("inventory_id", "")
         page_id = row.get("page_id", "")
         feat = row.get("feature_id", "")
         sym = row.get("page_name", inv_id).replace("INV-", "")
-        rt_id = f"ROUTE-{_sanitize_pid(sym)}"
-        sf_id = f"SURFACE-{_sanitize_pid(sym)}"
-        rows_route.append({
-            "route_id": rt_id, "page_id": page_id,
-            "page_shell_id": f"PAGESHELL-{_sanitize_pid(sym)}",
-            "harmony_module_id": "entry", "route_pattern": sym.lower() + "/index",
-            "registry_file": "entry/src/main/ets/pages/" + sym.lower().replace("-", "_") + ".ets",
-            "registry_symbol": sym, "page_shell_file": "",
-            "feature_ids": feat, "created_by": "gmi", "status": "READY", "notes": "",
-        })
-        rows_surface.append({
-            "surface_shell_id": sf_id, "page_id": page_id,
-            "page_shell_id": f"PAGESHELL-{_sanitize_pid(sym)}",
-            "harmony_module_id": "entry", "surface_kind": "PAGE", "surface_file": "",
-            "surface_symbol": sym, "feature_ids": feat, "created_by": "gmi",
-            "status": "READY", "notes": "",
-        })
+        sym_id = _sanitize_pid(sym).upper()
+        rt_id = f"ROUTE-{sym_id}"
+        sf_id = f"SURFACE-{sym_id}"
+        pshell_id = f"PAGESHELL-{sym_id}"
+        mapping_type = gmi_mapping_type(page_id, carrier_kinds.get(page_id, set()))
+        # A3 decision trail: when COMPOSABLE was normalized to SCREEN, keep the
+        # COMPOSABLE->SCREEN evidence on the seeded mapping rows (this function
+        # has no other log/CSV channel; the row notes are the audit trail).
+        trail = composable_screen_decision(carrier_kinds.get(page_id, set()))
+        if mapping_type == "ROUTE_PAGE":
+            rows_route.append({
+                "route_id": rt_id, "page_id": page_id,
+                "page_shell_id": pshell_id,
+                "harmony_module_id": "ENTRY", "route_pattern": sym.lower() + "/index",
+                "registry_file": "entry/src/main/ets/pages/" + sym.lower().replace("-", "_") + ".ets",
+                "registry_symbol": sym_id, "page_shell_file": "",
+                "feature_ids": feat, "created_by": ownership["navigation_agent_id"],
+                "status": "READY", "notes": trail,
+            })
+        else:
+            surface_kind = sorted(carrier_kinds.get(page_id, set()) & NON_ROUTE_CARRIER_KINDS)[0]
+            rows_surface.append({
+                "surface_shell_id": sf_id, "page_id": page_id,
+                "page_shell_id": pshell_id,
+                "harmony_module_id": "ENTRY", "surface_kind": surface_kind,
+                "surface_file": "", "surface_symbol": sym_id,
+                "feature_ids": feat, "created_by": ownership["navigation_agent_id"],
+                "status": "READY", "notes": trail,
+            })
         for ar in architecture_rows:
             if ar.get("inventory_id") == inv_id:
-                ar["harmony_module_id"] = "entry"
-                ar["route_id"] = rt_id
-                ar["surface_shell_id"] = sf_id
-                ar["mapping_type"] = ar.get("mapping_type") or "ROUTE_PAGE"
-                ar["mapping_status"] = "mapped"
+                ar["harmony_module_id"] = "ENTRY"
+                ar["route_id"] = rt_id if mapping_type == "ROUTE_PAGE" else ""
+                ar["surface_shell_id"] = sf_id if mapping_type == "VISUAL_SURFACE" else ""
+                ar["page_shell_id"] = pshell_id
+                ar["mapping_type"] = mapping_type
+                ar["mapped_by"] = ownership["navigation_agent_id"]
+                ar["mapping_status"] = "NOT_STARTED"
+                ar["notes"] = "gmi auto seed;" + (
+                    " carrier kind COMPOSABLE->SCREEN (A3 routable);"
+                    if COMPOSABLE_CARRIER_KIND in carrier_kinds.get(page_id, set())
+                    else ""
+                ) + " shell/screenshot/verification pending"
                 break
     write_csv(temp_dir / "module-registry.csv", mod_fields, rows_module)
     write_csv(temp_dir / "route-registry.csv", rt_fields, rows_route)
@@ -436,16 +367,12 @@ def _fill_gmi_registries(temp_dir: Path, architecture_rows: list[dict[str, str]]
 
 
 def is_gmi_phase2(run_dir: Path) -> bool:
-    """gmi 路径：run 目录含 phase-2-closure.json（gmi_closure 生成）即视为 gmi 流程。
-
-    gmi 流程的 P2 不产生旧证据链（environments.json/inventory.json/evidence/…），
-    其等价门禁（audit 0 diff + UNMAPPED=0 + closure 哈希闭环）记录在
-    runtime-evidence/audit-replay.csv 与 coverage/coverage-ledger.csv。
-    """
-    closure = run_dir / "phase-02-android-inventory" / "phase-2-closure.json"
+    """True only when the run carries a gmi Phase 2 closure certificate."""
+    phase2 = run_dir / "phase-02-android-inventory"
+    closure = phase2 / "phase-2-closure.json"
     if not closure.exists():
-        closure = run_dir / "phase-02-android-inventory" / "closure-report.json"
-    manifest = run_dir / "phase-02-android-inventory" / "phase-manifest.json"
+        closure = phase2 / "closure-report.json"
+    manifest = phase2 / "phase-manifest.json"
     if manifest.exists():
         try:
             m = load_json(manifest)
@@ -463,16 +390,20 @@ def _read_rows_csv(path: Path) -> list[dict[str, str]]:
 
 
 def verify_gmi_phase2_gate(run_dir: Path) -> dict:
-    """gmi 等价门禁：audit 0 diff + UNMAPPED/GAP=0 + closure hash 自洽。
+    """gmi equivalent gate: any of the four gate inputs missing -> BLOCKED.
 
-    失败即 raise ValueError（同旧流程语义）；返回摘要 dict 供日志记录。
-    覆盖 ledger/audit 位置两处约定：run_dir/ 下（adapter 期望）与 workspace（run_dir 上一级，
-    gmi P2 真身）兜底查找。
+    Four machine-checkable gate inputs (mirrors gmi_closure.py preconditions):
+      1. coverage/coverage-ledger.csv with UNMAPPED=0 (no GAP rows);
+      2. candidates/phase-2-completeness.csv with no silent MISSING;
+      3. runtime-evidence/audit-replay.csv with 0 discrepancies;
+      4. runtime-evidence/runtime-gate.csv consistent with the audit replay.
+    Any missing file raises (BLOCKED - gmi-gate-incomplete); a cached PASS
+    string alone is not an input.
     """
     p2 = run_dir / "phase-02-android-inventory"
 
     def locate(name: str) -> Path:
-        # 先 run_dir（适配器复制位置），再 workspace 上一级（gmi 真身）
+        # run_dir first (adapter copy location), then the parent workspace (gmi source)
         for base in (run_dir, run_dir.parent):
             p = base / name
             if p.exists():
@@ -481,30 +412,71 @@ def verify_gmi_phase2_gate(run_dir: Path) -> dict:
 
     audit = locate("runtime-evidence/audit-replay.csv")
     coverage = locate("coverage/coverage-ledger.csv")
-    closure_report = p2 / "closure-report.json"
-    if not closure_report.exists() and (p2 / "phase-2-closure.json").exists():
-        closure_report = p2 / "phase-2-closure.json"
+    runtime_gate = locate("runtime-evidence/runtime-gate.csv")
+    completeness = locate("candidates/phase-2-completeness.csv")
 
-    if audit.exists():
-        rows = _read_rows_csv(audit)
-        bad = [r for r in rows if str(r.get("discrepancy", "")).strip() == "YES"]
-        if bad:
-            raise ValueError(f"gmi-audit has {len(bad)} discrepancy rows; gate BLOCKED")
-    if coverage.exists():
-        rows = _read_rows_csv(coverage)
-        gaps = [r for r in rows if str(r.get("status", "")).strip() == "GAP"]
-        if gaps:
-            raise ValueError(f"gmi coverage has {len(gaps)} GAP files; UNMAPPED>0")
-    else:
-        raise ValueError("gmi coverage/coverage-ledger.csv missing; cannot verify UNMAPPED=0")
+    missing = [
+        label for label, path in (
+            ("coverage/coverage-ledger.csv", coverage),
+            ("candidates/phase-2-completeness.csv", completeness),
+            ("runtime-evidence/audit-replay.csv", audit),
+            ("runtime-evidence/runtime-gate.csv", runtime_gate),
+        ) if not path.is_file()
+    ]
+    if missing:
+        raise ValueError(
+            f"BLOCKED - gmi-gate-incomplete: missing gate input(s) {missing}; "
+            "all four gmi gate artifacts are mandatory"
+        )
 
+    coverage_rows = _read_rows_csv(coverage)
+    gaps = [r for r in coverage_rows if str(r.get("status", "")).strip() == "GAP"]
+    if gaps:
+        raise ValueError(f"gmi coverage has {len(gaps)} GAP files; UNMAPPED>0")
+
+    silent_missing = [
+        r for r in _read_rows_csv(completeness)
+        if str(r.get("status", "")).strip() == "MISSING" and not str(r.get("hint", "")).strip()
+    ]
+    if silent_missing:
+        raise ValueError(
+            f"gmi completeness has {len(silent_missing)} silent MISSING rows (no hint); gate BLOCKED"
+        )
+
+    audit_rows = _read_rows_csv(audit)
+    bad = [r for r in audit_rows if str(r.get("discrepancy", "")).strip().upper() == "YES"]
+    if bad:
+        raise ValueError(f"gmi-audit has {len(bad)} discrepancy rows; gate BLOCKED")
+
+    gate_rows = _read_rows_csv(runtime_gate)
+    gate_status = {
+        (str(r.get("page_id", "")), str(r.get("symbol", ""))): str(r.get("status", ""))
+        for r in gate_rows
+    }
+    for r in audit_rows:
+        recorded = str(r.get("recorded", ""))
+        expected = gate_status.get((str(r.get("page_id", "")), str(r.get("symbol", ""))))
+        if recorded and expected is not None and recorded != expected:
+            raise ValueError(
+                "gmi runtime-gate.csv VISITED status disagrees with audit replay: "
+                f"{r.get('page_id')} recorded={recorded} gate={expected}"
+            )
+
+    closure_report = p2 / "phase-2-closure.json"
+    if not closure_report.exists():
+        closure_report = p2 / "closure-report.json"
     closed = p2 / "CLOSED"
-    if closed.exists() and closure_report.exists():
+    if closed.exists() and closure_report.is_file():
         import hashlib as _h
         if closed.read_text(encoding="utf-8").strip() != _h.sha256(closure_report.read_bytes()).hexdigest():
             raise ValueError("gmi closure CLOSED marker does not bind closure-report")
-    return {"mode": "gmi", "audit": "clean" if audit.exists() else "not-found",
-            "unmapped": "GAP=0" if coverage.exists() else "unknown"}
+    return {
+        "mode": "gmi",
+        "audit": "clean",
+        "unmapped": "GAP=0",
+        "completeness": "no-silent-missing",
+        "runtime_gate": "consistent",
+    }
 
 
 def main() -> int:
@@ -521,21 +493,25 @@ def main() -> int:
         parser.error(str(exc))
     if not run_dir.is_dir():
         parser.error(f"Migration run does not exist: {run_dir}")
+    if not is_gmi_phase2(run_dir):
+        parser.error(
+            "Only gmi Phase 2 closure input is accepted "
+            "(phase-2-closure.json / closure-report.json from the gmi chain); "
+            "the former controller path was removed"
+        )
     work_orders_root = (run_dir / "controller" / "work-orders").resolve()
     try:
         work_order_path.relative_to(work_orders_root)
     except ValueError:
-        parser.error(f"Work order must be controller-owned below: {work_orders_root}")
+        parser.error(f"Work order must live below: {work_orders_root}")
 
     scope_input = run_dir / "controller" / "scope.json"
     gate_source_input = run_dir / "controller" / "gate-report.json"
     controller_anchor_input = run_dir / "controller" / "evidence-anchor-registry.csv"
-    registry_input = run_dir / "controller" / "work-order-registry.csv"
     for label, path in (
         ("controller scope", scope_input),
         ("controller gate", gate_source_input),
         ("controller evidence anchors", controller_anchor_input),
-        ("controller work-order registry", registry_input),
     ):
         if path.is_symlink():
             parser.error(f"{label} must not be a symbolic link: {path}")
@@ -548,7 +524,6 @@ def main() -> int:
         parser.error("Phase 2 workspace must be the canonical run-owned directory")
     phase2_paths = {
         "closure": phase2 / "closure-report.json",
-        "closure_manifest": phase2 / "closure-manifest.sha256",
         "closed": phase2 / "CLOSED",
         "phase_manifest": phase2 / "phase-manifest.json",
         "inventory": phase2 / "inventory.csv",
@@ -566,11 +541,19 @@ def main() -> int:
         "advanced_gate": phase2 / "advanced-gate-report.json",
         "probe_index": phase2 / "probe-evidence-index.csv",
     }
+    if not phase2_paths["closure"].is_file() and (phase2 / "phase-2-closure.json").is_file():
+        phase2_paths["closure"] = phase2 / "phase-2-closure.json"
+
+    try:
+        gmi_gate = verify_gmi_phase2_gate(run_dir)
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(f"[init_scaffold] gmi Phase 2 gate verified: {gmi_gate}")
 
     try:
         run_manifest = require_object(load_json(run_dir / "run-manifest.json"), "run-manifest.json")
         scope = require_object(load_json(scope_path), "controller scope")
-        gate = require_object(load_json(gate_source_path), "controller gate")
+        gate = require_object(load_json(gate_source_path), "gate report snapshot")
         work_order = require_object(load_json(work_order_path), "Phase 3 work order")
         closure = require_object(load_json(phase2_paths["closure"]), "Phase 2 closure")
         phase2_manifest = require_object(load_json(phase2_paths["phase_manifest"]), "Phase 2 manifest")
@@ -591,223 +574,46 @@ def main() -> int:
         parser.error(str(exc))
 
     if gate.get("phase") != 2 or gate.get("verdict") != "PASS":
-        parser.error("A current controller Phase 2 PASS gate is required")
-    gmi_mode = is_gmi_phase2(run_dir)
-    if gmi_mode:
-        try:
-            gmi_gate = verify_gmi_phase2_gate(run_dir)
-        except ValueError as exc:
-            parser.error(str(exc))
-        print(f"[init_scaffold] gmi Phase 2 gate verified: {gmi_gate}")
-        # 构造后续段需要的最小变量（避免 567+ 段 KeyError）
-        # 旧流程变量在非 gmi 路径下覆盖；这里全部给空/占位
-        # active_inventory 必须真实读 inventory.csv（P3 靠它生成 architecture-map 等；
-        # 置空会导致 P4 "missing Phase 3 architecture mapping"）
-        active_inventory = [r for r in read_csv(phase2_paths["inventory"])
-                            if r.get("row_status") != "SUPERSEDED"]
-        acceptance = read_csv(phase2_paths["acceptance"])
-        evidence_index = read_csv(phase2_paths["evidence_index"])
-        anchor_snapshot = read_csv(phase2_paths["anchor_snapshot"])
-        controller_anchors_all = []
-        closure = require_object(load_json(phase2_paths["closure"]), "Phase 2 closure")
-        phase2_manifest = require_object(load_json(phase2_paths["phase_manifest"]), "Phase 2 manifest")
-        inventory_all = read_csv(phase2_paths["inventory"])
-        # advanced 相关照旧读（adapter 已写）
-        advanced_analysis = require_object(
-            load_json(phase2_paths["advanced_analysis"]), "Phase 2 advanced analysis"
-        )
-        advanced_observations = require_object(
-            load_json(phase2_paths["advanced_observations"]), "Phase 2 advanced observations"
-        )
-        advanced_gate = require_object(load_json(phase2_paths["advanced_gate"]), "Phase 2 advanced gate")
-        probe_index = read_csv(phase2_paths["probe_index"])
-        # gmi 合流段需要的变量（非 gmi 路径在下方 recheck 后赋值；这里直接派生）
-        work_order_sha256 = sha256_file(work_order_path)
-        ownership = require_object(work_order.get("ownership"), "Phase 3 work-order ownership")
-        gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
-        if not gate_work_order_snapshot.exists():
-            gate_work_order_snapshot = run_dir / "controller" / "gate-report.json"
-        # gmi 资产清单（adapter 合成；非空保证合流段 row_count/asset_ids）
-        phase2_assets = read_csv(phase2_paths["asset_inventory"])
-        phase2_asset_files = [
-            {
-                "asset_id": row.get("asset_id", ""),
-                "source_path": row.get("source_path", ""),
-                "archive_path": row.get("archive_path", ""),
-                "sha256": row.get("sha256", ""),
-                "asset_type": row.get("asset_type", ""),
-            }
-            for row in phase2_assets
-        ]
-    if not gmi_mode:
-        gate_sha256_before = sha256_file(gate_source_path)
-        try:
-            gate_recheck = run_phase2_gate_recheck(run_dir)
-        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-            parser.error(str(exc))
-        if sha256_file(gate_source_path) != gate_sha256_before:
-            parser.error("Read-only Phase 2 gate recheck unexpectedly changed controller state")
-        if gate_recheck.get("scope_sha256") != sha256_file(scope_path):
-            parser.error("Controller Phase 2 recheck is bound to a different scope")
-
-        try:
-            closure_manifest_value = verify_closure_manifest(
-                phase2,
-                phase2_paths["closure_manifest"],
-                exact_excludes=PHASE2_CLOSURE_EXCLUDES,
-                directory_excludes=PHASE2_CLOSURE_DIR_EXCLUDES,
-            )
-        except ValueError as exc:
-            parser.error(f"Phase 2 closure is not immutable: {exc}")
-        if closure.get("closure_manifest_sha256") != sha256_text(closure_manifest_value):
-            parser.error("Phase 2 closure report references a different closure manifest")
-        try:
-            closed_value = phase2_paths["closed"].read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            parser.error(f"Cannot read Phase 2 CLOSED marker: {exc}")
-        if closed_value != sha256_file(phase2_paths["closure"]):
-            parser.error("Phase 2 CLOSED marker does not bind the current closure report")
-        if (
-            closure.get("final_verdict") != "PASS"
-            or closure.get("evidence_chain_closed") is not True
-            or phase2_manifest.get("status") != "CLOSED"
-        ):
-            parser.error("Phase 2 closure, evidence chain, and phase manifest must all be closed PASS")
-        if (
-            closure.get("advanced_gate_verdict") != "PASS"
-            or advanced_gate.get("machine_verdict") != "PASS"
-            or advanced_gate.get("decision_source") != "DETERMINISTIC_ADVANCED_RUNTIME_AND_PROBE_GATE"
-            or advanced_gate.get("required_observations") != advanced_gate.get("received_observations")
-        ):
-            parser.error("Phase 2 advanced analysis/probe gate is not a complete machine PASS")
-        if scope.get("run_id") != run_manifest.get("run_id") or scope.get("project_id") != run_manifest.get("project_id"):
-            parser.error("Controller scope identity does not match run-manifest.json")
-        if phase2_manifest.get("run_id") != scope.get("run_id") or phase2_manifest.get("ownership") != scope.get("ownership"):
-            parser.error("Phase 2 manifest identity or ownership differs from controller scope")
-
-        scope_sha256 = sha256_file(scope_path)
-        work_order_sha256 = sha256_file(work_order_path)
-        gate_snapshot_relative = Path(str(work_order.get("phase2_gate_snapshot_relative_path", "")))
-        if (
-            not gate_snapshot_relative.parts
-            or gate_snapshot_relative.is_absolute()
-            or ".." in gate_snapshot_relative.parts
-        ):
-            parser.error("Phase 3 work order has an unsafe Phase 2 gate-snapshot path")
-        gate_work_order_snapshot = run_dir / gate_snapshot_relative
-        if gate_work_order_snapshot.is_symlink():
-            parser.error("Controller-issued Phase 2 gate snapshot must not be a symbolic link")
-        gate_work_order_snapshot = gate_work_order_snapshot.resolve()
-        try:
-            gate_work_order_snapshot.relative_to(work_orders_root)
-        except ValueError:
-            parser.error("Phase 2 gate snapshot must be controller-owned beside the work order")
-        if not gate_work_order_snapshot.is_file() or sha256_file(gate_work_order_snapshot) != gate_sha256_before:
-            parser.error("Controller-issued Phase 2 gate snapshot is missing or differs from the current Gate 2 PASS")
-        try:
-            ownership = validate_phase3_ownership(work_order, scope)
-        except ValueError as exc:
-            parser.error(str(exc))
-        if args.architecture_lead != ownership["architecture_lead_id"]:
-            parser.error("--architecture-lead must equal the controller-assigned Phase 3 architecture lead")
-        registry_matches = [
-            row for row in read_csv(registry_input)
-            if row.get("work_order_id") == work_order.get("work_order_id")
-        ]
-        expected_work_order_values = {
-            "scope_sha256": scope_sha256,
-            "phase2_gate_sha256": gate_sha256_before,
-            "phase2_closure_sha256": sha256_file(phase2_paths["closure"]),
-            "phase2_closure_manifest_sha256": sha256_file(phase2_paths["closure_manifest"]),
-            "phase2_closed_sha256": sha256_file(phase2_paths["closed"]),
-            "phase2_inventory_sha256": sha256_file(phase2_paths["inventory"]),
-            "phase2_asset_inventory_sha256": sha256_file(phase2_paths["asset_inventory"]),
-            "phase2_asset_manifest_sha256": sha256_file(phase2_paths["asset_manifest"]),
-            "phase2_asset_committed_sha256": sha256_file(phase2_paths["asset_committed"]),
-            "phase2_anchor_snapshot_sha256": sha256_file(phase2_paths["anchor_snapshot"]),
-            "controller_anchor_registry_sha256": sha256_file(controller_anchor_path),
+        parser.error("A Phase 2 PASS gate snapshot is required")
+    try:
+        ownership = validate_gmi_ownership(work_order)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.architecture_lead != ownership["architecture_lead_id"]:
+        parser.error("--architecture-lead must equal the frozen architecture_lead_id")
+    work_order_sha256 = sha256_file(work_order_path)
+    gate_work_order_snapshot = gate_source_path
+    phase2_assets = read_csv(phase2_paths["asset_inventory"])
+    phase2_asset_files = [
+        {
+            "asset_id": row.get("asset_id", ""),
+            "source_path": row.get("source_path", ""),
+            "archive_path": row.get("archive_path", ""),
+            "sha256": row.get("sha256", ""),
+            "asset_type": row.get("asset_type", ""),
         }
-        registry_relative = work_order_path.relative_to(run_dir).as_posix()
-        if (
-            work_order.get("phase") != 3
-            or work_order.get("status") != "ISSUED"
-            or work_order.get("run_id") != scope.get("run_id")
-            or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-            or work_order.get("required_skill") != "harmonyos-migration-scaffold"
-            or work_order.get("included_features") != scope.get("migration_scope", {}).get("included_features")
-            or work_order.get("excluded_features") != scope.get("migration_scope", {}).get("excluded_features")
-            or work_order.get("ownership") != ownership
-            or any(work_order.get(key) != value for key, value in expected_work_order_values.items())
-            or len(registry_matches) != 1
-            or registry_matches[0].get("phase") != "3"
-            or registry_matches[0].get("relative_path") != registry_relative
-            or registry_matches[0].get("scope_sha256") != scope_sha256
-            or registry_matches[0].get("work_order_sha256") != work_order_sha256
-            or registry_matches[0].get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-            or registry_matches[0].get("status") != "ISSUED"
-        ):
-            parser.error("Phase 3 work order is not the exact controller-registered frozen order")
-
-        expected_reviewer = scope.get("ownership", {}).get("coverage_checker_id")
-        if closure.get("reviewer_id") != expected_reviewer or closure.get("reviewer_role") != "coverage-checker-agent":
-            parser.error("Phase 2 was not closed by the frozen coverage checker")
-        if not inventory_all:
-            parser.error("Phase 2 inventory is empty")
-        active_inventory = [row for row in inventory_all if row.get("row_status") != "SUPERSEDED"]
-        if not active_inventory or any(
-            row.get("row_status") != "REVIEWED" or row.get("reviewed_by") != expected_reviewer
-            for row in active_inventory
-        ):
-            parser.error("Every active Phase 2 inventory row must be REVIEWED by the frozen checker")
-        try:
-            phase2_assets, phase2_asset_files = validate_phase2_assets(
-                phase2, phase2_manifest, active_inventory, str(expected_reviewer)
-            )
-        except (OSError, ValueError) as exc:
-            parser.error(str(exc))
-        if any(row.get("status") not in {"ACCEPTED", "SUPERSEDED"} for row in evidence_index):
-            parser.error("Phase 2 evidence index contains a non-accepted lifecycle state")
-        accepted_index = {
-            (row.get("inventory_id"), row.get("evidence_id"))
-            for row in evidence_index if row.get("status") == "ACCEPTED"
-        }
-        inventory_pairs = {(row.get("inventory_id"), row.get("evidence_id")) for row in active_inventory}
-        accepted_pairs = {
-            (row.get("inventory_id"), row.get("evidence_id"))
-            for row in acceptance
-            if row.get("decision") == "ACCEPTED" and row.get("reviewed_by") == expected_reviewer
-        }
-        if accepted_index != inventory_pairs or accepted_pairs != inventory_pairs:
-            parser.error("Accepted evidence index and acceptance registry must exactly cover active inventory")
-        controller_anchors = sorted(
-            [
-                row for row in controller_anchors_all
-                if row.get("run_id") == scope.get("run_id") and row.get("phase") == "2"
-            ],
-            key=lambda row: row.get("evidence_id", ""),
-        )
-        if anchor_snapshot != controller_anchors:
-            parser.error("Phase 2 anchor snapshot differs from the controller-owned evidence registry")
-        if {row.get("evidence_id") for row in controller_anchors} != {
-            row.get("evidence_id") for row in evidence_index
-        }:
-            parser.error("Controller evidence anchors do not exactly cover the Phase 2 evidence index")
+        for row in phase2_assets
+    ]
+    controller_anchors = sorted(
+        [
+            row for row in controller_anchors_all
+            if row.get("run_id") in ("", run_manifest.get("run_id")) and row.get("phase") in ("", "2")
+        ],
+        key=lambda row: row.get("evidence_id", ""),
+    )
 
     catalog_specs = {
         "data_dependency_refs": (
             phase2_paths["data_catalog"], "data_dependency_id", "DATA_DEPENDENCY",
-            lambda row: row.get("dependency_type") == "NONE" and row.get("name") == "NONE_FOUND"
-            and row.get("direction") == "NONE" and row.get("migration_risk", "").lower() == "none",
+            lambda row: row.get("data_dependency_id") == "NONE_FOUND" or row.get("name") == "NONE_FOUND",
         ),
         "system_capability_refs": (
             phase2_paths["system_catalog"], "system_capability_id", "SYSTEM_CAPABILITY",
-            lambda row: row.get("capability_type") == "NONE" and row.get("name") == "NONE_FOUND"
-            and row.get("permission_or_api") == "NONE" and row.get("migration_risk", "").lower() == "none",
+            lambda row: row.get("system_capability_id") == "NONE_FOUND" or row.get("name") == "NONE_FOUND",
         ),
         "third_party_dependency_refs": (
             phase2_paths["third_party_catalog"], "third_party_dependency_id", "THIRD_PARTY_DEPENDENCY",
-            lambda row: row.get("name") == "NONE_FOUND" and row.get("version") == "NONE"
-            and row.get("purpose") == "NONE" and row.get("migration_risk", "").lower() == "none",
+            lambda row: row.get("third_party_dependency_id") == "NONE_FOUND" or row.get("name") == "NONE_FOUND",
         ),
     }
     catalog_indexes: dict[str, tuple[dict[str, dict[str, str]], set[str], str]] = {}
@@ -829,6 +635,10 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
+    active_inventory = [row for row in inventory_all if row.get("row_status") != "SUPERSEDED"]
+    if not active_inventory:
+        parser.error("Phase 2 inventory is empty")
+
     source_rows: list[dict[str, str]] = []
     seen_keys: set[str] = set()
     seen_inventory_ids: set[str] = set()
@@ -844,22 +654,9 @@ def main() -> int:
             parser.error(f"Duplicate active Phase 2 source row: {row['inventory_id']} / {key}")
         if row["feature_id"] not in included | excluded:
             parser.error(f"Inventory Feature-ID is outside frozen scope: {row['feature_id']}")
-        if not gmi_mode:
-            for ref_field, (indexed, _sentinels, _kind) in catalog_indexes.items():
-                try:
-                    refs = parse_refs(row.get(ref_field, ""))
-                except ValueError as exc:
-                    parser.error(f"{row['inventory_id']}: {exc}")
-                if not refs:
-                    parser.error(f"{row['inventory_id']} lacks explicit {ref_field}")
-                for ref in refs:
-                    catalog_row = indexed.get(ref)
-                    if catalog_row is None:
-                        parser.error(f"{row['inventory_id']}: unknown {ref_field} reference {ref}")
-                    if catalog_row.get("feature_id") != row["feature_id"]:
-                        parser.error(f"{row['inventory_id']}: catalog Feature-ID differs for {ref}")
-            # gmi 模式：catalog-refs 语义来自 gmi candidates（合成表仅 NONE_FOUND sentinel），
-            # 硬性 feature 归属校验跳过；真实归属由 phase-2-completeness 已知边界与 P4 阶段确认。
+        # gmi mode: catalog-refs semantics come from gmi candidates (the adapter
+        # writes explicit NONE_FOUND sentinels); hard per-feature catalog binding
+        # is deliberately not re-derived here.
         seen_keys.add(key)
         seen_inventory_ids.add(row["inventory_id"])
         visual_features.add(row["feature_id"])
@@ -969,14 +766,16 @@ def main() -> int:
 
     phase_dir = run_dir / PHASE_NAME
     if phase_dir.exists():
-        parser.error(f"Phase 3 workspace already exists; overwrite is prohibited: {phase_dir}")
+        # gmi_phase3_adapter pre-creates empty phase-03/04 placeholders; only an
+        # empty placeholder may be replaced, never a real workspace.
+        if any(phase_dir.iterdir()):
+            parser.error(f"Phase 3 workspace already exists; overwrite is prohibited: {phase_dir}")
+        shutil.rmtree(phase_dir)
     inputs_dir = phase_dir / "inputs"
     input_snapshots = {
         "controller_scope": inputs_dir / "controller-scope.json",
         "phase2_gate": inputs_dir / "phase-02-gate-report.json",
         "phase2_closure": inputs_dir / "phase-02-closure-report.json",
-        "phase2_closure_manifest": inputs_dir / "phase-02-closure-manifest.sha256",
-        "phase2_closed": inputs_dir / "phase-02-CLOSED",
         "phase2_phase_manifest": inputs_dir / "phase-02-phase-manifest.json",
         "phase2_inventory": inputs_dir / "phase-02-inventory.csv",
         "phase2_asset_inventory": inputs_dir / "phase-02-asset-inventory.csv",
@@ -1006,15 +805,12 @@ def main() -> int:
         "work_order_sha256": work_order_sha256,
         "ownership": ownership,
         "phase2_baseline_env_id": closure.get("baseline_env_id"),
+        "gmi_gate": gmi_gate,
         "controller_scope": input_record(scope_path, input_snapshots["controller_scope"]),
         "phase2_gate": input_record(
             gate_work_order_snapshot, input_snapshots["phase2_gate"], use_snapshot_as_path=True
         ),
         "phase2_closure": input_record(phase2_paths["closure"], input_snapshots["phase2_closure"]),
-        "phase2_closure_manifest": input_record(
-            phase2_paths["closure_manifest"], input_snapshots["phase2_closure_manifest"]
-        ),
-        "phase2_closed": input_record(phase2_paths["closed"], input_snapshots["phase2_closed"]),
         "phase2_phase_manifest": input_record(
             phase2_paths["phase_manifest"], input_snapshots["phase2_phase_manifest"]
         ),
@@ -1180,8 +976,6 @@ def main() -> int:
         "controller_scope": scope_path,
         "phase2_gate": gate_work_order_snapshot,
         "phase2_closure": phase2_paths["closure"],
-        "phase2_closure_manifest": phase2_paths["closure_manifest"],
-        "phase2_closed": phase2_paths["closed"],
         "phase2_phase_manifest": phase2_paths["phase_manifest"],
         "phase2_inventory": phase2_paths["inventory"],
         "phase2_asset_inventory": phase2_paths["asset_inventory"],
@@ -1200,6 +994,7 @@ def main() -> int:
         "phase2_advanced_gate": phase2_paths["advanced_gate"],
         "phase2_probe_index": phase2_paths["probe_index"],
     }
+    carrier_kinds = gmi_carrier_kinds(phase2)
     with tempfile.TemporaryDirectory(prefix=f".{PHASE_NAME}-", dir=run_dir) as temp_name:
         temp_dir = Path(temp_name)
         for name in ("inputs", "environments", "verification", "gate-reports"):
@@ -1231,16 +1026,11 @@ def main() -> int:
         copy_template_csv(temp_dir, "public-ui-registry.template.csv", "public-ui-registry.csv")
         copy_template_csv(temp_dir, "architecture-decisions.template.csv", "architecture-decisions.csv")
         copy_template_csv(temp_dir, "rework-tickets.template.csv", "rework-tickets.csv")
-        # gmi 分支：架构映射确定性填充（单模块 entry + 每页 route/surface）。
-        # 旧流程下由架构决策 agent 手填；gmi 模式自动生成，保证 P4 合同编译有 READY module。
-        if gmi_mode:
-            _fill_gmi_registries(temp_dir, architecture_rows, source_rows)
+        # gmi path: deterministic registry seeding (single `entry` module plus one
+        # landing shell side per page, mapping_type decided by the Phase 2 carrier).
+        _fill_gmi_registries(temp_dir, architecture_rows, source_rows, carrier_kinds, ownership)
         shutil.copyfile(ASSETS / "dependency-policy.template.json", temp_dir / "dependency-policy.json")
         shutil.copyfile(ASSETS / "henv-registry.template.csv", temp_dir / "environments" / "henv-registry.csv")
-        write_csv(
-            temp_dir / "architecture-map.csv",
-            csv_fieldnames(ASSETS / "architecture-map.template.csv"), architecture_rows,
-        )
         write_csv(
             temp_dir / "capability-contracts.csv",
             csv_fieldnames(ASSETS / "capability-contracts.template.csv"), capability_rows,

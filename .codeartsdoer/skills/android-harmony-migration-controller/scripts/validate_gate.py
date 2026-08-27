@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Phase 1 through Phase 6 gates for a migration controller run."""
+"""Validate Phase 1 through Phase 4 gates for a migration controller run."""
 
 from __future__ import annotations
 
@@ -28,6 +28,11 @@ FEATURE_SCRIPTS = (
 if str(FEATURE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(FEATURE_SCRIPTS))
 from uitest_snapshot import validate_uitest_evidence  # noqa: E402
+from _stage4_audit import (  # noqa: E402
+    LITE_EVIDENCE_SEQUENCE,
+    LITE_COMPONENT_OVERLAP_MIN,
+    validate_uitest_evidence_lite,
+)
 from stage4_work_orders import (  # noqa: E402
     _page_contracts,
     _registered_orders,
@@ -128,26 +133,6 @@ STAGE4_INPUT_RELATIVES = {
     "phase3_asset_registry_sha256": "phase-03-harmony-scaffold/asset-registry.csv",
     "phase3_advanced_obligations_sha256": "phase-03-harmony-scaffold/advanced-obligations.json",
     "phase3_henv_registry_sha256": "phase-03-harmony-scaffold/environments/henv-registry.csv",
-}
-STAGE5_ROLE_KEYS = (
-    "regression_lead_id", "candidate_build_agent_id", "journey_executor_id",
-    "quality_agent_id", "system_acceptance_agent_id",
-)
-STAGE6_ROLE_KEYS = (
-    "delivery_lead_id", "candidate_custody_agent_id", "candidate_validation_agent_id",
-    "material_consistency_agent_id", "delivery_acceptance_agent_id",
-)
-STAGE5_CLOSURE_EXACT_EXCLUDES = {
-    "stage-05-gate-report.json", "stage-05-closure-manifest.sha256", "CLOSED",
-}
-STAGE6_CLOSURE_EXACT_EXCLUDES = {
-    "stage-06-gate-report.json", "stage-06-closure-manifest.sha256", "CLOSED",
-}
-PHASE56_TRANSIENT_PARTS = {".locks", ".staging", "__pycache__", ".pytest_cache"}
-PHASE6_PROHIBITED_COMMAND_WORDS = {
-    "build", "rebuild", "compile", "package", "sign", "resign", "upload", "send",
-    "distribute", "publish", "release", "store", "market", "remote-sign", "remote_sign",
-    "remotesign", "deploy", "submit",
 }
 
 
@@ -938,6 +923,21 @@ PHASE4_ATTEMPT_FIELDS = [
     "execution_id", "parity_id", "evidence_id", "started_at", "executed_by",
     "previous_chain_sha256", "chain_sha256",
 ]
+
+
+def reviewed_visual_ids_are_acceptable(
+    reviewed: Any, expected: set[str], tier: str,
+) -> bool:
+    """P4 分层验证：CORE 要求 reviewed 恰为全部视觉元素；LITE 允许非空抽样子集。
+
+    LITE 子集须满足 >=1 且 ⊆ 全集（全集本身也合法）；CORE 子集被拒。
+    """
+    if not isinstance(reviewed, list):
+        return False
+    reviewed_set = {str(item) for item in reviewed}
+    if tier == "LITE":
+        return bool(reviewed_set) and reviewed_set <= expected
+    return reviewed_set == expected
 
 
 def validate_phase4_attempt_chain(rows: list[dict[str, str]], errors: list[str]) -> None:
@@ -2212,7 +2212,7 @@ def validate_phase3(
         mirrored = matches[0]
         expected_fields = {
             "created_at": local.get("opened_at", ""),
-            "record_id": local.get("source_or_mapping_id", ""),
+            "record_id": local.get("record_id", ""),
             "evidence_id": local.get("failed_verification_id", ""),
             "gate_rule": problem_type,
             "reason": local.get("notes", ""),
@@ -2228,7 +2228,7 @@ def validate_phase3(
                 or mirrored.get("status") != "CLOSED"
                 or mirrored.get("resolved_at") != local.get("closed_at")
                 or mirrored.get("resolution_evidence_id")
-                != local.get("correction_verification_id")
+                != local.get("resolution_verification_id")
                 or mirrored.get("reviewed_by") != expected_acceptance
             ):
                 errors.append(f"Closed Phase 3 rework mirror differs: {ticket_id}")
@@ -3360,6 +3360,9 @@ def validate_phase4(
         "capability_requirement_id", "Phase 3 capability contracts", errors,
     )
     page_order_mode = (phase_dir / "page-work-order-registry.csv").is_file()
+    # P4 分层验证：页合同 tier 映射（CORE=全证据深验 / LITE=轻证）；
+    # feature 模式（无页合同）与缺省键一律 CORE（向后兼容）。
+    page_verification_tier: dict[str, str] = {}
     feature_registry_rows = (
         [] if page_order_mode
         else read_csv_rows(phase_dir / "feature-work-order-registry.csv")
@@ -3397,6 +3400,10 @@ def validate_phase4(
         try:
             validate_order_coverage(phase_dir)
             page_contracts = _page_contracts(phase_dir)
+            page_verification_tier = {
+                str(page_id): str(contract.get("verification_tier") or "CORE").strip().upper()
+                for page_id, (contract, _, _) in page_contracts.items()
+            }
             governed_orders = _registered_orders(phase_dir, page_contracts)
             page_orders = {
                 str(order["page_id"]): order
@@ -3761,6 +3768,12 @@ def validate_phase4(
         parity_id = str(visual.get("parity_id", ""))
         parity_row = parity.get(parity_id, {})
         feature_id = str(parity_row.get("feature_id", ""))
+        # P4 分层验证：LITE 页把逐视觉元素几何从门禁降为抽样（review 端
+        # reviewed_visual_element_ids 抽样集），此处跳过逐元素几何匹配；
+        # CORE 页保持逐元素几何不变。
+        visual_page_tier = page_verification_tier.get(
+            str(parity_row.get("page_id", "")), "CORE"
+        )
         android_geometry = phase4_geometry(
             visual.get("android_geometry", ""), f"{visual_id}.android_geometry", errors
         )
@@ -3789,7 +3802,7 @@ def validate_phase4(
             android_spec = harmony_spec = None
         if android_geometry and harmony_geometry and resolution_match and isinstance(
             harmony_comparison, dict
-        ):
+        ) and visual_page_tier != "LITE":
             harmony_width = float(harmony_comparison.get("screenshot_width", 0))
             harmony_height = float(harmony_comparison.get("screenshot_height", 0))
             tolerance = float(harmony_comparison.get("geometry_tolerance_px", 0))
@@ -3890,6 +3903,13 @@ def validate_phase4(
     capability_assertion_evidence: dict[str, set[str]] = {}
     for evidence_id in sorted(used_evidence_ids):
         row = active_evidence[evidence_id]
+        # P4 分层验证：HEVD 重放按 evidence-index 的 verification_tier 列分流
+        # （缺列/空值默认 CORE，向后兼容旧证据行）。哈希链/三类断言/截图
+        # 分辨率等式对两级 tier 均保留。
+        evidence_tier = str(row.get("verification_tier") or "CORE").strip().upper()
+        if evidence_tier not in {"CORE", "LITE"}:
+            errors.append(f"{evidence_id}: verification_tier must be CORE or LITE: {evidence_tier!r}")
+            evidence_tier = "CORE"
         expected_relative = (
             f"evidence/{row.get('h4env_id', '')}/{row.get('feature_id', '')}/"
             f"{row.get('page_id', '')}/{row.get('state_id', '')}/{evidence_id}"
@@ -3985,25 +4005,41 @@ def validate_phase4(
                         sort_keys=True, separators=(",", ":"),
                     ).encode("utf-8")).hexdigest()
                     try:
-                        validate_uitest_evidence(
-                            evidence_dir, probes[0], page_id=str(row.get("page_id", "")),
-                            state_id=str(row.get("state_id", "")),
-                            bundle_name=str(environment.get("base_application", {}).get("bundle_name", "")),
-                            carrier=str(page_contract.get("carrier_type", "")),
-                            target_id=str(parity.get(str(row.get("parity_id", "")), {}).get("target_id", "")),
-                            generation_manifest_sha256=sha256_file(generation_manifest),
-                            page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
-                            final_hap_sha256=str(primary.get("sha256", "")),
-                            device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
-                            required_event_ids={
-                                str(item["event_id"]) for item in page_contract.get("interaction_bindings", [])
-                                if isinstance(item, dict) and item.get("event_id")
-                            },
-                            required_transition_ids={
-                                str(item["transition_id"]) for item in page_contract.get("transitions", [])
-                                if isinstance(item, dict) and item.get("transition_id")
-                            },
-                        )
+                        if evidence_tier == "LITE":
+                            # LITE 轻证：哈希绑定保留，逐组件严检与 EVENT/TRANSITION
+                            # 精确相等降为结构化组件树对比（阈值 LITE_COMPONENT_OVERLAP_MIN）。
+                            validate_uitest_evidence_lite(
+                                evidence_dir, probes[0], page_id=str(row.get("page_id", "")),
+                                state_id=str(row.get("state_id", "")),
+                                bundle_name=str(environment.get("base_application", {}).get("bundle_name", "")),
+                                carrier=str(page_contract.get("carrier_type", "")),
+                                target_id=str(parity.get(str(row.get("parity_id", "")), {}).get("target_id", "")),
+                                generation_manifest_sha256=sha256_file(generation_manifest),
+                                page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+                                final_hap_sha256=str(primary.get("sha256", "")),
+                                device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+                                expected_components=page_contract.get("components"),
+                            )
+                        else:
+                            validate_uitest_evidence(
+                                evidence_dir, probes[0], page_id=str(row.get("page_id", "")),
+                                state_id=str(row.get("state_id", "")),
+                                bundle_name=str(environment.get("base_application", {}).get("bundle_name", "")),
+                                carrier=str(page_contract.get("carrier_type", "")),
+                                target_id=str(parity.get(str(row.get("parity_id", "")), {}).get("target_id", "")),
+                                generation_manifest_sha256=sha256_file(generation_manifest),
+                                page_plan_sha256=sha256_file(page_plan), test_hap_sha256=sha256_file(test_hap),
+                                final_hap_sha256=str(primary.get("sha256", "")),
+                                device_identity_sha256=device_identity_sha256, command_sha256=command_sha256,
+                                required_event_ids={
+                                    str(item["event_id"]) for item in page_contract.get("interaction_bindings", [])
+                                    if isinstance(item, dict) and item.get("event_id")
+                                },
+                                required_transition_ids={
+                                    str(item["transition_id"]) for item in page_contract.get("transitions", [])
+                                    if isinstance(item, dict) and item.get("transition_id")
+                                },
+                            )
                     except ValueError as exc:
                         errors.append(f"{evidence_id}: {exc}")
             if (
@@ -4049,11 +4085,14 @@ def validate_phase4(
                 evidence_dir,
                 metadata.get("commands"),
                 environment,
-                [
-                    "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
-                    "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
-                    "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
-                ],
+                (
+                    LITE_EVIDENCE_SEQUENCE if evidence_tier == "LITE"
+                    else [
+                        "DEVICE_CHECK", "CLEAN_INSTALL", "SEED_RESET", "NETWORK_PROFILE",
+                        "PERMISSION_PROFILE", "LAUNCH", "NAVIGATE", "BUSINESS_ASSERT",
+                        "SCREENSHOT_CAPTURE", "UITEST_SNAPSHOT_CAPTURE",
+                    ]
+                ),
                 f"HEVD {evidence_id}",
                 errors,
             )
@@ -4140,6 +4179,13 @@ def validate_phase4(
             }
             reviewed_visual_ids = review.get("reviewed_visual_element_ids")
             differences = review.get("differences")
+            # P4 分层验证：review JSON 的 verification_tier（review_parity 写入，
+            # 缺省 CORE）须在值域内且与页合同 tier 一致；reviewed 视觉元素集
+            # CORE=全集精确相等，LITE=非空抽样子集（⊆ 全集，全集亦可）。
+            review_tier = str(review.get("verification_tier") or "CORE").strip().upper()
+            expected_page_tier = page_verification_tier.get(
+                str(parity_row.get("page_id", "")), "CORE"
+            )
             difference_dimensions: set[str] = set()
             approved_difference_ids: set[str] = set()
             if isinstance(differences, list):
@@ -4165,10 +4211,17 @@ def validate_phase4(
                 dimension for dimension, result in results.items() if result != "MATCH"
             }
             if (
-                set(review) != hrev_keys
+                set(review) - {"verification_tier"} != hrev_keys
                 or review_path.stat().st_mode & 0o222
                 or not isinstance(reviewed_visual_ids, list)
-                or reviewed_visual_ids != sorted(parity_visual_ids.get(parity_id, set()))
+                or not reviewed_visual_ids_are_acceptable(
+                    reviewed_visual_ids,
+                    set(parity_visual_ids.get(parity_id, set())),
+                    expected_page_tier,
+                )
+                or sorted(reviewed_visual_ids) != reviewed_visual_ids
+                or review_tier not in {"CORE", "LITE"}
+                or review_tier != expected_page_tier
                 or not isinstance(differences, list)
                 or difference_dimensions != nonmatch_dimensions
                 or (bool(nonmatch_dimensions) != bool(differences))
@@ -4828,7 +4881,7 @@ def validate_phase4(
             or local.get("closed_by") != phase4_ownership.get("parity_acceptance_agent_id")
             or local.get("responsible_agent") not in allowed_responsible
             or local.get("responsible_agent") == phase4_ownership.get("parity_acceptance_agent_id")
-            or local.get("resolution_evidence_id") not in used_evidence_ids
+            or local.get("resolution_verification_id") not in used_evidence_ids
             or len(matches) != 1
         ):
             errors.append(f"Phase 4 rework authority or lifecycle is invalid: {ticket_id!r}")
@@ -4836,15 +4889,15 @@ def validate_phase4(
         mirrored = matches[0]
         expected_fields = {
             "created_at": local.get("opened_at", ""),
-            "record_id": local.get("parity_or_record_id", ""),
-            "evidence_id": local.get("failed_evidence_id", ""),
+            "record_id": local.get("record_id", ""),
+            "evidence_id": local.get("failed_verification_id", ""),
             "gate_rule": local.get("problem_type", ""),
             "reason": local.get("notes", ""),
             "assigned_to": local.get("responsible_agent", ""),
             "completion_condition": local.get("completion_condition", ""),
             "status": "CLOSED",
             "resolved_at": local.get("closed_at", ""),
-            "resolution_evidence_id": local.get("resolution_evidence_id", ""),
+            "resolution_evidence_id": local.get("resolution_verification_id", ""),
             "reviewed_by": local.get("closed_by", ""),
         }
         if any(mirrored.get(field, "") != value for field, value in expected_fields.items()):
@@ -4913,1232 +4966,6 @@ def validate_phase4(
     )
 
 
-def phase56_closure_excluded(relative: PurePosixPath, phase: int) -> bool:
-    exact = STAGE5_CLOSURE_EXACT_EXCLUDES if phase == 5 else STAGE6_CLOSURE_EXACT_EXCLUDES
-    if relative.as_posix() in exact or any(part in PHASE56_TRANSIENT_PARTS for part in relative.parts):
-        return True
-    if relative.suffix in {".tmp", ".pyc"} or relative.name.endswith(".lock"):
-        return True
-    return bool(
-        phase == 5
-        and relative.parts
-        and relative.parts[0] == "harmony-project"
-        and any(part in STAGE4_PROJECT_EXCLUDED_PARTS for part in relative.parts[1:])
-    )
-
-
-def verify_phase56_closure(workspace: Path, phase: int, errors: list[str]) -> dict[str, str]:
-    manifest_name = f"stage-0{phase}-closure-manifest.sha256"
-    manifest = workspace / manifest_name
-    if not manifest.is_file() or manifest.is_symlink():
-        errors.append(f"Phase {phase} closure manifest is missing or unsafe")
-        return {}
-    expected = parse_sha256_manifest(manifest, f"Phase {phase} closure manifest", errors)
-    actual: dict[str, Path] = {}
-    for path in workspace.rglob("*"):
-        relative = PurePosixPath(path.relative_to(workspace).as_posix())
-        if phase56_closure_excluded(relative, phase):
-            continue
-        if path.is_symlink():
-            errors.append(f"Symbolic links are prohibited in Phase {phase} closure: {path}")
-            continue
-        if path.is_file():
-            if path.suffix.lower() == ".mp4":
-                errors.append(f"MP4 is prohibited in formal Phase {phase} evidence: {relative}")
-            actual[relative.as_posix()] = path
-    if set(expected) != set(actual):
-        errors.append(
-            f"Phase {phase} closure file set changed; "
-            f"missing={sorted(set(expected) - set(actual))[:5]}, "
-            f"extra={sorted(set(actual) - set(expected))[:5]}"
-        )
-    for relative in sorted(set(expected) & set(actual)):
-        if sha256_file(actual[relative]) != expected[relative]:
-            errors.append(f"Phase {phase} closure hash mismatch: {relative}")
-    return expected
-
-
-def verify_closed_marker(workspace: Path, phase: int, errors: list[str]) -> None:
-    report = workspace / f"stage-0{phase}-gate-report.json"
-    marker = workspace / "CLOSED"
-    if not report.is_file() or report.is_symlink() or not marker.is_file() or marker.is_symlink():
-        errors.append(f"Phase {phase} final report or CLOSED marker is missing/unsafe")
-        return
-    try:
-        if marker.read_text(encoding="utf-8").strip() != sha256_file(report):
-            errors.append(f"Phase {phase} CLOSED marker does not bind its final report")
-    except (OSError, UnicodeDecodeError) as exc:
-        errors.append(f"Cannot read Phase {phase} CLOSED marker: {exc}")
-
-
-def json_string_array(value: str, label: str, errors: list[str], *, allow_empty: bool = True) -> list[str]:
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        errors.append(f"{label} is not a JSON string array")
-        return []
-    if (
-        not isinstance(parsed, list) or (not allow_empty and not parsed)
-        or any(not isinstance(item, str) or not item for item in parsed)
-        or parsed != sorted(set(parsed))
-    ):
-        errors.append(f"{label} must be a sorted unique JSON string array")
-        return []
-    return parsed
-
-
-def phase56_prior_actor_ids(
-    run_dir: Path, scope: dict[str, Any], registry_rows: list[dict[str, str]], phase: int,
-    errors: list[str],
-) -> set[str]:
-    actors = actor_ids(scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {})
-    for row in registry_rows:
-        try:
-            row_phase = int(str(row.get("phase", "0")))
-        except ValueError:
-            continue
-        if row_phase >= phase or row.get("status", "").upper() == "SUPERSEDED":
-            continue
-        path = safe_relative_path(run_dir, row.get("relative_path", ""), f"Phase {row_phase} work order", errors)
-        if path and path.is_file():
-            try:
-                order = load_json(path)
-                ownership = order.get("ownership") if isinstance(order.get("ownership"), dict) else {}
-                actors.update(actor_ids(ownership))
-            except ValueError as exc:
-                errors.append(str(exc))
-    if phase > 4:
-        feature_root = run_dir / "phase-04-harmony-implementation"
-        for row in read_csv_rows(feature_root / "feature-work-order-registry.csv"):
-            if row.get("status", "").upper() == "SUPERSEDED":
-                continue
-            relative = row.get("relative_path") or row.get("work_order_relative_path") or ""
-            path = safe_relative_path(feature_root, relative, "Phase 4 feature work order", errors)
-            if path and path.is_file():
-                try:
-                    order = load_json(path)
-                    ownership = order.get("ownership") if isinstance(order.get("ownership"), dict) else {}
-                    actors.update(actor_ids(ownership))
-                except ValueError as exc:
-                    errors.append(str(exc))
-    return actors
-
-
-def validate_phase56_work_order(
-    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any], phase: int,
-    manifest: dict[str, Any], input_lock: dict[str, Any], role_keys: tuple[str, ...],
-    expected_skill: str, errors: list[str],
-) -> tuple[dict[str, Any], dict[str, Any], str | None, str | None]:
-    registry_rows = read_csv_rows(run_dir / "controller" / "work-order-registry.csv")
-    work_order_id = str(manifest.get("work_order_id") or input_lock.get("work_order_id") or "")
-    if not work_order_id and isinstance(input_lock.get("work_order"), dict):
-        work_order_id = str(input_lock["work_order"].get("work_order_id", ""))
-    active = [
-        row for row in registry_rows
-        if row.get("phase") == str(phase) and row.get("status", "").upper() != "SUPERSEDED"
-    ]
-    matches = [row for row in active if row.get("work_order_id") == work_order_id]
-    work_order: dict[str, Any] = {}
-    work_order_sha256: str | None = None
-    if not ID_RE.fullmatch(work_order_id) or len(active) != 1 or len(matches) != 1:
-        errors.append(f"Controller must have exactly one active registered Phase {phase} work order")
-        return work_order, {}, None, None
-    registry = matches[0]
-    path = safe_relative_path(run_dir, registry.get("relative_path", ""), f"Phase {phase} work order", errors)
-    if path and path.is_file():
-        try:
-            work_order = load_json(path)
-            work_order_sha256 = sha256_file(path)
-        except ValueError as exc:
-            errors.append(str(exc))
-    if (
-        registry.get("status") != "ISSUED"
-        or registry.get("scope_sha256") != phase1_facts.get("scope_sha256")
-        or registry.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-        or registry.get("work_order_sha256") != work_order_sha256
-    ):
-        errors.append(f"Registered Phase {phase} work order is changed or unauthorized")
-    ownership = work_order.get("ownership") if isinstance(work_order.get("ownership"), dict) else {}
-    values = [ownership.get(key) for key in role_keys]
-    prior = phase56_prior_actor_ids(run_dir, scope, registry_rows, phase, errors)
-    if (
-        work_order.get("schema_version") != "1.0"
-        or work_order.get("work_order_id") != work_order_id
-        or work_order.get("run_id") != scope.get("run_id")
-        or work_order.get("phase") != phase
-        or work_order.get("status") != "ISSUED"
-        or work_order.get("issued_by") != scope.get("ownership", {}).get("migration_controller_id")
-        or work_order.get("required_skill") != expected_skill
-        or set(ownership) != set(role_keys)
-        or any(not isinstance(value, str) or not ACTOR_RE.fullmatch(value) for value in values)
-        or len(values) != len(set(values))
-        or set(str(value) for value in values) & prior
-        or work_order.get("forbidden_prior_actor_ids") != sorted(prior)
-    ):
-        errors.append(f"Phase {phase} work order identity, role separation, or authority is invalid")
-    return work_order, ownership, work_order_sha256, work_order_id
-
-
-def validate_frozen_file_record(
-    run_dir: Path, record: Any, label: str, errors: list[str], *, require_live: bool = True,
-) -> tuple[Path | None, Path | None]:
-    if not isinstance(record, dict):
-        errors.append(f"{label} record is not an object")
-        return None, None
-    live = (
-        safe_relative_path(run_dir, str(record.get("relative_path", "")), f"{label} live input", errors)
-        if require_live else None
-    )
-    snapshot = safe_relative_path(
-        run_dir, str(record.get("snapshot_relative_path", "")), f"{label} controller snapshot", errors
-    )
-    digest = str(record.get("sha256", ""))
-    if (
-        not SHA256_RE.fullmatch(digest)
-        or (require_live and (not live or not live.is_file() or sha256_file(live) != digest))
-        or not snapshot or not snapshot.is_file() or sha256_file(snapshot) != digest
-        or (require_live and live and snapshot and live.read_bytes() != snapshot.read_bytes())
-    ):
-        errors.append(f"{label} live bytes, controller snapshot, or declared hash differ")
-    return live, snapshot
-
-
-def verify_sealed_tree(directory: Path, package_id: str, label: str, errors: list[str]) -> dict[str, str]:
-    expected = verify_exact_manifest(
-        directory, "manifest.sha256", {"manifest.sha256", "COMMITTED"}, label, errors
-    )
-    marker = directory / "COMMITTED"
-    manifest = directory / "manifest.sha256"
-    if not marker.is_file() or marker.is_symlink() or not manifest.is_file():
-        errors.append(f"{label} is not committed")
-    else:
-        try:
-            value = marker.read_text(encoding="utf-8").strip()
-            if not value.startswith(f"{package_id} ") or f"manifest_sha256={sha256_file(manifest)}" not in value:
-                errors.append(f"{label} COMMITTED marker does not bind its manifest")
-        except (OSError, UnicodeDecodeError) as exc:
-            errors.append(f"Cannot read {label} COMMITTED marker: {exc}")
-    if directory.exists():
-        for path in (directory, *directory.rglob("*")):
-            if path.stat().st_mode & 0o222:
-                errors.append(f"{label} contains a writable sealed path: {path}")
-                break
-    return expected
-
-
-def validate_phase5(
-    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any]
-) -> tuple[list[str], list[str], str | None, str | None, str | None]:
-    """Independently recheck the closed Phase 5 candidate and whole-app regression."""
-    errors: list[str] = []
-    warnings: list[str] = []
-    phase_dir = run_dir / "phase-05-harmony-regression"
-    required = (
-        "stage-05-input-lock.json", "phase-manifest.json", "release-candidate-registry.csv",
-        "flow-edge-registry.csv", "lifecycle-invariants.csv", "no-cross-flow.csv",
-        "scenario-registry.csv", "scenario-acceptance.csv", "evidence-index.csv",
-        "rework-tickets.csv", "inputs", "environments/h5env-registry.csv", "harmony-project",
-        "release-candidates", "scenarios", "evidence", "reviews", "stage-05-gate-report.json",
-        "stage-05-closure-manifest.sha256", "CLOSED",
-    )
-    for relative in required:
-        candidate = phase_dir / relative
-        if not candidate.exists() or candidate.is_symlink():
-            errors.append(f"Missing or unsafe Phase 5 artifact: {candidate}")
-    try:
-        input_lock = load_json(phase_dir / "stage-05-input-lock.json")
-        manifest = load_json(phase_dir / "phase-manifest.json")
-        report = load_json(phase_dir / "stage-05-gate-report.json")
-    except ValueError as exc:
-        errors.append(str(exc))
-        return errors, warnings, None, None, None
-
-    verify_phase56_closure(phase_dir, 5, errors)
-    verify_closed_marker(phase_dir, 5, errors)
-    work_order, ownership, work_order_sha256, work_order_id = validate_phase56_work_order(
-        run_dir, scope, phase1_facts, 5, manifest, input_lock, STAGE5_ROLE_KEYS,
-        "harmonyos-system-regression", errors,
-    )
-    expected_permissions = {
-        "source_modification_allowed": False,
-        "new_feature_allowed": False,
-        "mp4_allowed": False,
-        "external_publish_allowed": False,
-    }
-    if work_order.get("permissions") != expected_permissions:
-        errors.append("Phase 5 work order permissions do not prohibit source/new-feature/MP4/publishing")
-    if (
-        manifest.get("schema_version") != "1.0"
-        or manifest.get("phase") != 5
-        or manifest.get("run_id") != scope.get("run_id")
-        or manifest.get("status") != "IN_PROGRESS"
-        or manifest.get("work_order_id") != work_order_id
-        or manifest.get("work_order_sha256") != work_order_sha256
-        or manifest.get("ownership") != ownership
-        or manifest.get("created_by") != ownership.get("regression_lead_id")
-        or input_lock.get("schema_version") != "1.0"
-        or input_lock.get("phase") != 5
-        or input_lock.get("run_id") != scope.get("run_id")
-        or input_lock.get("work_order_id") != work_order_id
-        or input_lock.get("work_order_sha256") != work_order_sha256
-        or input_lock.get("ownership") != ownership
-        or input_lock.get("created_by") != ownership.get("regression_lead_id")
-        or manifest.get("input_lock_sha256") != sha256_file(phase_dir / "stage-05-input-lock.json")
-    ):
-        errors.append("Phase 5 manifest/input lock identity, hashes, or ownership differ")
-
-    order_inputs = work_order.get("inputs") if isinstance(work_order.get("inputs"), dict) else {}
-    expected_input_keys = {
-        "scope", "gate4_report", "phase4_work_order", "phase4_input_lock", "phase4_manifest",
-        "phase4_report", "phase4_closure_manifest", "phase4_closed", "phase4_project",
-        "phase4_final_builds",
-    }
-    if set(order_inputs) != expected_input_keys:
-        errors.append("Phase 5 work order input key set differs")
-    for key in sorted(expected_input_keys - {"phase4_project", "phase4_final_builds"}):
-        validate_frozen_file_record(
-            run_dir, order_inputs.get(key), f"Phase 5 {key}", errors,
-            require_live=(key != "gate4_report"),
-        )
-    gate4_record = order_inputs.get("gate4_report")
-    if isinstance(gate4_record, dict):
-        gate4_snapshot = safe_relative_path(
-            run_dir, str(gate4_record.get("snapshot_relative_path", "")), "Gate 4 snapshot", errors
-        )
-        if gate4_snapshot and gate4_snapshot.is_file():
-            try:
-                gate4 = load_json(gate4_snapshot)
-                if gate4.get("phase") != 4 or gate4.get("verdict") != "PASS" or gate4.get("errors"):
-                    errors.append("Phase 5 work order Gate 4 snapshot is not PASS")
-            except ValueError as exc:
-                errors.append(str(exc))
-
-    project_record = order_inputs.get("phase4_project")
-    project = phase_dir / "harmony-project"
-    source_snapshot_sha256, source_entries = phase4_project_snapshot(project, errors)
-    if (
-        not isinstance(project_record, dict)
-        or project_record.get("relative_path") != "phase-04-harmony-implementation/harmony-project"
-        or project_record.get("snapshot_sha256") != source_snapshot_sha256
-        or project_record.get("entry_count") != len(source_entries)
-        or input_lock.get("phase4_source_snapshot_sha256") != source_snapshot_sha256
-        or input_lock.get("phase4_source_entry_count") != len(source_entries)
-    ):
-        errors.append("Phase 5 project no longer equals the Gate 4 source snapshot")
-
-    final_builds = order_inputs.get("phase4_final_builds")
-    if not isinstance(final_builds, list) or not final_builds:
-        errors.append("Phase 5 work order has no frozen final Phase 4 builds")
-        final_builds = []
-    seen_h4envs: set[str] = set()
-    for build in final_builds:
-        if not isinstance(build, dict):
-            errors.append("Phase 5 final build record is not an object")
-            continue
-        h4env_id = str(build.get("h4env_id", ""))
-        hbuild_id = str(build.get("hbuild_id", ""))
-        if not ID_RE.fullmatch(h4env_id) or not ID_RE.fullmatch(hbuild_id) or h4env_id in seen_h4envs:
-            errors.append(f"Phase 5 has an unsafe/duplicate frozen Phase 4 build: {hbuild_id}")
-            continue
-        metadata_path = safe_relative_path(
-            run_dir, str(build.get("build_record_relative_path", "")), f"{hbuild_id} metadata", errors
-        )
-        if (
-            not metadata_path or not metadata_path.is_file()
-            or build.get("build_record_sha256") != sha256_file(metadata_path)
-            or build.get("source_snapshot_sha256") != source_snapshot_sha256
-        ):
-            errors.append(f"Phase 5 frozen Phase 4 build metadata differs: {hbuild_id}")
-        artifacts = build.get("artifacts")
-        if not isinstance(artifacts, list) or not artifacts:
-            errors.append(f"Phase 5 frozen Phase 4 build has no artifacts: {hbuild_id}")
-        else:
-            for item in artifacts:
-                if not isinstance(item, dict):
-                    errors.append(f"Invalid Phase 4 artifact record in {hbuild_id}")
-                    continue
-                path = safe_relative_path(
-                    run_dir, str(item.get("relative_path", "")), f"{hbuild_id} artifact", errors
-                )
-                if (
-                    not path or not path.is_file() or not SHA256_RE.fullmatch(str(item.get("sha256", "")))
-                    or sha256_file(path) != item.get("sha256") or path.stat().st_size != item.get("size")
-                ):
-                    errors.append(f"Phase 5 frozen Phase 4 artifact bytes differ: {hbuild_id}")
-        seen_h4envs.add(h4env_id)
-
-    profile = work_order.get("release_profile") if isinstance(work_order.get("release_profile"), dict) else {}
-    profile_snapshot = safe_relative_path(
-        run_dir, str(profile.get("snapshot_relative_path", "")), "release profile snapshot", errors
-    )
-    raw_profile: dict[str, Any] = {}
-    if profile_snapshot and profile_snapshot.is_file():
-        try:
-            raw_profile = load_json(profile_snapshot)
-        except ValueError as exc:
-            errors.append(str(exc))
-    profile_keys = {
-        "profile_id", "bundle_id", "version_name", "version_code", "target_api", "device_types",
-        "build_mode", "signing_mode", "signing_identity", "primary_artifact_path",
-        "candidate_artifact_paths",
-    }
-    if (
-        not raw_profile or set(raw_profile) != profile_keys
-        or profile.get("sha256") != (sha256_file(profile_snapshot) if profile_snapshot and profile_snapshot.is_file() else None)
-        or any(profile.get(key) != raw_profile.get(key) for key in profile_keys)
-    ):
-        errors.append("Phase 5 release profile snapshot/public fields differ")
-    authorization = work_order.get("signing_authorization")
-    needs_auth = raw_profile.get("signing_mode") in {"LOCAL_PRODUCTION", "REMOTE"}
-    if not isinstance(authorization, dict) or authorization.get("required") is not needs_auth or authorization.get("present") is not needs_auth:
-        errors.append("Phase 5 signing authorization does not match signing mode")
-    elif needs_auth:
-        validate_frozen_file_record(run_dir, authorization, "Phase 5 signing authorization", errors, require_live=False)
-
-    required_h5envs = work_order.get("required_h5env_ids")
-    order_h5envs = work_order.get("h5envs")
-    if (
-        not isinstance(required_h5envs, list) or not required_h5envs
-        or required_h5envs != sorted(set(required_h5envs)) or not isinstance(order_h5envs, list)
-    ):
-        errors.append("Phase 5 required H5ENV set is invalid")
-        required_h5envs, order_h5envs = [], []
-    registry_h5 = index_unique_rows(
-        read_csv_rows(phase_dir / "environments" / "h5env-registry.csv"),
-        "h5env_id", "Phase 5 H5ENV registry", errors,
-    )
-    order_h5_by_id = {
-        str(item.get("h5env_id", "")): item for item in order_h5envs if isinstance(item, dict)
-    }
-    if set(registry_h5) != set(required_h5envs) or set(order_h5_by_id) != set(required_h5envs):
-        errors.append("Phase 5 H5ENV registry/work order coverage differs")
-    for h5env_id in required_h5envs:
-        record = order_h5_by_id.get(h5env_id, {})
-        snapshot = safe_relative_path(
-            run_dir, str(record.get("snapshot_relative_path", "")), f"{h5env_id} controller snapshot", errors
-        )
-        row = registry_h5.get(h5env_id, {})
-        local = safe_relative_path(phase_dir, row.get("relative_path", ""), f"{h5env_id} local environment", errors)
-        if (
-            record.get("required") is not True or row.get("required") != "true"
-            or row.get("status") != "FROZEN" or row.get("frozen_by") != ownership.get("regression_lead_id")
-            or row.get("base_h4env_id") != record.get("base_h4env_id")
-            or not snapshot or not local or not snapshot.is_file() or not local.is_file()
-            or record.get("sha256") != sha256_file(snapshot)
-            or row.get("environment_sha256") != sha256_file(local)
-            or snapshot.read_bytes() != local.read_bytes()
-        ):
-            errors.append(f"Phase 5 H5ENV snapshot/registry differs: {h5env_id}")
-
-    candidate_rows = read_csv_rows(phase_dir / "release-candidate-registry.csv")
-    active_candidates = [row for row in candidate_rows if row.get("status") == "SEALED"]
-    if len(candidate_rows) != 1 or len(active_candidates) != 1:
-        errors.append("Phase 5 must contain exactly one sealed Release-Candidate-ID")
-        candidate_row: dict[str, str] = {}
-    else:
-        candidate_row = active_candidates[0]
-    release_candidate_id = str(candidate_row.get("release_candidate_id", ""))
-    candidate_record_path = safe_relative_path(
-        phase_dir, candidate_row.get("relative_path", ""), "release candidate record", errors
-    )
-    candidate_dir = phase_dir / "release-candidates" / release_candidate_id
-    candidate_record: dict[str, Any] = {}
-    if ID_RE.fullmatch(release_candidate_id) and candidate_dir.is_dir() and not candidate_dir.is_symlink():
-        package_entries = verify_sealed_tree(
-            candidate_dir, release_candidate_id, f"Release candidate {release_candidate_id}", errors
-        )
-        manifest_path = candidate_dir / "manifest.sha256"
-        if manifest_path.is_file() and candidate_row.get("candidate_manifest_sha256") != sha256_file(manifest_path):
-            errors.append("Release candidate registry manifest hash differs")
-        if candidate_record_path and candidate_record_path.is_file():
-            try:
-                candidate_record = load_json(candidate_record_path)
-            except ValueError as exc:
-                errors.append(str(exc))
-        if "candidate-record.json" not in package_entries:
-            errors.append("Release candidate package lacks candidate-record.json")
-    else:
-        errors.append("Release candidate package path/ID is unsafe or missing")
-    candidate_artifacts = candidate_record.get("candidate_artifacts")
-    if not isinstance(candidate_artifacts, list) or not candidate_artifacts:
-        errors.append("Release candidate record has no artifacts")
-        candidate_artifacts = []
-    artifact_map: dict[str, str] = {}
-    report_artifacts: list[dict[str, Any]] = []
-    for item in candidate_artifacts:
-        if not isinstance(item, dict):
-            errors.append("Release candidate artifact record is not an object")
-            continue
-        relative = str(item.get("relative_path", ""))
-        prefix = f"release-candidates/{release_candidate_id}/"
-        local_relative = relative[len(prefix):] if relative.startswith(prefix) else ""
-        path = safe_relative_path(candidate_dir, local_relative, "release candidate artifact", errors)
-        digest = str(item.get("sha256", ""))
-        if (
-            not path or not path.is_file() or not SHA256_RE.fullmatch(digest)
-            or sha256_file(path) != digest or path.stat().st_size != item.get("size")
-        ):
-            errors.append(f"Release candidate artifact bytes differ: {relative}")
-        artifact_map[relative] = digest
-        report_artifacts.append({"relative_path": relative, "sha256": digest, "size": item.get("size")})
-    try:
-        row_artifacts = json.loads(candidate_row.get("artifact_sha256s", ""))
-    except json.JSONDecodeError:
-        row_artifacts = None
-    profile_projection = {
-        key: raw_profile.get(key) for key in (
-            "bundle_id", "version_name", "version_code", "target_api", "device_types",
-            "build_mode", "signing_identity",
-        )
-    }
-    if (
-        candidate_record.get("release_candidate_id") != release_candidate_id
-        or candidate_record.get("run_id") != scope.get("run_id")
-        or candidate_record.get("work_order_id") != work_order_id
-        or candidate_record.get("source_snapshot_sha256") != source_snapshot_sha256
-        or candidate_record.get("built_by") != ownership.get("candidate_build_agent_id")
-        or candidate_record.get("status") != "SEALED"
-        or row_artifacts != artifact_map
-        or candidate_row.get("source_snapshot_sha256") != source_snapshot_sha256
-        or candidate_row.get("built_by") != ownership.get("candidate_build_agent_id")
-        or candidate_row.get("artifact_count") != str(len(artifact_map))
-        or any(candidate_record.get(key) != value for key, value in profile_projection.items())
-        or any(
-            candidate_row.get(key) != (
-                json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-                if key == "device_types" else str(value)
-            )
-            for key, value in profile_projection.items()
-        )
-    ):
-        errors.append("Release candidate identity, source, owner, profile, or registry differs")
-
-    parity_ids = {
-        row.get("parity_id", "") for row in read_csv_rows(
-            run_dir / "phase-04-harmony-implementation" / "parity-map.csv"
-        ) if row.get("status") == "ACCEPTED"
-    }
-    included = set(scope.get("migration_scope", {}).get("included_features", []))
-    flow_rows = read_csv_rows(phase_dir / "flow-edge-registry.csv")
-    invariant_rows = read_csv_rows(phase_dir / "lifecycle-invariants.csv")
-    no_cross_rows = read_csv_rows(phase_dir / "no-cross-flow.csv")
-    flow_index = index_unique_rows(flow_rows, "flow_edge_id", "Phase 5 flow edges", errors)
-    invariant_index = index_unique_rows(
-        invariant_rows, "lifecycle_invariant_id", "Phase 5 invariants", errors
-    )
-    no_cross_index: dict[str, dict[str, str]] = {}
-    feature_coverage: set[str] = set()
-    for row in flow_rows:
-        flow_id = row.get("flow_edge_id", "")
-        envs = json_string_array(row.get("applicable_h5env_ids", ""), f"{flow_id}.H5ENV", errors, allow_empty=False)
-        features = json_string_array(row.get("feature_ids", ""), f"{flow_id}.features", errors, allow_empty=False)
-        basis = json_string_array(row.get("evidence_basis", ""), f"{flow_id}.basis", errors, allow_empty=False)
-        if (
-            row.get("from_parity_id") not in parity_ids or row.get("to_parity_id") not in parity_ids
-            or not set(envs) <= set(required_h5envs) or not set(features) <= included
-            or not basis or row.get("frozen_by") != ownership.get("regression_lead_id")
-            or row.get("status") != "FROZEN" or not row.get("user_action")
-        ):
-            errors.append(f"Phase 5 flow edge is not frozen from real parity evidence: {flow_id}")
-        feature_coverage.update(features)
-    for row in invariant_rows:
-        invariant_id = row.get("lifecycle_invariant_id", "")
-        envs = json_string_array(row.get("applicable_h5env_ids", ""), f"{invariant_id}.H5ENV", errors, allow_empty=False)
-        features = json_string_array(row.get("feature_ids", ""), f"{invariant_id}.features", errors, allow_empty=False)
-        categories = json_string_array(
-            row.get("required_command_categories", ""), f"{invariant_id}.commands", errors, allow_empty=False
-        )
-        if (
-            not set(envs) <= set(required_h5envs) or not set(features) <= included or not categories
-            or not row.get("evidence_basis") or not row.get("rule")
-            or row.get("frozen_by") != ownership.get("regression_lead_id")
-            or row.get("status") != "FROZEN"
-        ):
-            errors.append(f"Phase 5 lifecycle invariant is invalid: {invariant_id}")
-        feature_coverage.update(features)
-    for row in no_cross_rows:
-        feature_id = row.get("feature_id", "")
-        if feature_id in no_cross_index:
-            errors.append(f"Duplicate NO_CROSS_FLOW Feature-ID: {feature_id}")
-        no_cross_index[feature_id] = row
-        if (
-            feature_id not in included or not row.get("evidence_basis") or not row.get("reason")
-            or row.get("frozen_by") != ownership.get("regression_lead_id")
-            or row.get("status") != "FROZEN"
-        ):
-            errors.append(f"NO_CROSS_FLOW is not independently supported: {feature_id}")
-        feature_coverage.add(feature_id)
-    if feature_coverage != included or set(no_cross_index) & {
-        feature for row in flow_rows + invariant_rows
-        for feature in json_string_array(row.get("feature_ids", "[]"), "feature coverage", [], allow_empty=True)
-    }:
-        errors.append("Phase 5 flow/invariant/NO_CROSS_FLOW feature coverage is incomplete or contradictory")
-
-    scenario_rows = read_csv_rows(phase_dir / "scenario-registry.csv")
-    scenario_index = index_unique_rows(scenario_rows, "scenario_id", "Phase 5 scenarios", errors)
-    covered_flows: set[str] = set()
-    covered_invariants: set[str] = set()
-    scenario_env_pairs: set[tuple[str, str]] = set()
-    scenario_hashes: dict[str, str] = {}
-    scenario_checkpoints: dict[str, set[str]] = {}
-    for scenario_id, row in scenario_index.items():
-        scenario_path = safe_relative_path(
-            phase_dir, row.get("scenario_relative_path", ""), f"scenario {scenario_id}", errors
-        )
-        scenario: dict[str, Any] = {}
-        recomputed_scenario_sha = ""
-        if scenario_path and scenario_path.is_file():
-            try:
-                scenario = load_json(scenario_path)
-                hash_value = scenario.pop("scenario_sha256", "")
-                canonical = json.dumps(
-                    scenario, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-                )
-                recomputed_scenario_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-                scenario["scenario_sha256"] = hash_value
-            except ValueError as exc:
-                errors.append(str(exc))
-        flows = json_string_array(row.get("flow_edge_ids", ""), f"{scenario_id}.flows", errors)
-        invariants = json_string_array(
-            row.get("lifecycle_invariant_ids", ""), f"{scenario_id}.invariants", errors
-        )
-        envs = json_string_array(
-            row.get("applicable_h5env_ids", ""), f"{scenario_id}.H5ENV", errors, allow_empty=False
-        )
-        checkpoints = json_string_array(
-            row.get("checkpoint_ids", ""), f"{scenario_id}.checkpoints", errors, allow_empty=False
-        )
-        row_sha = row.get("scenario_sha256", "")
-        if (
-            not scenario_path or not scenario_path.is_file() or not SHA256_RE.fullmatch(row_sha)
-            or recomputed_scenario_sha != row_sha
-            or scenario.get("scenario_id") != scenario_id
-            or scenario.get("scenario_version") != row.get("scenario_version")
-            or scenario.get("scenario_sha256") != row_sha
-            or row.get("release_candidate_id") != release_candidate_id
-            or row.get("frozen_by") != ownership.get("regression_lead_id")
-            or row.get("status") != "FROZEN"
-            or not set(flows) <= set(flow_index) or not set(invariants) <= set(invariant_index)
-            or not set(envs) <= set(required_h5envs) or not (flows or invariants)
-        ):
-            errors.append(f"Phase 5 scenario identity/coverage is invalid: {scenario_id}")
-        scenario_hashes[scenario_id] = row_sha
-        scenario_checkpoints[scenario_id] = set(checkpoints)
-        covered_flows.update(flows)
-        covered_invariants.update(invariants)
-        scenario_env_pairs.update((scenario_id, env) for env in envs)
-    if covered_flows != set(flow_index) or covered_invariants != set(invariant_index):
-        errors.append("Phase 5 scenarios do not exactly cover all flow edges and invariants")
-
-    evidence_rows = read_csv_rows(phase_dir / "evidence-index.csv")
-    active_evidence = [row for row in evidence_rows if row.get("status") == "SEALED"]
-    evidence_index = index_unique_rows(active_evidence, "evidence_id", "Phase 5 evidence", errors)
-    evidence_by_pair: dict[tuple[str, str], str] = {}
-    candidate_manifest_sha = candidate_row.get("candidate_manifest_sha256", "")
-    for evidence_id, row in evidence_index.items():
-        pair = (row.get("scenario_id", ""), row.get("h5env_id", ""))
-        if pair in evidence_by_pair:
-            errors.append(f"Multiple active Phase 5 evidence packages for {pair}")
-        evidence_by_pair[pair] = evidence_id
-        expected_relative = f"evidence/{pair[1]}/{pair[0]}/{evidence_id}"
-        directory = safe_relative_path(phase_dir, row.get("evidence_relative_path", ""), evidence_id, errors)
-        metadata: dict[str, Any] = {}
-        if directory and directory.is_dir():
-            entries = verify_sealed_tree(directory, evidence_id, f"Regression evidence {evidence_id}", errors)
-            if "metadata.json" not in entries:
-                errors.append(f"Regression evidence lacks metadata: {evidence_id}")
-            try:
-                metadata = load_json(directory / "metadata.json")
-            except ValueError as exc:
-                errors.append(str(exc))
-            manifest_path = directory / "manifest.sha256"
-            if manifest_path.is_file() and row.get("evidence_manifest_sha256") != sha256_file(manifest_path):
-                errors.append(f"Regression evidence manifest hash differs: {evidence_id}")
-        if (
-            pair not in scenario_env_pairs or row.get("evidence_relative_path") != expected_relative
-            or row.get("scenario_version") != scenario_index.get(pair[0], {}).get("scenario_version")
-            or row.get("scenario_sha256") != scenario_hashes.get(pair[0])
-            or row.get("release_candidate_id") != release_candidate_id
-            or row.get("candidate_manifest_sha256") != candidate_manifest_sha
-            or row.get("executed_by") not in {
-                ownership.get("journey_executor_id"), ownership.get("quality_agent_id")
-            }
-            or metadata.get("evidence_id") not in {None, evidence_id}
-            or metadata.get("regression_evidence_id") not in {None, evidence_id}
-            or metadata.get("scenario_id") != pair[0]
-            or metadata.get("h5env_id") != pair[1]
-            or metadata.get("release_candidate_id") != release_candidate_id
-            or metadata.get("candidate_manifest_sha256") != candidate_manifest_sha
-            or metadata.get("scenario_sha256") != scenario_hashes.get(pair[0])
-        ):
-            errors.append(f"Regression evidence identity/candidate/scenario differs: {evidence_id}")
-        metadata_checkpoints = metadata.get("checkpoint_ids")
-        if isinstance(metadata_checkpoints, list) and set(metadata_checkpoints) != scenario_checkpoints.get(pair[0], set()):
-            errors.append(f"Regression evidence checkpoint coverage differs: {evidence_id}")
-    if set(evidence_by_pair) != scenario_env_pairs:
-        errors.append("Phase 5 lacks exactly one active evidence package per scenario/H5ENV")
-
-    acceptance_rows = read_csv_rows(phase_dir / "scenario-acceptance.csv")
-    active_reviews = [row for row in acceptance_rows if row.get("status") == "ACCEPTED"]
-    review_by_evidence: dict[str, dict[str, str]] = {}
-    for row in active_reviews:
-        evidence_id = row.get("evidence_id", "")
-        if evidence_id in review_by_evidence:
-            errors.append(f"Multiple active Phase 5 reviews for evidence: {evidence_id}")
-        review_by_evidence[evidence_id] = row
-        path = safe_relative_path(phase_dir, row.get("review_relative_path", ""), "Phase 5 review", errors)
-        review: dict[str, Any] = {}
-        if path and path.is_file():
-            try:
-                review = load_json(path)
-            except ValueError as exc:
-                errors.append(str(exc))
-        evidence = evidence_index.get(evidence_id, {})
-        if (
-            not path or not path.is_file() or row.get("review_sha256") != sha256_file(path)
-            or row.get("reviewed_by") != ownership.get("system_acceptance_agent_id")
-            or row.get("decision") != "ACCEPTED" or row.get("release_candidate_id") != release_candidate_id
-            or row.get("candidate_manifest_sha256") != candidate_manifest_sha
-            or row.get("scenario_id") != evidence.get("scenario_id")
-            or row.get("h5env_id") != evidence.get("h5env_id")
-            or review.get("evidence_id") not in {None, evidence_id}
-            or review.get("reviewed_by") not in {None, ownership.get("system_acceptance_agent_id")}
-            or review.get("decision") not in {None, "ACCEPTED"}
-        ):
-            errors.append(f"Phase 5 independent scenario review differs: {evidence_id}")
-    if set(review_by_evidence) != set(evidence_index):
-        errors.append("Phase 5 does not have exactly one accepted independent review per evidence")
-
-    local_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
-    controller_rework = [
-        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
-        if row.get("phase") == "5"
-    ]
-    local_ids = [row.get("ticket_id", "") for row in local_rework]
-    controller_ids = [row.get("rework_id", "") for row in controller_rework]
-    if (
-        len(local_ids) != len(set(local_ids)) or len(controller_ids) != len(set(controller_ids))
-        or set(local_ids) != set(controller_ids)
-        or any(row.get("status") != "CLOSED" for row in local_rework + controller_rework)
-    ):
-        errors.append("Phase 5 local/controller rework ledgers are not uniquely mirrored and closed")
-    for local in local_rework:
-        matches = [row for row in controller_rework if row.get("rework_id") == local.get("ticket_id")]
-        if len(matches) != 1:
-            continue
-        mirror = matches[0]
-        expected = {
-            "created_at": local.get("opened_at", ""),
-            "record_id": local.get("scenario_id", ""),
-            "env_id": local.get("h5env_id", ""),
-            "evidence_id": local.get("failed_evidence_id", ""),
-            "gate_rule": local.get("problem_type", ""),
-            "reason": local.get("reason", ""),
-            "assigned_to": local.get("owner_id", ""),
-            "completion_condition": local.get("completion_condition", ""),
-            "resolved_at": local.get("closed_at", ""),
-            "resolution_evidence_id": local.get("resolution_evidence_id", ""),
-            "reviewed_by": local.get("closed_by", ""),
-        }
-        if any(mirror.get(key, "") != value for key, value in expected.items()):
-            errors.append(f"Phase 5 controller rework mirror differs: {local.get('ticket_id')}")
-
-    expected_report_identity = {
-        "phase": 5,
-        "run_id": scope.get("run_id"),
-        "work_order_id": work_order_id,
-        "verdict": "PASS",
-        "final_verdict": "PASS",
-        "reviewer_id": ownership.get("system_acceptance_agent_id"),
-        "release_candidate_id": release_candidate_id,
-        "source_snapshot_sha256": source_snapshot_sha256,
-        "input_lock_sha256": sha256_file(phase_dir / "stage-05-input-lock.json"),
-        "work_order_sha256": work_order_sha256,
-    }
-    if (
-        any(report.get(key) != value for key, value in expected_report_identity.items())
-        or report.get("candidate_artifacts") != sorted(report_artifacts, key=lambda item: item["relative_path"])
-        or report.get("errors") != []
-        or report.get("open_rework") not in {0, None}
-        or report.get("closure_manifest_sha256")
-        != sha256_file(phase_dir / "stage-05-closure-manifest.sha256")
-    ):
-        errors.append("Phase 5 final report identity, reviewer, candidate bytes, or verdict is invalid")
-    for key, value in profile_projection.items():
-        if report.get(key) != value:
-            errors.append(f"Phase 5 final report candidate identity differs: {key}")
-    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
-    expected_counts = {
-        "flow_edges": len(flow_rows), "lifecycle_invariants": len(invariant_rows),
-        "no_cross_flow": len(no_cross_rows), "scenarios": len(scenario_rows),
-        "evidence": len(evidence_index), "reviews": len(review_by_evidence), "open_rework": 0,
-    }
-    if counts and any(counts.get(key) != value for key, value in expected_counts.items() if key in counts):
-        errors.append("Phase 5 report counts differ from the sealed ledgers")
-
-    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
-    phase5_tasks = [row for row in ledger_rows if row.get("phase") == "5"]
-    if (
-        len(phase5_tasks) != 1 or phase5_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
-        or phase5_tasks[0].get("owner") != ownership.get("regression_lead_id")
-    ):
-        errors.append("Controller task ledger does not have the assigned Phase 5 task")
-    return (
-        errors, warnings,
-        release_candidate_id if ID_RE.fullmatch(release_candidate_id) else None,
-        str(ownership.get("regression_lead_id") or "") or None,
-        work_order_id,
-    )
-
-
-def phase6_command_words(argv: Any) -> set[str]:
-    if not isinstance(argv, list):
-        return {"<invalid>"}
-    words: set[str] = set()
-    for index, token in enumerate(argv):
-        if not isinstance(token, str) or not token:
-            words.add("<invalid>")
-            continue
-        if token.startswith("{") and token.endswith("}"):
-            continue
-        value = Path(token).name if index == 0 else token
-        value = value.strip().lower().replace("_", "-").lstrip("-").split("=", 1)[0]
-        words.add(value)
-    return words
-
-
-def validate_phase6(
-    run_dir: Path, scope: dict[str, Any], phase1_facts: dict[str, Any],
-) -> tuple[list[str], list[str], str | None, str | None, str | None, str | None]:
-    """Independently recheck byte-preserving delivery acceptance without external actions."""
-    errors: list[str] = []
-    warnings: list[str] = []
-    phase_dir = run_dir / "phase-06-harmony-delivery"
-    required = (
-        "stage-06-input-lock.json", "phase-manifest.json", "candidate-custody-registry.csv",
-        "delivery-smoke-index.csv", "material-snapshot-registry.csv", "rework-tickets.csv",
-        "delivery-manifest.json", "inputs", "environments", "candidate-custody",
-        "smoke-evidence", "materials", "stage-06-gate-report.json",
-        "stage-06-closure-manifest.sha256", "CLOSED",
-    )
-    for relative in required:
-        candidate_path = phase_dir / relative
-        if not candidate_path.exists() or candidate_path.is_symlink():
-            errors.append(f"Missing or unsafe Phase 6 artifact: {candidate_path}")
-    try:
-        input_lock = load_json(phase_dir / "stage-06-input-lock.json")
-        manifest = load_json(phase_dir / "phase-manifest.json")
-        report = load_json(phase_dir / "stage-06-gate-report.json")
-        delivery_manifest = load_json(phase_dir / "delivery-manifest.json")
-    except ValueError as exc:
-        errors.append(str(exc))
-        return errors, warnings, None, None, None, None
-
-    verify_phase56_closure(phase_dir, 6, errors)
-    verify_closed_marker(phase_dir, 6, errors)
-    work_order, ownership, work_order_sha256, work_order_id = validate_phase56_work_order(
-        run_dir, scope, phase1_facts, 6, manifest, input_lock, STAGE6_ROLE_KEYS,
-        "harmonyos-delivery-acceptance", errors,
-    )
-    expected_permissions = {
-        "rebuild": False, "resign": False, "upload": False, "send": False,
-        "distribute": False, "store": False, "remote_signing": False, "publish": False,
-    }
-    if work_order.get("permissions") != expected_permissions:
-        errors.append("Phase 6 work order does not explicitly prohibit every mutating/external action")
-    if (
-        manifest.get("phase") != 6 or manifest.get("status") != "IN_PROGRESS"
-        or manifest.get("work_order_id") != work_order_id
-        or manifest.get("ownership") != ownership
-        or manifest.get("initialized_by") != ownership.get("delivery_lead_id")
-        or input_lock.get("work_order", {}).get("work_order_id") != work_order_id
-        or input_lock.get("work_order", {}).get("sha256") != work_order_sha256
-        or manifest.get("release_candidate_id") != input_lock.get("release_candidate_id")
-    ):
-        errors.append("Phase 6 manifest/input lock identity, owner, or work order differs")
-
-    order_inputs = work_order.get("inputs") if isinstance(work_order.get("inputs"), dict) else {}
-    expected_input_keys = {
-        "phase5_gate_report", "phase5_work_order", "phase5_input_lock",
-        "phase5_closure_manifest", "phase5_closed", "phase5_release_candidate_registry",
-    }
-    if set(order_inputs) != expected_input_keys:
-        errors.append("Phase 6 work order input key set differs")
-    for key in sorted(expected_input_keys):
-        validate_frozen_file_record(
-            run_dir, order_inputs.get(key), f"Phase 6 {key}", errors, require_live=True
-        )
-    local_inputs = input_lock.get("phase5_inputs") if isinstance(input_lock.get("phase5_inputs"), dict) else {}
-    if set(local_inputs) != expected_input_keys:
-        errors.append("Phase 6 local input lock does not cover the exact Gate 5 chain")
-    for key in sorted(expected_input_keys):
-        local = local_inputs.get(key)
-        order_record = order_inputs.get(key)
-        if not isinstance(local, dict) or not isinstance(order_record, dict):
-            continue
-        frozen = safe_relative_path(
-            phase_dir, str(local.get("frozen_relative_path", "")), f"Phase 6 frozen {key}", errors
-        )
-        if (
-            local.get("sha256") != order_record.get("sha256")
-            or not frozen or not frozen.is_file() or sha256_file(frozen) != local.get("sha256")
-        ):
-            errors.append(f"Phase 6 frozen local input differs: {key}")
-
-    candidate = work_order.get("candidate") if isinstance(work_order.get("candidate"), dict) else {}
-    release_candidate_id = str(candidate.get("release_candidate_id", ""))
-    artifacts = candidate.get("artifacts")
-    if not ID_RE.fullmatch(release_candidate_id) or not isinstance(artifacts, list) or not artifacts:
-        errors.append("Phase 6 work order lacks a safe candidate and artifact set")
-        artifacts = []
-    expected_artifacts: dict[str, dict[str, Any]] = {}
-    for item in artifacts:
-        if not isinstance(item, dict):
-            errors.append("Phase 6 candidate artifact record is not an object")
-            continue
-        relative = str(item.get("relative_path", ""))
-        if not relative.startswith(f"release-candidates/{release_candidate_id}/artifacts/") or relative in expected_artifacts:
-            errors.append(f"Unsafe/duplicate Phase 6 candidate artifact path: {relative}")
-            continue
-        path = safe_relative_path(
-            run_dir / "phase-05-harmony-regression", relative, "Gate 5 candidate artifact", errors
-        )
-        digest = str(item.get("sha256", ""))
-        if (
-            not path or not path.is_file() or not SHA256_RE.fullmatch(digest)
-            or sha256_file(path) != digest or path.stat().st_size != item.get("size")
-        ):
-            errors.append(f"Gate 5 candidate bytes changed before Phase 6: {relative}")
-        expected_artifacts[relative] = item
-    if (
-        input_lock.get("release_candidate_id") != release_candidate_id
-        or manifest.get("release_candidate_id") != release_candidate_id
-        or candidate.get("candidate_registry_sha256")
-        != sha256_file(run_dir / "phase-05-harmony-regression" / "release-candidate-registry.csv")
-    ):
-        errors.append("Phase 6 candidate ID/registry binding differs from Gate 5")
-    candidate_identity = input_lock.get("candidate_identity") if isinstance(input_lock.get("candidate_identity"), dict) else {}
-    for key in (
-        "bundle_id", "version_name", "version_code", "target_api", "device_types",
-        "build_mode", "signing_identity", "source_snapshot_sha256",
-    ):
-        if candidate.get(key) != candidate_identity.get(key):
-            errors.append(f"Phase 6 candidate identity differs from input lock: {key}")
-
-    locked_artifacts = input_lock.get("candidate_artifacts")
-    if not isinstance(locked_artifacts, list) or len(locked_artifacts) != len(expected_artifacts):
-        errors.append("Phase 6 input lock candidate artifact coverage differs")
-        locked_artifacts = []
-    for item in locked_artifacts:
-        if not isinstance(item, dict):
-            errors.append("Phase 6 locked candidate artifact is invalid")
-            continue
-        expected = expected_artifacts.get(str(item.get("relative_path", "")))
-        frozen = safe_relative_path(
-            phase_dir, str(item.get("frozen_relative_path", "")), "frozen Gate 5 candidate", errors
-        )
-        if (
-            not expected or item.get("sha256") != expected.get("sha256")
-            or item.get("size") != expected.get("size") or not frozen or not frozen.is_file()
-            or sha256_file(frozen) != expected.get("sha256") or frozen.stat().st_size != expected.get("size")
-        ):
-            errors.append(f"Phase 6 frozen candidate copy differs: {item.get('relative_path')}")
-
-    required_h6envs = work_order.get("required_h6env_ids")
-    order_envs = work_order.get("h6envs")
-    if (
-        not isinstance(required_h6envs, list) or not required_h6envs
-        or required_h6envs != sorted(set(required_h6envs)) or not isinstance(order_envs, list)
-    ):
-        errors.append("Phase 6 required H6ENV set is invalid")
-        required_h6envs, order_envs = [], []
-    env_by_id = {str(item.get("h6env_id", "")): item for item in order_envs if isinstance(item, dict)}
-    if set(env_by_id) != set(required_h6envs):
-        errors.append("Phase 6 H6ENV work-order coverage differs")
-    for env_id in required_h6envs:
-        record = env_by_id.get(env_id, {})
-        snapshot = safe_relative_path(
-            run_dir, str(record.get("snapshot_relative_path", "")), f"{env_id} controller snapshot", errors
-        )
-        local = phase_dir / "environments" / env_id / "environment.json"
-        environment: dict[str, Any] = {}
-        if local.is_file() and not local.is_symlink():
-            try:
-                environment = load_json(local)
-            except ValueError as exc:
-                errors.append(str(exc))
-        if (
-            record.get("required") is not True or not snapshot or not snapshot.is_file()
-            or not local.is_file() or local.is_symlink() or record.get("sha256") != sha256_file(snapshot)
-            or sha256_file(local) != record.get("sha256") or snapshot.read_bytes() != local.read_bytes()
-            or environment.get("h6env_id") != env_id
-            or environment.get("base_h5env_id") != record.get("base_h5env_id")
-            or environment.get("install_artifact_relative_path") not in expected_artifacts
-        ):
-            errors.append(f"Phase 6 H6ENV snapshot/identity/install artifact differs: {env_id}")
-        env_identity = environment.get("candidate_identity") if isinstance(environment.get("candidate_identity"), dict) else {}
-        identity_projection = {
-            "bundle_id": candidate_identity.get("bundle_id"),
-            "version_name": candidate_identity.get("version_name"),
-            "version_code": candidate_identity.get("version_code"),
-            "target_api": candidate_identity.get("target_api"),
-            "device_types": candidate_identity.get("device_types"),
-            "build_mode": candidate_identity.get("build_mode"),
-            "signing_fingerprint": candidate_identity.get("signing_identity"),
-        }
-        if env_identity != identity_projection:
-            errors.append(f"Phase 6 H6ENV candidate identity differs: {env_id}")
-        contracts = environment.get("command_contracts") if isinstance(environment.get("command_contracts"), dict) else {}
-        expected_categories = {
-            "DEVICE_CHECK", "INSTALL", "IDENTITY_QUERY", "LAUNCH", "SMOKE_ASSERT",
-            "SCREENSHOT_CAPTURE", "UI_TREE_CAPTURE",
-        }
-        if set(contracts) != expected_categories:
-            errors.append(f"Phase 6 H6ENV command categories differ: {env_id}")
-        for category, contract in contracts.items():
-            argv = contract.get("argv") if isinstance(contract, dict) else None
-            words = phase6_command_words(argv)
-            if words & PHASE6_PROHIBITED_COMMAND_WORDS or "<invalid>" in words:
-                errors.append(f"Phase 6 H6ENV contains a prohibited command: {env_id}/{category}")
-
-    custody_rows = read_csv_rows(phase_dir / "candidate-custody-registry.csv")
-    active_custody = [row for row in custody_rows if row.get("status") == "SEALED"]
-    if len(active_custody) != 1:
-        errors.append("Phase 6 must have exactly one active Candidate-Custody-ID")
-        custody_row: dict[str, str] = {}
-    else:
-        custody_row = active_custody[0]
-    custody_id = str(custody_row.get("custody_id", ""))
-    custody_dir = safe_relative_path(
-        phase_dir, custody_row.get("relative_path", ""), "candidate custody", errors
-    )
-    custody: dict[str, Any] = {}
-    if custody_dir and custody_dir.is_dir() and ID_RE.fullmatch(custody_id):
-        verify_sealed_tree(custody_dir, custody_id, f"Candidate custody {custody_id}", errors)
-        try:
-            custody = load_json(custody_dir / "metadata.json")
-        except ValueError as exc:
-            errors.append(str(exc))
-    custody_artifacts = custody.get("artifacts") if isinstance(custody.get("artifacts"), list) else []
-    custody_by_gate5: dict[str, dict[str, Any]] = {
-        str(item.get("gate5_relative_path", "")): item for item in custody_artifacts if isinstance(item, dict)
-    }
-    if (
-        not ID_RE.fullmatch(custody_id) or custody.get("candidate_custody_id") != custody_id
-        or custody.get("release_candidate_id") != release_candidate_id
-        or custody.get("operation") != "BYTE_COPY_ONLY" or custody.get("rebuild_performed") is not False
-        or custody.get("resign_performed") is not False or custody.get("status") != "SEALED"
-        or custody.get("copied_by") != ownership.get("candidate_custody_agent_id")
-        or set(custody_by_gate5) != set(expected_artifacts)
-    ):
-        errors.append("Phase 6 candidate custody identity, ownership, or byte-only operation differs")
-    for relative, expected in expected_artifacts.items():
-        item = custody_by_gate5.get(relative, {})
-        path = (
-            safe_relative_path(custody_dir, str(item.get("relative_path", "")), "custody artifact", errors)
-            if custody_dir else None
-        )
-        if (
-            item.get("sha256") != expected.get("sha256") or item.get("size") != expected.get("size")
-            or not path or not path.is_file() or sha256_file(path) != expected.get("sha256")
-            or path.stat().st_size != expected.get("size")
-        ):
-            errors.append(f"Candidate custody bytes differ from Gate 5: {relative}")
-
-    smoke_rows = read_csv_rows(phase_dir / "delivery-smoke-index.csv")
-    active_smoke = [row for row in smoke_rows if row.get("status") == "PASS"]
-    smoke_by_env: dict[str, dict[str, str]] = {}
-    for row in active_smoke:
-        env_id = row.get("h6env_id", "")
-        smoke_id = row.get("delivery_smoke_id", "")
-        if env_id in smoke_by_env:
-            errors.append(f"Multiple active Delivery-Smoke-IDs for {env_id}")
-        smoke_by_env[env_id] = row
-        directory = safe_relative_path(phase_dir, row.get("relative_path", ""), smoke_id, errors)
-        metadata: dict[str, Any] = {}
-        if directory and directory.is_dir() and ID_RE.fullmatch(smoke_id):
-            entries = verify_sealed_tree(directory, smoke_id, f"Delivery smoke {smoke_id}", errors)
-            for name in ("metadata.json", "command-records.json", "screenshot.png", "ui-tree.json"):
-                if name not in entries:
-                    errors.append(f"Delivery smoke {smoke_id} lacks {name}")
-            try:
-                metadata = load_json(directory / "metadata.json")
-                validate_complete_png(directory / "screenshot.png")
-                tree = json.loads((directory / "ui-tree.json").read_text(encoding="utf-8"))
-                if tree in ({}, [], None, ""):
-                    errors.append(f"Delivery smoke UI tree is empty: {smoke_id}")
-                commands = json.loads((directory / "command-records.json").read_text(encoding="utf-8"))
-                for command in commands if isinstance(commands, list) else []:
-                    words = phase6_command_words(command.get("argv") if isinstance(command, dict) else None)
-                    if words & PHASE6_PROHIBITED_COMMAND_WORDS or "<invalid>" in words:
-                        errors.append(f"Delivery smoke contains prohibited command: {smoke_id}")
-            except (ValueError, OSError, json.JSONDecodeError) as exc:
-                errors.append(f"Delivery smoke {smoke_id}: {exc}")
-        if (
-            env_id not in required_h6envs or not ID_RE.fullmatch(smoke_id)
-            or row.get("candidate_custody_id") != custody_id
-            or row.get("release_candidate_id") != release_candidate_id
-            or row.get("executed_by") != ownership.get("candidate_validation_agent_id")
-            or metadata.get("delivery_smoke_id") != smoke_id or metadata.get("h6env_id") != env_id
-            or metadata.get("candidate_custody_id") != custody_id
-            or metadata.get("release_candidate_id") != release_candidate_id
-            or metadata.get("executed_by") != ownership.get("candidate_validation_agent_id")
-            or metadata.get("status") != "PASS"
-        ):
-            errors.append(f"Phase 6 delivery smoke identity/owner/candidate differs: {smoke_id}")
-    if set(smoke_by_env) != set(required_h6envs):
-        errors.append("Phase 6 lacks exactly one active smoke package per required H6ENV")
-
-    material_rows = read_csv_rows(phase_dir / "material-snapshot-registry.csv")
-    active_materials = [row for row in material_rows if row.get("status") == "SEALED"]
-    if len(active_materials) != 1:
-        errors.append("Phase 6 must have exactly one active Material-Snapshot-ID")
-        material_row: dict[str, str] = {}
-    else:
-        material_row = active_materials[0]
-    material_id = str(material_row.get("material_snapshot_id", ""))
-    material_dir = safe_relative_path(
-        phase_dir, material_row.get("relative_path", ""), "material snapshot", errors
-    )
-    material: dict[str, Any] = {}
-    if material_dir and material_dir.is_dir() and ID_RE.fullmatch(material_id):
-        verify_sealed_tree(material_dir, material_id, f"Material snapshot {material_id}", errors)
-        try:
-            material = load_json(material_dir / "metadata.json")
-        except ValueError as exc:
-            errors.append(str(exc))
-    if (
-        material.get("material_snapshot_id") != material_id
-        or material.get("candidate_custody_id") != custody_id
-        or material.get("release_candidate_id") != release_candidate_id
-        or material.get("created_by") != ownership.get("material_consistency_agent_id")
-        or material.get("legal_conclusion") != "NOT_PERFORMED" or material.get("status") != "SEALED"
-    ):
-        errors.append("Phase 6 material snapshot identity, authority, or legal boundary differs")
-    for source in material.get("source_evidence", []) if isinstance(material.get("source_evidence"), list) else []:
-        if not isinstance(source, dict):
-            errors.append("Phase 6 material source evidence is invalid")
-            continue
-        path = safe_relative_path(
-            run_dir, str(source.get("relative_path", "")), "material source evidence", errors
-        )
-        if (
-            not path or not path.is_file() or path.suffix.lower() == ".mp4"
-            or sha256_file(path) != source.get("sha256") or path.stat().st_size != source.get("size")
-        ):
-            errors.append(f"Phase 6 material source evidence changed: {source.get('reference')}")
-
-    smoke_ids = {env: row.get("delivery_smoke_id", "") for env, row in sorted(smoke_by_env.items())}
-    external_actions = delivery_manifest.get("external_actions")
-    if (
-        delivery_manifest.get("phase") != 6
-        or not ID_RE.fullmatch(str(delivery_manifest.get("delivery_manifest_id", "")))
-        or delivery_manifest.get("release_candidate_id") != release_candidate_id
-        or delivery_manifest.get("candidate_custody_id") != custody_id
-        or delivery_manifest.get("delivery_smoke_ids") != smoke_ids
-        or delivery_manifest.get("material_snapshot_id") != material_id
-        or delivery_manifest.get("candidate_identity") != candidate_identity
-        or delivery_manifest.get("created_by") != ownership.get("delivery_lead_id")
-        or delivery_manifest.get("status") != "READY_FOR_ACCEPTANCE"
-        or not isinstance(external_actions, dict) or any(value is not False for value in external_actions.values())
-    ):
-        errors.append("Phase 6 delivery manifest identity, coverage, owner, or external-action record differs")
-    rollback = delivery_manifest.get("rollback") if isinstance(delivery_manifest.get("rollback"), dict) else {}
-    if (
-        rollback.get("owner_id") != ownership.get("delivery_lead_id")
-        or not isinstance(rollback.get("conditions"), list) or not rollback.get("conditions")
-        or not isinstance(rollback.get("steps"), list) or not rollback.get("steps")
-    ):
-        errors.append("Phase 6 rollback plan is incomplete or owned by another actor")
-    delivery_files = delivery_manifest.get("delivery_files")
-    if not isinstance(delivery_files, list) or len(delivery_files) != len(expected_artifacts):
-        errors.append("Phase 6 delivery manifest file coverage differs from Gate 5")
-        delivery_files = []
-    for item in delivery_files:
-        if not isinstance(item, dict):
-            errors.append("Phase 6 delivery file record is invalid")
-            continue
-        expected = expected_artifacts.get(str(item.get("gate5_relative_path", "")))
-        path = safe_relative_path(phase_dir, str(item.get("relative_path", "")), "delivery file", errors)
-        if (
-            not expected or item.get("sha256") != expected.get("sha256")
-            or item.get("size") != expected.get("size") or not path or not path.is_file()
-            or sha256_file(path) != expected.get("sha256") or path.stat().st_size != expected.get("size")
-        ):
-            errors.append(f"Phase 6 delivery file differs from Gate 5: {item.get('gate5_relative_path')}")
-
-    local_rework = read_csv_rows(phase_dir / "rework-tickets.csv")
-    controller_rework = [
-        row for row in read_csv_rows(run_dir / "controller" / "rework-log.csv")
-        if row.get("phase") == "6"
-    ]
-    local_ids = [row.get("ticket_id", "") for row in local_rework]
-    controller_ids = [row.get("rework_id", "") for row in controller_rework]
-    if (
-        len(local_ids) != len(set(local_ids)) or len(controller_ids) != len(set(controller_ids))
-        or set(local_ids) != set(controller_ids)
-        or any(row.get("status") != "CLOSED" for row in local_rework + controller_rework)
-    ):
-        errors.append("Phase 6 local/controller rework ledgers are not uniquely mirrored and closed")
-    for local in local_rework:
-        matches = [row for row in controller_rework if row.get("rework_id") == local.get("ticket_id")]
-        if len(matches) != 1:
-            continue
-        mirror = matches[0]
-        expected = {
-            "created_at": local.get("opened_at", ""), "record_id": local.get("record_id", ""),
-            "env_id": local.get("h6env_id", ""), "evidence_id": local.get("record_id", ""),
-            "gate_rule": "GATE6", "reason": local.get("reason", ""),
-            "assigned_to": local.get("owner_id", ""),
-            "completion_condition": local.get("completion_condition", ""),
-            "resolved_at": local.get("closed_at", ""),
-            "resolution_evidence_id": local.get("resolution_record_id", ""),
-            "reviewed_by": local.get("closed_by", ""),
-        }
-        if any(mirror.get(key, "") != value for key, value in expected.items()):
-            errors.append(f"Phase 6 controller rework mirror differs: {local.get('ticket_id')}")
-
-    report_identity = {
-        "phase": 6,
-        "run_id": scope.get("run_id"),
-        "work_order_id": work_order_id,
-        "verdict": "PASS",
-        "final_verdict": "PASS",
-        "release_candidate_id": release_candidate_id,
-        "candidate_custody_id": custody_id,
-        "material_snapshot_id": material_id,
-        "delivery_manifest_id": delivery_manifest.get("delivery_manifest_id"),
-        "reviewer_id": ownership.get("delivery_acceptance_agent_id"),
-    }
-    if (
-        any(report.get(key) != value for key, value in report_identity.items())
-        or report.get("candidate_artifacts") != sorted(
-            [
-                {"relative_path": relative, "sha256": item.get("sha256"), "size": item.get("size")}
-                for relative, item in expected_artifacts.items()
-            ], key=lambda item: item["relative_path"],
-        )
-        or report.get("errors") != [] or report.get("open_rework") not in {0, None}
-        or report.get("external_actions_performed") not in {False, None}
-    ):
-        errors.append("Phase 6 final report identity, reviewer, candidate bytes, or verdict is invalid")
-
-    ledger_rows = read_csv_rows(run_dir / "controller" / "task-ledger.csv")
-    phase6_tasks = [row for row in ledger_rows if row.get("phase") == "6"]
-    if (
-        len(phase6_tasks) != 1 or phase6_tasks[0].get("status") not in {"IN_PROGRESS", "PASS"}
-        or phase6_tasks[0].get("owner") != ownership.get("delivery_lead_id")
-    ):
-        errors.append("Controller task ledger does not have the assigned Phase 6 task")
-    return (
-        errors, warnings,
-        release_candidate_id if ID_RE.fullmatch(release_candidate_id) else None,
-        str(delivery_manifest.get("delivery_manifest_id") or "") or None,
-        str(ownership.get("delivery_lead_id") or "") or None,
-        work_order_id,
-    )
-
-
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -6166,8 +4993,6 @@ def update_task_ledger(
     ownership: dict[str, Any],
     phase3_owner: str | None = None,
     phase4_owner: str | None = None,
-    phase5_owner: str | None = None,
-    phase6_owner: str | None = None,
 ) -> None:
     path = run_dir / "controller" / "task-ledger.csv"
     with path.open("r", encoding="utf-8", newline="") as handle:
@@ -6190,10 +5015,6 @@ def update_task_ledger(
             row["owner"] = phase3_owner
         elif row.get("phase") == "4" and phase4_owner:
             row["owner"] = phase4_owner
-        elif row.get("phase") == "5" and phase5_owner:
-            row["owner"] = phase5_owner
-        elif row.get("phase") == "6" and phase6_owner:
-            row["owner"] = phase6_owner
     if path.is_symlink():
         raise ValueError(f"Refusing symbolic-link task ledger: {path}")
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -6304,8 +5125,17 @@ def _validate_gmi_phase2(run_dir: Path) -> tuple[list[str], list[str]]:
     else:
         if gate.get("unmapped") != 0:
             errors.append(f"gmi closure UNMAPPED={gate.get('unmapped')} (must be 0)")
-        if gate.get("audit_discrepancy") != 0:
-            errors.append(f"gmi closure audit_discrepancy={gate.get('audit_discrepancy')} (must be 0)")
+        # gmi_closure.py 只产出布尔 audit_passed（无 audit_discrepancy 字段），
+        # 主判定以 audit_passed 为准；数值型 audit_discrepancy 非 0 时仍报错以兼容旧布局
+        if gate.get("audit_passed") is not True:
+            errors.append(f"gmi closure audit_passed={gate.get('audit_passed')!r} (must be true)")
+        legacy_discrepancy = gate.get("audit_discrepancy")
+        if (
+            isinstance(legacy_discrepancy, (int, float))
+            and not isinstance(legacy_discrepancy, bool)
+            and legacy_discrepancy != 0
+        ):
+            errors.append(f"gmi closure audit_discrepancy={legacy_discrepancy} (must be 0)")
 
     for name in GMI_REQUIRED_CANDIDATES:
         path = candidates / name
@@ -6556,7 +5386,7 @@ def _validate_gmi_equivalent(run_dir: Path, phase: int) -> tuple[list[str], list
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
-    parser.add_argument("--phase", required=True, type=int, choices=(1, 2, 3, 4, 5, 6))
+    parser.add_argument("--phase", required=True, type=int, choices=(1, 2, 3, 4))
     parser.add_argument("--write", action="store_true", help="Update controller/gate-report.json")
     args = parser.parse_args()
 
@@ -6571,14 +5401,14 @@ def main() -> int:
     except ValueError as exc:
         errors, warnings, baseline_env_id, facts = [str(exc)], [], None, {}
 
-    if args.phase in {2, 3, 4, 5, 6} and not errors and _gmi_run(run_dir):
+    if args.phase in {2, 3, 4} and not errors and _gmi_run(run_dir):
         # gmi 模式：legacy 校验仅对旧证据链有效；对 gmi run 使用等价门禁
         # （phase-2-closure.json + coverage UNMAPPED=0 + audit 0 discrepancy）
         gel, gew = _validate_gmi_equivalent(run_dir, args.phase)
         errors.extend(gel)
         warnings.extend(gew)
 
-    if args.phase in {2, 3, 4, 5, 6} and not errors and not _gmi_mode:
+    if args.phase in {2, 3, 4} and not errors and not _gmi_mode:
         phase_errors, phase_warnings = validate_phase2(run_dir, scope, baseline_env_id, facts)
         errors.extend(phase_errors)
         warnings.extend(phase_warnings)
@@ -6587,7 +5417,7 @@ def main() -> int:
     verification_id = None
     phase3_owner = None
     phase3_work_order_id = None
-    if args.phase in {3, 4, 5, 6} and not errors and not _gmi_mode:
+    if args.phase in {3, 4} and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,
@@ -6603,7 +5433,7 @@ def main() -> int:
     harmony_evidence_ids: list[str] = []
     phase4_owner = None
     phase4_work_order_id = None
-    if args.phase in {4, 5, 6} and not errors and not _gmi_mode:
+    if args.phase == 4 and not errors and not _gmi_mode:
         (
             phase_errors,
             phase_warnings,
@@ -6612,35 +5442,6 @@ def main() -> int:
             phase4_owner,
             phase4_work_order_id,
         ) = validate_phase4(run_dir, scope, facts)
-        errors.extend(phase_errors)
-        warnings.extend(phase_warnings)
-
-    release_candidate_id = None
-    phase5_owner = None
-    phase5_work_order_id = None
-    if args.phase in {5, 6} and not errors and not _gmi_mode:
-        (
-            phase_errors,
-            phase_warnings,
-            release_candidate_id,
-            phase5_owner,
-            phase5_work_order_id,
-        ) = validate_phase5(run_dir, scope, facts)
-        errors.extend(phase_errors)
-        warnings.extend(phase_warnings)
-
-    delivery_manifest_id = None
-    phase6_owner = None
-    phase6_work_order_id = None
-    if args.phase == 6 and not errors and not _gmi_mode:
-        (
-            phase_errors,
-            phase_warnings,
-            release_candidate_id,
-            delivery_manifest_id,
-            phase6_owner,
-            phase6_work_order_id,
-        ) = validate_phase6(run_dir, scope, facts)
         errors.extend(phase_errors)
         warnings.extend(phase_warnings)
 
@@ -6653,10 +5454,6 @@ def main() -> int:
         "verification_id": verification_id,
         "phase3_work_order_id": phase3_work_order_id,
         "phase4_work_order_id": phase4_work_order_id,
-        "phase5_work_order_id": phase5_work_order_id,
-        "phase6_work_order_id": phase6_work_order_id,
-        "release_candidate_id": release_candidate_id,
-        "delivery_manifest_id": delivery_manifest_id,
         "harmony_build_ids": harmony_build_ids,
         "harmony_evidence_ids": harmony_evidence_ids,
         "scope_sha256": facts.get("scope_sha256"),
@@ -6679,8 +5476,6 @@ def main() -> int:
                 scope.get("ownership", {}),
                 phase3_owner,
                 phase4_owner,
-                phase5_owner,
-                phase6_owner,
             )
         except ValueError as exc:
             parser.error(str(exc))

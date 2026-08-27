@@ -1,18 +1,17 @@
 {
   "name": "harmonyos-feature-implementation",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "owner": "Android-Harmony Migration Maintainers",
-  "updated_at": "2026-08-24",
-  "review_due": "2026-11-24",
+  "updated_at": "2026-08-27",
+  "review_due": "2026-11-27",
   "review_cadence": "per-release",
   "status": "active",
   "maturity_tier": "governed",
   "lifecycle_stage": "governed",
   "context_budget_tier": "production",
   "skill_archetype": "evidence-backed-implementation",
-  "skill_ir_source": "reports/skill-ir.json",
   "capability_scope": "phase-4-page-and-capability-orders",
   "resource_policy": "current-capabilities-only",
   "target_platforms": ["openai", "claude", "agent-skills", "vscode", "generic"],
-  "factory_components": ["references", "scripts", "assets", "evals", "reports"]
+  "factory_components": ["references", "scripts", "assets", "agents", "security"]
 }

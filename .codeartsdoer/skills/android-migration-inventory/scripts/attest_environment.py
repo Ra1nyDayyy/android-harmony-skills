@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import subprocess
 from pathlib import Path
 
 from _common import (
@@ -18,6 +20,73 @@ from _common import (
     validate_id,
     verify_phase_identity,
 )
+
+
+# 双 Android 模拟器架构：一个逻辑 ENV-ID 允许 A/B 两个采集槽（capture slots）。
+# 两个槽必须通过启动前校准（同一逻辑环境），不扩大业务覆盖分母，
+# 也不为 A/B 各建一个业务 ENV-ID。
+CALIBRATION_KEYS = ("resolution", "density", "android_api", "locale", "font_scale")
+
+
+def adb_output(serial: str, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, *args],
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
+        )
+        return (result.stdout or "") + (result.stderr or "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"__ADB_ERROR__{exc}"
+
+
+def probe_device_profile(serial: str) -> dict:
+    size_out = adb_output(serial, "shell", "wm", "size")
+    density_out = adb_output(serial, "shell", "wm", "density")
+    api_out = adb_output(serial, "shell", "getprop", "ro.build.version.sdk")
+    locale_out = adb_output(serial, "shell", "getprop", "persist.sys.locale")
+    if not locale_out.strip():
+        # API 24+ no longer persists persist.sys.locale; the live locale lives in settings.
+        locale_out = adb_output(serial, "shell", "settings", "get", "system", "system_locales")
+    font_out = adb_output(serial, "shell", "settings", "get", "system", "font_scale")
+    size_match = re.search(r"(\d+x\d+)", size_out)
+    density_match = re.search(r"(\d+)", density_out)
+    api_match = re.search(r"(\d+)", api_out)
+    return {
+        "device_serial": serial,
+        "resolution": size_match.group(1) if size_match else "",
+        "density": density_match.group(1) if density_match else "",
+        "android_api": api_match.group(1) if api_match else "",
+        "locale": locale_out.strip() or "",
+        "font_scale": font_out.strip() or "",
+    }
+
+
+def installed_apk_digest(serial: str, package: str) -> str:
+    pm_out = adb_output(serial, "shell", "pm", "path", package)
+    match = re.search(r"package:(\S+)", pm_out)
+    if not match:
+        return ""
+    apk_path = match.group(1)
+    cat = subprocess.run(
+        ["adb", "-s", serial, "exec-out", "cat", apk_path],
+        capture_output=True, timeout=120,
+    )
+    return hashlib.sha256(cat.stdout).hexdigest()
+
+
+def calibrate_capture_slots(slot_a_serial: str, slot_b_serial: str) -> tuple[dict, list[str]]:
+    """轻量双设备校准：两个槽必须呈现同一逻辑环境，否则停止两个运行 worker。"""
+    profile_a = probe_device_profile(slot_a_serial)
+    profile_b = probe_device_profile(slot_b_serial)
+    mismatches: list[str] = []
+    for key in CALIBRATION_KEYS:
+        value_a = profile_a.get(key, "")
+        value_b = profile_b.get(key, "")
+        if not value_a or not value_b:
+            mismatches.append(f"slot probe failed for '{key}' (A={value_a!r}, B={value_b!r})")
+        elif value_a != value_b:
+            mismatches.append(f"'{key}' mismatch: slot A={value_a!r} vs slot B={value_b!r}")
+    return {"A": profile_a, "B": profile_b}, mismatches
 
 
 FROZEN_ENVIRONMENT_KEYS = (
@@ -101,6 +170,18 @@ def main() -> int:
     parser.add_argument("--network-ready", action="store_true")
     parser.add_argument("--permissions-ready", action="store_true")
     parser.add_argument("--notes", default="")
+    parser.add_argument(
+        "--slot-a-serial", default=None,
+        help="capture slot A device serial (e.g. emulator-5554); required with --slot-b-serial",
+    )
+    parser.add_argument(
+        "--slot-b-serial", default=None,
+        help="capture slot B device serial (e.g. emulator-5556); required with --slot-a-serial",
+    )
+    parser.add_argument(
+        "--package", default=None,
+        help="optional application id: verify both slots run the same installed APK digest",
+    )
     args = parser.parse_args()
 
     try:
@@ -121,6 +202,36 @@ def main() -> int:
     notes = args.notes.strip()
     if len(notes) > 4000 or "\x00" in notes:
         parser.error("--notes must be at most 4000 characters and contain no NUL bytes")
+
+    capture_slots: dict | None = None
+    if args.slot_a_serial or args.slot_b_serial:
+        if not (args.slot_a_serial and args.slot_b_serial):
+            parser.error(
+                "Dual-emulator attestation requires BOTH --slot-a-serial and --slot-b-serial"
+            )
+        if args.slot_a_serial == args.slot_b_serial:
+            parser.error("--slot-a-serial and --slot-b-serial must be distinct ADB serials")
+        capture_slots, mismatches = calibrate_capture_slots(
+            args.slot_a_serial, args.slot_b_serial
+        )
+        if args.package:
+            digest_a = installed_apk_digest(args.slot_a_serial, args.package)
+            digest_b = installed_apk_digest(args.slot_b_serial, args.package)
+            if not digest_a or not digest_b:
+                mismatches.append(f"installed APK not found on both slots (A={digest_a!r}, B={digest_b!r})")
+            elif digest_a != digest_b:
+                mismatches.append(
+                    f"installed APK digest mismatch: A={digest_a[:16]}… vs B={digest_b[:16]}…"
+                )
+            else:
+                capture_slots["apk_sha256_installed"] = digest_a
+        if mismatches:
+            print("CAPTURE-SLOT CALIBRATION FAILED (do not start the two runtime workers):")
+            for item in mismatches:
+                print("  -", item)
+            parser.error(
+                "Slots A and B are not the same logical environment; fix both emulators and retry"
+            )
 
     workspace_input = Path(args.workspace).expanduser().absolute()
     if workspace_input.is_symlink():
@@ -190,6 +301,7 @@ def main() -> int:
                 "attested_at": utc_now(),
                 **checks,
                 "notes": notes,
+                "capture_slots": capture_slots,
                 "scope_sha256": current_manifest.get("scope_sha256"),
                 "environment_registry_sha256": registry_digest,
                 "environment_sha256": canonical_digest(environment),

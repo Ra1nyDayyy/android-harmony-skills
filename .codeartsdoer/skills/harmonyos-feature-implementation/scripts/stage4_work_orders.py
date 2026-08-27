@@ -30,6 +30,19 @@ PAGE_REGISTRY_FIELDS = csv_fieldnames(ASSETS / "page-work-order-registry.templat
 CAPABILITY_REGISTRY_FIELDS = csv_fieldnames(ASSETS / "capability-work-order-registry.template.csv")
 PAGE_LEDGER_FIELDS = csv_fieldnames(ASSETS / "page-implementation-ledger.template.csv")
 PARITY_CHECKS = ("BEHAVIOR", "COMPONENT_TREE", "GEOMETRY", "NAVIGATION", "SCREENSHOT", "SIDE_EFFECT")
+# P4 分层验证（LITE 轻证）：保留结构化组件树对比 + 截图 + 行为断言；
+# GEOMETRY/NAVIGATION/SIDE_EFFECT 降抽样（几何从门禁降为 controller 抽样）。
+LITE_PARITY_CHECKS = ("COMPONENT_TREE", "SCREENSHOT", "BEHAVIOR")
+
+
+def parity_checks_for(tier: object) -> list[str]:
+    """Return the frozen required-parity-check list for a page verification tier."""
+    normalized = str(tier or "CORE").strip().upper()
+    if normalized == "LITE":
+        return list(LITE_PARITY_CHECKS)
+    if normalized == "CORE":
+        return list(PARITY_CHECKS)
+    raise ValueError(f"verification_tier must be CORE or LITE: {tier!r}")
 GENERATED_PARTS = {".git", ".idea", ".hvigor", "build", "dist", "node_modules", "oh_modules", "__pycache__"}
 
 
@@ -185,6 +198,7 @@ def _registered_orders(
                     "required_h4env_ids", "capability_dependencies", "required_parity_checks",
                     "comparison_policy", "exclusive_code_paths", "arkts_page_plan_path",
                     "arkts_page_plan_sha256", "ui_understanding_contract", "completion_command",
+                    "verification_tier",
                 }
                 plan_relative = f"arkts-page-plans/{order['page_id']}/arkts-page-plan.json"
                 plan_path = workspace / Path(*PurePosixPath(plan_relative).parts)
@@ -216,7 +230,10 @@ def _registered_orders(
                     or order.get("phase3_targets") != contract.get("phase3_targets", [])
                     or order.get("required_h4env_ids") != sorted(str(value) for value in contract.get("required_h4env_ids", []))
                     or order.get("capability_dependencies") != expected_dependencies
-                    or order.get("required_parity_checks") != list(PARITY_CHECKS)
+                    or order.get("required_parity_checks")
+                    != parity_checks_for(contract.get("verification_tier", "CORE"))
+                    or order.get("verification_tier")
+                    != str(contract.get("verification_tier") or "CORE")
                     or order.get("comparison_policy") != contract.get("comparison_policy")
                 ):
                     raise ValueError(f"Registered page work-order schema differs: {work_order_id}")
@@ -316,6 +333,8 @@ def issue_page_order(
             plan_path.chmod(0o444)
         plan_digest = sha256_file(plan_path)
         state_ids = sorted(str(row["state_id"]) for row in contract["states"])
+        # P4 分层验证：工单行携带页合同 tier（缺省 CORE），LITE 裁剪 parity 检查面。
+        page_verification_tier = str(contract.get("verification_tier") or "CORE")
         capabilities = sorted({
             str(row["system_capability_id"])
             for row in contract.get("system_capabilities", [])
@@ -353,7 +372,8 @@ def issue_page_order(
             "phase3_targets": contract.get("phase3_targets", []),
             "required_h4env_ids": sorted(str(value) for value in contract.get("required_h4env_ids", [])),
             "capability_dependencies": capabilities,
-            "required_parity_checks": list(PARITY_CHECKS),
+            "required_parity_checks": parity_checks_for(page_verification_tier),
+            "verification_tier": page_verification_tier,
             "comparison_policy": contract.get("comparison_policy"),
             "exclusive_code_paths": paths,
             "completion_command": "python scripts/validate_stage4.py --workspace . --reviewer <independent-reviewer>",

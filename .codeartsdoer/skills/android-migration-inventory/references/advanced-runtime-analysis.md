@@ -10,6 +10,27 @@ Static page analysis now records three kinds of facts that ordinary UI traversal
 
 The scanner produces candidates, not conclusions. Each candidate is multiplied by its applicable frozen environments and becomes part of the Phase 2 denominator.
 
+## Dual-lane execution shape
+
+Advanced runtime work runs inside the frozen lane queues ("dual lanes in parallel, serial within a lane"):
+
+- the allocation unit is a whole journey (e.g. create → edit → save → kill process → relaunch → verify); a journey never crosses lanes, otherwise precondition state is lost;
+- tasks that touch shared server accounts or shared remote state (scenario resets, side-effect probes) run exclusively on one lane (lane A);
+- purely local UI, independent files, and independent databases may be load-balanced across both lanes;
+- apart from startup calibration, a Task-ID may never appear in both queues; queue files are hash-frozen and re-splits are deterministic.
+
+## Bounded instrumentation and state exploration
+
+Deep code instrumentation is **on-demand only**: use it when the UI result cannot prove the real handler, when a key business branch is undecidable from the interface, when database/file/network side effects are not directly observable, or when a REQUIRED feature has several plausible branches. Never trace the whole project's call chain. Instrumentation results bind directly to existing Rule/Event/Transition/Side-Effect IDs — no second Trace-ID system.
+
+State-space exploration is bounded by the static task backlog (default page states, key conditional states, key navigation edges, necessary empty/normal/error data, restart and permission states). Unbounded auto-clicking is prohibited. Deduplicate with state fingerprints:
+
+```text
+ENV-ID + Page-ID + State-ID
++ normalized UI-tree hash
++ necessary data-probe hash
+```
+
 ## Evidence rule
 
 Every advanced candidate needs ordinary runtime evidence bound to a known Page-ID and ENV-ID. This proves which visible state accompanied the operation.

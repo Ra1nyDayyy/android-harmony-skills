@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import subprocess
+
 import sys
 import tempfile
 import unittest
@@ -301,15 +301,53 @@ class Stage4WorkOrdersTest(unittest.TestCase):
                 ("entry/src/main/ets/capabilities/Calc.ets",),
             )
 
-    def test_legacy_feature_order_cli_fails_closed(self) -> None:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPTS / "issue_feature_work_order.py"), "--workspace", str(self.ws), "--feature-id", "FEATURE-CALC"],
-            text=True,
-            capture_output=True,
-            check=False,
+    def test_removed_feature_order_cli_stays_removed(self) -> None:
+        # Defensive guard: the feature-level order CLI was deleted with the
+        # page/capability work-order model and must not come back.
+        self.assertFalse((SCRIPTS / "issue_feature_work_order.py").exists())
+        self.assertFalse((SCRIPTS / ".." / "assets" / "feature-work-order.template.json").exists())
+
+    def test_lite_page_order_trims_parity_checks_and_carries_tier(self) -> None:
+        """LITE 页工单 required_parity_checks 裁剪为三类且行带 tier；CORE 默认六类。"""
+        contract_path = self._contract_path("PAGE-B")
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["verification_tier"] = "LITE"
+        write_json(contract_path, contract)
+        registry_path = self.ws / "page-contract-registry.csv"
+        with registry_path.open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+            fields = list(rows[0])
+        for row in rows:
+            if row["page_id"] == "PAGE-B":
+                row["contract_sha256"] = canonical_contract_sha256(contract)
+        write_csv(registry_path, fields, rows)
+
+        lite_order_path = issue_page_order(
+            self.ws, "PAGE-B", "owner-b", "TASK-101", ("entry/src/main/ets/pages/B.ets",),
         )
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("page and capability orders", result.stderr)
+        lite_order = json.loads(lite_order_path.read_text(encoding="utf-8"))
+        self.assertEqual("LITE", lite_order["verification_tier"])
+        self.assertEqual(
+            ["COMPONENT_TREE", "SCREENSHOT", "BEHAVIOR"],
+            lite_order["required_parity_checks"],
+        )
+
+        core_order_path = issue_page_order(
+            self.ws, "PAGE-A", "owner-a", "TASK-100", ("entry/src/main/ets/pages/A.ets",),
+        )
+        core_order = json.loads(core_order_path.read_text(encoding="utf-8"))
+        self.assertEqual("CORE", core_order["verification_tier"])
+        self.assertEqual(
+            ["BEHAVIOR", "COMPONENT_TREE", "GEOMETRY", "NAVIGATION", "SCREENSHOT", "SIDE_EFFECT"],
+            core_order["required_parity_checks"],
+        )
+        # 重放校验：签发 PAGE-A 时 _registered_orders 会整体重验已注册工单，
+        # PAGE-B 的 LITE tier 与裁剪检查面在此隐式通过同步绑定校验。
+        from stage4_work_orders import _page_contracts, _registered_orders
+
+        orders = _registered_orders(self.ws, _page_contracts(self.ws))
+        tiers = {order["page_id"]: order["verification_tier"] for order in orders}
+        self.assertEqual({"PAGE-A": "CORE", "PAGE-B": "LITE"}, tiers)
 
 
 if __name__ == "__main__":

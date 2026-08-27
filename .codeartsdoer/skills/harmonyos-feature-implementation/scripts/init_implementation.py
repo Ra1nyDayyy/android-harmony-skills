@@ -35,7 +35,13 @@ from _common import (
     validate_id,
     write_csv,
 )
-from page_acceptance_contract import apply_carrier_deviations, compile_page_contracts, publish_page_contracts
+from page_acceptance_contract import (
+    apply_carrier_deviations,
+    apply_verification_tiers,
+    compile_page_contracts,
+    normalize_verification_tier,
+    publish_page_contracts,
+)
 from prepare_uitest_probe import prepare_uitest_probe
 
 
@@ -512,6 +518,81 @@ def normalize_carrier_deviations(
             "rationale": rationale,
         }
     return normalized
+
+
+def normalize_verification_tier_declarations(
+    declarations: Any,
+) -> dict[str, str]:
+    """Validate the work-order ``phase4_verification_tiers`` declaration block.
+
+    P4 分层验证的显式覆盖通道（优先级 a）：每项声明一页的 verification_tier，
+    值域外/重复页/非对象项一律拒绝（fail-closed）。缺省（None/[]）返回空映射，
+    走 P2 任务密度推导或默认 CORE。
+    """
+    if declarations is None:
+        return {}
+    if not isinstance(declarations, list) or not declarations:
+        raise ValueError("phase4_verification_tiers must be a non-empty array when present")
+    normalized: dict[str, str] = {}
+    for item in declarations:
+        if not isinstance(item, dict):
+            raise ValueError("phase4_verification_tiers contains a non-object entry")
+        if set(item) != {"page_id", "verification_tier"}:
+            raise ValueError(
+                "phase4_verification_tiers entry must declare exactly page_id and verification_tier"
+            )
+        page_id = validate_id(str(item["page_id"]), "verification-tier Page-ID")
+        tier = normalize_verification_tier(item["verification_tier"])
+        if page_id in normalized:
+            raise ValueError(f"phase4_verification_tiers declares duplicate page: {page_id}")
+        normalized[page_id] = tier
+    return normalized
+
+
+def derive_verification_tiers(
+    phase2: Path,
+    page_ids: list[str],
+    declared: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Derive one P4 verification tier per page (P4 分层验证, fail-closed).
+
+    优先级（最终版）：
+      a) 工单显式声明 ``phase4_verification_tiers``（页级覆盖，值域 CORE|LITE）；
+      b) P2 ``static-analysis/runtime-tasks.json`` 的 REQUIRED 任务密度——
+         该页 review_tier==REQUIRED 的任务 > 0 → CORE，否则 LITE；
+         （文件缺失时不应用密度规则，直接落入 c，保证旧工作区行为不变）
+      c) 默认 CORE。
+    返回的映射对每个 page_id 都显式给出 tier（含默认 CORE），使合同 canonical
+    json 与三处哈希绑定（registry/lock/manifest）确定。
+    """
+    declared = declared or {}
+    unknown = sorted(set(declared) - set(page_ids))
+    if unknown:
+        raise ValueError(f"phase4_verification_tiers declares unknown pages: {unknown}")
+    tiers: dict[str, str] = {}
+    required_pages: set[str] | None = None
+    tasks_path = Path(phase2) / "static-analysis" / "runtime-tasks.json"
+    if tasks_path.is_file():
+        try:
+            tasks_value = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid Phase 2 runtime tasks file: {tasks_path}") from exc
+        rows = tasks_value.get("tasks") if isinstance(tasks_value, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"Phase 2 runtime tasks file has invalid tasks: {tasks_path}")
+        required_pages = {
+            str(row.get("page_id", ""))
+            for row in rows
+            if str(row.get("review_tier", "")) == "REQUIRED"
+        }
+    for page_id in page_ids:
+        if page_id in declared:
+            tiers[page_id] = declared[page_id]
+        elif required_pages is not None:
+            tiers[page_id] = "CORE" if page_id in required_pages else "LITE"
+        else:
+            tiers[page_id] = "CORE"
+    return tiers
 
 
 def _decision_authorizes_carrier_deviation(
@@ -1019,7 +1100,11 @@ def main() -> int:
     phase3 = run_dir / "phase-03-harmony-scaffold"
     phase_dir = run_dir / PHASE_NAME
     if phase_dir.exists():
-        parser.error(f"Phase 4 workspace already exists; overwrite is prohibited: {phase_dir}")
+        # gmi_phase3_adapter pre-creates empty phase-03/04 placeholders; only an
+        # empty placeholder may be replaced, never a real workspace.
+        if any(phase_dir.iterdir()):
+            parser.error(f"Phase 4 workspace already exists; overwrite is prohibited: {phase_dir}")
+        shutil.rmtree(phase_dir)
     try:
         scope_path = safe_relative_path(run_dir, "controller/scope.json", "controller scope")
         current_gate_path = safe_relative_path(run_dir, "controller/gate-report.json", "current controller Gate 3")
@@ -1269,6 +1354,10 @@ def main() -> int:
         carrier_deviations = normalize_carrier_deviations(
             work_order.get("phase4_carrier_deviations")
         )
+        # P4 分层验证：显式声明块（优先级 a），其余页由 P2 任务密度推导。
+        declared_verification_tiers = normalize_verification_tier_declarations(
+            work_order.get("phase4_verification_tiers")
+        )
         applied_carrier_deviations: dict[str, dict[str, Any]] = {}
         try:
             decision_log_rows = read_csv(run_dir / "controller" / "decision-log.csv")
@@ -1440,7 +1529,7 @@ def main() -> int:
             temp_dir = Path(temp_name)
             for name in (
                 "inputs/upstream", "inputs/android-evidence", "inputs/phase2-assets/files",
-                "environments", "feature-work-orders", "reviews", "asset-conversions",
+                "environments", "reviews", "asset-conversions",
                 "builds", "evidence", "attempts", ".locks", ".staging", "harmony-project",
             ):
                 (temp_dir / name).mkdir(parents=True, exist_ok=True)
@@ -1627,6 +1716,13 @@ def main() -> int:
             environments_by_source: dict[str, list[dict[str, Any]]] = {}
             for config in environments:
                 environments_by_source.setdefault(config["source_android_env_id"], []).append(config)
+            # P4 分层验证：在迁移单元构造前推导 tier（a 显式声明 > b REQUIRED 任务
+            # 密度 > c 默认 CORE），单元/合同/input-lock 三处同源引用。
+            verification_tiers = derive_verification_tiers(
+                phase2,
+                sorted({str(row["page_id"]) for row in inventory}),
+                declared_verification_tiers,
+            )
             parity_rows: list[dict[str, Any]] = []
             visual_rows: list[dict[str, Any]] = []
             migration_units: list[dict[str, Any]] = []
@@ -1692,17 +1788,27 @@ def main() -> int:
                             "android_entry_condition": source["entry_condition"],
                             "android_action_summary": source["action_summary"],
                             "android_expected_observable": source["expected_observable"],
-                            "required_business_rule_ids": sorted(set(split_multi(source["business_rule_refs"]))),
-                            "required_data_dependency_ids": sorted(set(split_multi(source["data_dependency_refs"]))),
-                            "required_system_capability_ids": sorted(set(split_multi(source["system_capability_refs"]))),
+                            # NONE_FOUND 是 gmi 合成 refs 的显式"无此项"哨兵，
+                            # 不是目录引用，不得进入迁移单元的 obligations 集合。
+                            "required_business_rule_ids": sorted(
+                                set(split_multi(source["business_rule_refs"])) - {"NONE_FOUND"}
+                            ),
+                            "required_data_dependency_ids": sorted(
+                                set(split_multi(source["data_dependency_refs"])) - {"NONE_FOUND"}
+                            ),
+                            "required_system_capability_ids": sorted(
+                                set(split_multi(source["system_capability_refs"])) - {"NONE_FOUND"}
+                            ),
                             "required_third_party_dependency_ids": sorted(
-                                set(split_multi(source["third_party_dependency_refs"]))
+                                set(split_multi(source["third_party_dependency_refs"])) - {"NONE_FOUND"}
                             ),
                             "expected_carrier": carrier,
                             "target_kind": mapping_type,
                             "target_id": target_id,
                             "scaffold_carrier": actual_scaffold_carrier(mapping_type, surface_kind),
                             "carrier_deviation": applied_carrier_deviations.get(source["page_id"]),
+                            # P4 分层验证：合同 tier 透传到迁移单元（capture/审计单一真相源）。
+                            "verification_tier": verification_tiers[source["page_id"]],
                             "page_component_ids": sorted(set(components_by_page.get(source["page_id"], []))),
                             "page_event_ids": sorted(set(events_by_page.get(source["page_id"], []))),
                             "page_transition_ids": sorted(set(transitions_by_page.get(source["page_id"], []))),
@@ -1755,28 +1861,6 @@ def main() -> int:
                         }
                     )
 
-            feature_rows: list[dict[str, Any]] = []
-            for feature_id in sorted(included_features):
-                feature_inventory = [row for row in inventory if row["feature_id"] == feature_id]
-                feature_rows.append(
-                    {
-                        "feature_id": feature_id,
-                        "work_order_id": "",
-                        "feature_owner_id": "",
-                        "ui_agent_id": "",
-                        "business_data_agent_id": "",
-                        "native_capability_agent_id": "",
-                        "asset_agent_id": ownership["visual_asset_agent_id"],
-                        "source_inventory_ids": join_multi(row["inventory_id"] for row in feature_inventory),
-                        "harmony_module_ids": join_multi(
-                            architecture[source_row_key(row)]["harmony_module_id"] for row in feature_inventory
-                        ),
-                        "status": "NOT_STARTED",
-                        "updated_by": lead,
-                        "updated_at": initialized_at,
-                        "notes": "",
-                    }
-                )
 
             capability_rows: list[dict[str, Any]] = []
             for row in read_csv(phase3 / "capability-contracts.csv"):
@@ -1812,16 +1896,7 @@ def main() -> int:
                 )
 
             write_csv(
-                temp_dir / "implementation-ledger.csv",
-                csv_fieldnames(ASSETS / "implementation-ledger.template.csv"),
-                feature_rows,
-            )
-            write_csv(
-                temp_dir / "feature-work-order-registry.csv",
-                csv_fieldnames(ASSETS / "feature-work-order-registry.template.csv"),
-                [],
-            )
-            write_csv(
+
                 temp_dir / "page-work-order-registry.csv",
                 csv_fieldnames(ASSETS / "page-work-order-registry.template.csv"),
                 [],
@@ -1861,6 +1936,9 @@ def main() -> int:
                 {"schema_version": 1, "units": migration_units},
             )
             page_contracts = compile_page_contracts(phase2, phase3, tuple(sorted(h4env_ids)))
+            # P4 分层验证：发布前显式打标（含默认 CORE），使合同 canonical json 与
+            # registry/lock/manifest 三处哈希绑定确定（tier 已在迁移单元构造前推导）。
+            apply_verification_tiers(page_contracts, verification_tiers)
             # Production side of the named-deviation channel: stamp the
             # controller-applied blocks before validation/publish so plan
             # compilers and parity tooling see one source of truth.
@@ -1938,6 +2016,15 @@ def main() -> int:
                     (
                         {"page_id": page_id, **binding}
                         for page_id, binding in sorted(applied_carrier_deviations.items())
+                    ),
+                    key=lambda item: item["page_id"],
+                ),
+                # P4 分层验证：最终 tier 决策（a>b>c 推导产物）冻结进 input-lock，
+                # validate 阶段按此重算迁移单元的 verification_tier 字段。
+                "page_verification_tiers": sorted(
+                    (
+                        {"page_id": page_id, "verification_tier": tier}
+                        for page_id, tier in sorted(verification_tiers.items())
                     ),
                     key=lambda item: item["page_id"],
                 ),

@@ -3,6 +3,22 @@
 An `ENV-ID` is an immutable set of conditions. Normal, offline, and weak-network tests use different environment IDs.
 `environments.json` is bound by SHA-256 in the phase manifest and every evidence metadata file. Any byte-level change blocks capture and closure; changed conditions require a new ENV-ID.
 
+## A/B capture slots (two identical Android emulators, one logical environment)
+
+One baseline `ENV-ID` may declare **two capture slots** for Phase 2 runtime capture:
+
+```text
+ENV-BASELINE
+├── capture_slot=A, device_serial=emulator-5554
+└── capture_slot=B, device_serial=emulator-5556
+```
+
+`capture_slot` and `device_serial` only record where evidence was collected. They never introduce a second semantic ID system and never double the business coverage denominator. Both slots must be provisioned from the same AVD/snapshot with identical APK SHA-256, API level, resolution, DPI, orientation, locale, timezone, theme, font scale, permissions, network profile, and seed data; only ADB serial and data disk differ.
+
+Before formal capture, run a light dual-device calibration (home page, one ordinary content page, one popup/menu): identical APK/source revision, resolution/DPI/locale/font scale, correct foreground package, identical page-identity recognition, and consistent normalized UI trees/geometry. Calibration failure is a hard blocker — stop both runtime workers; two differently-configured emulators must never co-produce the Phase 4 baseline.
+
+`scripts/attest_environment.py` accepts `--slot-a-serial`/`--slot-b-serial` (and optional `--package` for installed-APK digest parity). It probes both devices, blocks on any mismatch, and writes a single environment attestation containing both capture slots. It never creates one business ENV-ID per slot.
+
 Each environment must include:
 
 - App version/build, build variant, source revision, application ID, and APK hash.
@@ -28,6 +44,8 @@ python3 scripts/attest_environment.py \
   --seed-ready \
   --network-ready \
   --permissions-ready \
+  [--slot-a-serial emulator-5554 --slot-b-serial emulator-5556] \
+  [--package <application-id>] \
   --notes <optional-non-secret-notes>
 ```
 

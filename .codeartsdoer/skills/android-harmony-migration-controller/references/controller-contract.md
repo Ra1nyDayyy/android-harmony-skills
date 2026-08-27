@@ -32,15 +32,8 @@ The Phase 4 implementation lead owns implementation coordination. The visual-ass
 - Changes receive a new decision ID. Existing evidence and decisions are never rewritten to hide the old baseline.
 - The source baseline is an exact clean Git `HEAD`; the APK is a valid APK container whose declared SHA-256 matches its bytes.
 - Controller, inventory lead, evidence administrator, and coverage checker IDs are frozen and distinct.
-- A Phase 3 work order is issued only from a current, independently rechecked Gate 2 `PASS` by the frozen controller.
-- It freezes architecture-lead, toolchain, navigation, public-UI, capability-contract, and architecture-acceptance IDs. All six differ from one another and every Phase 1/2 actor.
-- It binds the canonical scope, immutable Gate 2 snapshot, Phase 2 closure report/manifest/marker, inventory, evidence-anchor snapshot, and controller anchor registry by SHA-256.
-- Gate 3 trusts the work-order snapshot, not the mutable latest `controller/gate-report.json`, which becomes the Gate 3 report after `--write`.
+- A Phase 3 work order is issued only from a current, independently rechecked Gate 2 `PASS`; a Phase 4 work order only from a current Gate 3 `PASS` plus a read-only rerun of Gates 1-3. Actor sets, input bindings, and gate trust rules are listed once in [phase-gates.md](phase-gates.md) and the per-phase handoff documents.
 - The reviewed Phase 2 asset inventory, exact asset-package manifest/marker, and every archived asset are part of the cross-phase evidence chain.
-- A Phase 4 work order is issued only from a current Gate 3 `PASS` that also passes a read-only rerun of Gates 1–3.
-- It freezes implementation-lead, visual-asset, verification-executor, and parity-acceptance IDs. All four differ from one another and every Phase 1–3 actor.
-- It binds the canonical scope, controller-owned Gate 3 snapshot, Phase 2 closure/inventory/evidence/assets, Phase 3 closure/scaffold/registries, every frozen HENV, and the upstream Phase 3 work order by SHA-256.
-- Gate 4 trusts the controller-owned Gate 3 snapshot, not the mutable latest gate report. It independently recomputes Phase 4 HBUILD, HEVD, HREV, rework-mirror, source-snapshot, and closure hashes.
 
 ## Status values
 

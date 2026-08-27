@@ -36,9 +36,9 @@ class PendingEvidenceShapeTest(unittest.TestCase):
         self._run([full_record(), pending])
 
     def test_pending_two_key_shape_rejected(self) -> None:
-        legacy = {"evidence_id": "EVD-P", "pending_runtime_verify": True}
+        short = {"evidence_id": "EVD-P", "pending_runtime_verify": True}
         with self.assertRaisesRegex(ValueError, "fields differ"):
-            self._run([legacy])
+            self._run([short])
 
     def test_non_bool_flag_falls_through_and_rejected(self) -> None:
         malformed = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "extra": 1}

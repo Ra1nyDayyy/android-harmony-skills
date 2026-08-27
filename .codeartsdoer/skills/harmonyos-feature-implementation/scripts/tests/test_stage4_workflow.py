@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal full-chain test for governed Phase 4 and controller Gate 4."""
+"""Minimal full-chain test for governed Phase 4 and controller Gate 4 (gmi path)."""
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -20,31 +21,32 @@ BUNDLE = HERE.parents[2]
 CONTROLLER = BUNDLE / "android-harmony-migration-controller"
 STAGE3_TESTS = BUNDLE / "harmonyos-migration-scaffold" / "scripts" / "tests"
 sys.path.insert(0, str(STAGE3_TESTS))
+sys.path.insert(0, str(SKILL / "scripts"))
 
-from phase2_fixture import (  # noqa: E402
-    build_closed_phase2,
-    record_human_approval,
-    record_team_receipt,
-    write_csv,
-)
+import stage4_work_orders  # noqa: E402
+from gmi_phase2_fixture import LOGIN_PAGE, OWNERSHIP, build_gmi_run  # noqa: E402
 from test_stage3_workflow import (  # noqa: E402
     create_project_and_registries,
     freeze_environment,
     initialize_phase3,
-    issue_phase3,
     read_csv,
     verification_plan,
 )
 
 
 FAKE = (STAGE3_TESTS / "fake_harmony.py").resolve()
+PAGE_ID = LOGIN_PAGE["page_id"]
+ROUTE_ID = "ROUTE-LOGINACTIVITY"
+INVENTORY_ID = "INV-LOGINACTIVITY"
 
 
 def run_cmd(*args: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
     environment["ANDROID_HARMONY_TEST_FIXTURES"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
-        list(args), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        list(args), text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         check=False, env=environment,
     )
     if completed.returncode != expect:
@@ -59,10 +61,57 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def write_csv(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="raise")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_relative(run_dir: Path, target: Path) -> str:
+    return target.resolve().relative_to(run_dir.resolve()).as_posix()
+
+
+def record_human_approval(run_dir: Path, phase: int, review_id: str) -> None:
+    gate_report = run_dir / "controller" / "gate-report.json"
+    run_cmd(
+        sys.executable, str(CONTROLLER / "scripts" / "generate_review_summary.py"),
+        "--run-dir", str(run_dir), "--phase", str(phase),
+        "--gate-report", str(gate_report),
+    )
+    run_cmd(
+        sys.executable, str(CONTROLLER / "scripts" / "record_human_review.py"),
+        "--run-dir", str(run_dir), "--phase", str(phase),
+        "--gate-report", str(gate_report),
+        "--review-id", review_id, "--reviewer", "human-reviewer-fixture",
+        "--decision", "APPROVED",
+    )
+
+
+def record_team_receipt(
+    run_dir: Path,
+    order: Path,
+    role_key: str,
+    actor_id: str,
+    task_id: str,
+    artifact: Path,
+) -> None:
+    run_cmd(
+        sys.executable, str(CONTROLLER / "scripts" / "record_team_execution.py"),
+        "--run-dir", str(run_dir), "--work-order", run_relative(run_dir, order),
+        "--role-key", role_key, "--actor-id", actor_id,
+        "--platform-task-id", task_id,
+        "--started-at", "2026-08-25T00:00:00Z",
+        "--ended-at", "2026-08-25T01:00:00Z",
+        "--terminal-task-state", "SUCCEEDED",
+        "--artifact", run_relative(run_dir, artifact),
+    )
+
+
 def close_stage3(root: Path) -> Path:
-    run_dir, _ = build_closed_phase2(root)
-    order = issue_phase3(run_dir)
-    workspace = initialize_phase3(run_dir, order)
+    run_dir, _ = build_gmi_run(root, [LOGIN_PAGE])
+    order = run_dir / "controller" / "work-orders" / "PHASE3-GMI-FIXTURE.json"
+    workspace = initialize_phase3(run_dir)
     create_project_and_registries(workspace)
     freeze_environment(workspace, root / "henv.json")
     plan = root / "stage3-plan.json"
@@ -77,7 +126,7 @@ def close_stage3(root: Path) -> Path:
     run_cmd(
         sys.executable, str(BUNDLE / "harmonyos-migration-scaffold" / "scripts" / "validate_stage3.py"),
         "--workspace", str(workspace), "--henv-id", "HENV-001",
-        "--verification-id", "HVER-001", "--reviewer", "architecture-acceptance-1",
+        "--verification-id", "HVER-001", "--reviewer", OWNERSHIP["architecture_acceptance_agent_id"],
         "--decision", "PASS", "--attest-real-file-review", "--attest-placeholder-boundaries",
         "--attest-contract-only", "--attest-dependency-review", "--attest-runtime-smoke",
         "--attest-screenshot-review",
@@ -88,12 +137,12 @@ def close_stage3(root: Path) -> Path:
     )
     record_human_approval(run_dir, 3, "HREV-PHASE-03-FEATURE")
     phase3_receipts = [
-        ("architecture_lead_id", "architecture-lead-1", "TASK-P3-ARCH", workspace / "architecture-map.csv"),
-        ("toolchain_agent_id", "toolchain-agent-1", "TASK-P3-TOOL", workspace / "verification" / "HVER-001" / "COMMITTED"),
-        ("navigation_agent_id", "navigation-agent-1", "TASK-P3-NAV", workspace / "route-registry.csv"),
-        ("public_ui_agent_id", "public-ui-agent-1", "TASK-P3-UI", workspace / "public-ui-registry.csv"),
-        ("capability_contract_agent_id", "capability-agent-1", "TASK-P3-CAP", workspace / "capability-contracts.csv"),
-        ("architecture_acceptance_agent_id", "architecture-acceptance-1", "TASK-P3-ACCEPT", workspace / "stage-03-gate-report.json"),
+        ("architecture_lead_id", OWNERSHIP["architecture_lead_id"], "TASK-P3-ARCH", workspace / "architecture-map.csv"),
+        ("toolchain_agent_id", OWNERSHIP["toolchain_agent_id"], "TASK-P3-TOOL", workspace / "verification" / "HVER-001" / "COMMITTED"),
+        ("navigation_agent_id", OWNERSHIP["navigation_agent_id"], "TASK-P3-NAV", workspace / "route-registry.csv"),
+        ("public_ui_agent_id", OWNERSHIP["public_ui_agent_id"], "TASK-P3-UI", workspace / "public-ui-registry.csv"),
+        ("capability_contract_agent_id", OWNERSHIP["capability_contract_agent_id"], "TASK-P3-CAP", workspace / "capability-contracts.csv"),
+        ("architecture_acceptance_agent_id", OWNERSHIP["architecture_acceptance_agent_id"], "TASK-P3-ACCEPT", workspace / "stage-03-gate-report.json"),
     ]
     for role_key, actor_id, task_id, artifact in phase3_receipts:
         record_team_receipt(run_dir, order, role_key, actor_id, task_id, artifact)
@@ -121,17 +170,17 @@ def category_contracts(scope: dict[str, object]) -> dict[str, dict[str, object]]
             ["permission-profile", serial, bundle, permissions], "PERMISSION_PROFILE_OK"
         ),
         "LAUNCH": (["launch", serial, bundle, "EntryAbility"], "LAUNCH_OK"),
-        "NAVIGATE": (["navigate", serial, bundle, "ROUTE-LOGIN"], "NAVIGATE_OK"),
+        "NAVIGATE": (["navigate", serial, bundle, ROUTE_ID], "NAVIGATE_OK"),
         "BUSINESS_ASSERT": (
-            ["business-assert", serial, bundle, "ROUTE-LOGIN", "{ASSERTIONS}"],
+            ["business-assert", serial, bundle, ROUTE_ID, "{ASSERTIONS}"],
             "BUSINESS_ASSERT_OK",
         ),
         "SCREENSHOT_CAPTURE": (
-            ["screenshot", serial, bundle, "ROUTE-LOGIN", "{SCREENSHOT}"],
+            ["screenshot", serial, bundle, ROUTE_ID, "{SCREENSHOT}"],
             "SCREENSHOT_OK",
         ),
         "UITEST_SNAPSHOT_CAPTURE": (
-            ["uitest-snapshot", serial, bundle, "ROUTE-LOGIN", "{TEST_HAP}", "{UITEST_RESULT}"],
+            ["uitest-snapshot", serial, bundle, ROUTE_ID, "{TEST_HAP}", "{UITEST_RESULT}"],
             "UITEST_SNAPSHOT_OK"
         ),
     }
@@ -218,16 +267,16 @@ def state_plan(
         ("LAUNCH", [executable, "launch", "--serial", serial, "--bundle", bundle,
                     "--ability", "EntryAbility"]),
         ("NAVIGATE", [executable, "navigate", "--serial", serial, "--bundle", bundle,
-                      "--target", "ROUTE-LOGIN"]),
+                      "--target", ROUTE_ID]),
         ("BUSINESS_ASSERT", [executable, "business-assert", "--serial", serial,
-                             "--bundle", bundle, "--target", "ROUTE-LOGIN",
+                             "--bundle", bundle, "--target", ROUTE_ID,
                              "--parity", parity_id, "--build", build_id,
                              "--env", "H4ENV-001", "--output", "{ASSERTIONS}"]),
         ("SCREENSHOT_CAPTURE", [executable, "screenshot", "--serial", serial,
-                                "--bundle", bundle, "--target", "ROUTE-LOGIN",
+                                "--bundle", bundle, "--target", ROUTE_ID,
                                 "--output", "{SCREENSHOT}", "--width", "320", "--height", "640"]),
         ("UITEST_SNAPSHOT_CAPTURE", [executable, "uitest-snapshot", "--serial", serial,
-                                     "--bundle", bundle, "--target", "ROUTE-LOGIN",
+                                     "--bundle", bundle, "--target", ROUTE_ID,
                                      "--test-hap", "{TEST_HAP}",
                                      "--output", "{UITEST_RESULT}"]),
     ]
@@ -252,7 +301,7 @@ def state_plan(
              "subject_ids": ["BR-AUTH-NONE", "DATA-AUTH-NONE", "SYS-AUTH-NONE", "SDK-AUTH-NONE"]},
             {"assertion_id": "ASSERT-INTERACTION", "kind": "INTERACTION", "expected": "tap-ready"},
             {"assertion_id": "ASSERT-ANDROID-OBSERVABLE", "kind": "ANDROID_EXPECTED_OBSERVABLE",
-             "expected": "Login form is visible", "subject_ids": ["INV-AUTH-LOGIN-DEFAULT"]},
+             "expected": "LoginActivity displayed", "subject_ids": [INVENTORY_ID]},
         ],
     }
     target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
@@ -265,7 +314,7 @@ class Stage4WorkflowTest(unittest.TestCase):
             run_dir = close_stage3(root)
             issued = run_cmd(
                 sys.executable, str(CONTROLLER / "scripts" / "issue_phase4_work_order.py"),
-                "--run-dir", str(run_dir), "--issued-by", "migration-controller-1",
+                "--run-dir", str(run_dir), "--issued-by", "fixture-controller",
                 "--implementation-lead-id", "implementation-lead-4",
                 "--visual-asset-agent-id", "visual-asset-agent-4",
                 "--verification-executor-id", "verification-executor-4",
@@ -281,45 +330,25 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "--environment-config", str(env_config),
             )
             workspace = Path(json.loads(initialized.stdout)["workspace"])
-            issued_page = run_cmd(
-                sys.executable, str(SKILL / "scripts" / "issue_page_work_order.py"),
-                "--workspace", str(workspace), "--page-id", "PAGE-LOGIN",
-                "--owner-id", "page-owner-4",
-                "--ui-understanding-agent-id", "ui-agent-4",
-                "--codearts-task-id", "TASK-P4-PAGE-LOGIN",
-                "--exclusive-code-path", "entry/src/LoginShell.ets",
+            # 原独立签发 CLI 已删除（职能并入 stage4_work_orders.py）：
+            # 页面工单改由库函数直接签发，参数与原 CLI 一一对应。
+            page_order = stage4_work_orders.issue_page_order(
+                workspace, PAGE_ID, "page-owner-4", "TASK-P4-PAGE-LOGIN",
+                ("harmony-project/entry/src/LoginShell.ets",), "ui-agent-4",
             )
-            page_order = Path(json.loads(issued_page.stdout)["work_order"])
             page_order_id = json.loads(page_order.read_text(encoding="utf-8"))["work_order_id"]
-            issued_capability = run_cmd(
-                sys.executable, str(SKILL / "scripts" / "issue_capability_work_order.py"),
-                "--workspace", str(workspace), "--capability-id", "SYS-AUTH-NONE",
-                "--owner-id", "capability-owner-4",
-                "--codearts-task-id", "TASK-P4-CAP-AUTH",
-                "--consumer-page-id", "PAGE-LOGIN",
-                "--exclusive-code-path", "entry/src/AuthCapabilityContract.ets",
-                "--exclusive-code-path", "entry/src/AuthCapability.ets",
-                "--exclusive-code-path", "entry/src/AuthCapability.test.ets",
-            )
-            capability_order = Path(json.loads(issued_capability.stdout)["work_order"])
+            # gmi 唯一路径下 system-capabilities 是显式 NONE 哨兵（capability-contracts
+            # 为空），不存在可签发共享能力工单的真实 Capability-ID；capability 工单
+            # 机制由 test_stage4_work_orders.py 直接以合成合同覆盖。
 
             source = workspace / "harmony-project" / "entry" / "src" / "LoginShell.ets"
             source.write_text(
                 "export const FEATURE_ID = 'FEATURE-AUTH'\n"
-                "export const PAGE_ID = 'PAGE-LOGIN'\n"
-                "export const ROUTE_ID = 'ROUTE-LOGIN'\n"
+                f"export const PAGE_ID = '{PAGE_ID}'\n"
+                f"export const ROUTE_ID = '{ROUTE_ID}'\n"
                 "export const LoginState = 'ready'\n"
                 "export struct LoginShell {}\n",
                 encoding="utf-8",
-            )
-            (workspace / "harmony-project" / "entry" / "src" / "AuthCapabilityContract.ets").write_text(
-                "export interface AuthCapabilityContract {}\n", encoding="utf-8"
-            )
-            (workspace / "harmony-project" / "entry" / "src" / "AuthCapability.ets").write_text(
-                "export class AuthCapability {}\n", encoding="utf-8"
-            )
-            (workspace / "harmony-project" / "entry" / "src" / "AuthCapability.test.ets").write_text(
-                "export const AuthCapabilityTest = true\n", encoding="utf-8"
             )
 
             parity_fields, parity_rows = read_csv(workspace / "parity-map.csv")
@@ -372,8 +401,8 @@ class Stage4WorkflowTest(unittest.TestCase):
                 sys.executable, str(SKILL / "scripts" / "manage_stage4_rework.py"),
                 "--workspace", str(workspace), "--action", "open",
                 "--reviewer", "parity-acceptance-4", "--ticket-id", "H4REWORK-LOGIN-001",
-                "--feature-id", "FEATURE-AUTH", "--problem-type", "VISUAL",
-                "--parity-or-record-id", parity_id, "--failed-evidence-id", "HEVD-LOGIN-001",
+                "--page-id", PAGE_ID, "--problem-type", "VISUAL",
+                "--record-id", parity_id, "--failed-verification-id", "HEVD-LOGIN-001",
                 "--severity", "HIGH", "--reason", "The first visual state needs correction.",
                 "--completion-condition", "A newer build and HEVD pass the same frozen state.",
                 "--confirmed-by", "implementation-lead-4",
@@ -405,8 +434,7 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "--workspace", str(workspace), "--action", "close",
                 "--reviewer", "parity-acceptance-4", "--ticket-id", "H4REWORK-LOGIN-001",
                 "--confirmed-by", "implementation-lead-4",
-                "--resolution-build-id", "HBUILD-002",
-                "--resolution-evidence-id", "HEVD-LOGIN-002",
+                "--resolution-verification-id", "HEVD-LOGIN-002",
             )
 
             comparison = root / "comparison.json"
@@ -444,14 +472,15 @@ class Stage4WorkflowTest(unittest.TestCase):
                 "--attest-visual-review", "--attest-functional-parity",
                 "--attest-asset-provenance", "--attest-nativeization-review",
             )
-            visual_rows[0]["harmony_symbol"] = "MissingSymbol"
-            write_csv(workspace / "visual-elements.csv", visual_fields, visual_rows)
+            ledger_fields_neg, ledger_rows_neg = read_csv(workspace / "page-implementation-ledger.csv")
+            ledger_rows_neg[0]["status"] = "IMPLEMENTED"
+            write_csv(workspace / "page-implementation-ledger.csv", ledger_fields_neg, ledger_rows_neg)
             run_cmd(*validation_args, expect=2)
             self.assertFalse((workspace / "CLOSED").exists())
             self.assertFalse((workspace / "stage-04-gate-report.json").exists())
             self.assertFalse((workspace / "stage-04-closure-manifest.sha256").exists())
-            visual_rows[0]["harmony_symbol"] = "LoginShell"
-            write_csv(workspace / "visual-elements.csv", visual_fields, visual_rows)
+            ledger_rows_neg[0]["status"] = "ACCEPTED"
+            write_csv(workspace / "page-implementation-ledger.csv", ledger_fields_neg, ledger_rows_neg)
 
             local = run_cmd(
                 *validation_args,
@@ -473,7 +502,7 @@ class Stage4WorkflowTest(unittest.TestCase):
             ]
             phase4_receipts.extend([
                 (page_order, "page_owner_id", "page-owner-4", "TASK-P4-PAGE-LOGIN", workspace / "page-implementation-ledger.csv"),
-                (capability_order, "capability_owner_id", "capability-owner-4", "TASK-P4-CAP-AUTH", workspace / "capability-implementation.csv"),
+
             ])
             for order_path, role_key, actor_id, task_id, artifact in phase4_receipts:
                 record_team_receipt(run_dir, order_path, role_key, actor_id, task_id, artifact)

@@ -1,6 +1,6 @@
 # Observable consistency contract
 
-Phase 4 is a constrained translation, not a redesign. `migration-unit-contracts.json` is generated from the frozen Phase 2 inventory/static analysis and the accepted Phase 3 mapping. One contract exists for every Android inventory state on every required Harmony environment.
+Phase 4 is a constrained translation, not a redesign. The frozen per-state parity contract set (`migration-unit-contracts.json`) is generated from the frozen Phase 2 inventory/static analysis and the accepted Phase 3 mapping. One contract exists for every Android inventory state on every required Harmony environment.
 
 ## Non-waivable dimensions
 
@@ -28,4 +28,4 @@ Only a platform-imposed visual offset may use `APPROVED_DIFFERENCE`. It requires
 
 The runtime UI tree must report the exact carrier and target and every component required for the current state. Required events and transitions must appear in raw operation traces containing the executed action and before/after snapshots; a self-declared ID array is rejected. Local validation and controller Gate 4 independently recompute both the complete page set and the state-specific set from Phase 2/3 artifacts, so editing the contract and its hash files together does not bypass the gate.
 
-Automatic correction is limited to one initial execution plus two repair executions per migration unit. Every execution is controller-anchored before commands run. When the budget is exhausted, stop changing code and emit a grouped error report for the later human-assisted repair stage.
+Each page or shared capability gets attempt 0 plus at most two automatic repairs; every execution is controller-anchored before commands run. When the budget is exhausted, stop changing code and emit a grouped error report for the later human-assisted repair stage.

@@ -38,9 +38,11 @@ class ApplyCarrierDeviationsTest(unittest.TestCase):
             "expected_carrier": "DIALOG", "provided_carrier": "PAGE",
             "authorized_decision_id": "DEC-015", "rationale": "route shell carries dialog content"}})
         # 可选键语义：不在必填键集，也不属于数组字段；仅作为允许的 extra 存在。
+        # P4 分层验证：verification_tier 与 carrier_deviation 同为可选键（缺省 CORE）。
         from page_acceptance_contract import CONTRACT_KEYS, OPTIONAL_CONTRACT_KEYS
-        self.assertEqual(OPTIONAL_CONTRACT_KEYS, {"carrier_deviation"})
+        self.assertEqual(OPTIONAL_CONTRACT_KEYS, {"carrier_deviation", "verification_tier"})
         self.assertNotIn("carrier_deviation", CONTRACT_KEYS)
+        self.assertNotIn("verification_tier", CONTRACT_KEYS)
         stamped = contract["carrier_deviation"]
         self.assertEqual(set(stamped), {"page_id", "expected_carrier", "provided_carrier", "authorized_decision_id", "rationale"})
 

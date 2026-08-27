@@ -32,7 +32,7 @@ BINARY_EXTS = {
 # categories that are allowed to be OUT_OF_SCOPE without any candidate
 OUT_OF_SCOPE_CATEGORIES = {"test", "build", "metadata", "binary", "other", "empty"}
 
-FRAGMENT_BASES = ("Fragment", "DialogFragment", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet")
+FRAGMENT_BASES = ("Fragment", "DialogFragment", "BottomSheetDialogFragment", "BottomSheetDialog", "BottomSheet", "PreferenceFragmentCompat", "PreferenceFragment")
 ACTIVITY_BASES = (
     "android.app.Activity", "androidx.appcompat.app.AppCompatActivity",
     "androidx.activity.ComponentActivity", "android.app.AppCompatActivity",
@@ -57,7 +57,21 @@ _QUERY_RE = re.compile(r"@Query\s*\(\s*\"([^\"]*)\"\s*\)")
 _DATA_OP_RE = re.compile(r"@(Insert|Update|Delete|Dao)\b")
 _DATABINDING_RE = re.compile(r"@\{[^}]*\}")
 _ONCLICK_RE = re.compile(r"android:onClick\s*=\s*\"([^\"]+)\"")
-_INFLATE_RE = re.compile(r"R\.layout\.([A-Za-z0-9_]+)")
+_INFLATE_RE = re.compile(r"(?<!android\.)R\.layout\.([A-Za-z0-9_]+)")
+# 无 extends 的 class 声明（如 markor 的 AlertDialog.Builder 工厂类：public class X {
+_CLASS_NOEXT_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\{")
+
+
+def _strip_generics(line: str) -> str:
+    """剥离行内泛型参数段 <...>（迭代处理嵌套）。
+    修 P3：`class MoreFragment extends GsFragmentBase<A, B> {` 的泛型 extends
+    会使 _ACT_CLASS_RE 捕获到泛型参数（A）而非真实基类；剥掉泛型后才能取到
+    GsFragmentBase 这类项目自定义基类。"""
+    prev = None
+    while prev != line:
+        prev = line
+        line = re.sub(r"<[^<>]*>", "", line)
+    return line
 _FRAG_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|data\s+|sealed\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:]*:\s*([A-Za-z0-9_.]+)")
 _ACT_CLASS_RE = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+|protected\s+|abstract\s+|open\s+|final\s+)*class\s+([A-Za-z0-9_]+)\s*\(?[^:{}]*?(?:extends\s+|\:\s*)([A-Za-z0-9_.]+)")
 _DAO_IFACE_RE = re.compile(r"^\s*(?:@\w+\s*)*\binterface\s+([A-Za-z0-9_]+)\b")
@@ -232,37 +246,85 @@ def discover_pages(project: Path, files: List[Dict[str, Any]]) -> List[Dict[str,
                 p["is_start"] = True
                 start_symbol = name
 
-    # 3) source classes extending Fragment/Activity
+    # 3) source classes extending Fragment/Activity/Dialog
+    #    P3 修复：项目自定义基类（GsFragmentBase/GsActivityBase/GsPreferenceFragmentBase
+    #    等自身继承原生基类）一层传递——pass1 收集自定义基类集合，pass2 页面判定时并入；
+    #    泛型声明剥掉 <...> 再匹配（否则 base 捕获到泛型参数）；
+    #    abstract 基类只作传递不入页面；无 extends 的 Dialog 工厂类
+    #    （AlertDialog.Builder + inflate 自有 app 布局）也按页面发现。
+    custom_frag_bases: set = set()
+    custom_act_bases: set = set()
+    custom_dlg_bases: set = set()
+    # pass1：收集项目内自定义基类（自身 extends 原生/Dialog 语义基类，含 abstract）
+    for f in files:
+        if f["category"] not in ("source",):
+            continue
+        for ln in read_text(f["abs"]).splitlines():
+            cm = _ACT_CLASS_RE.match(_strip_generics(ln))
+            if not cm:
+                continue
+            cls, base_short = cm.group(1), cm.group(2).rsplit(".", 1)[-1]
+            if base_short.endswith(FRAGMENT_BASES):
+                custom_frag_bases.add(cls)
+            if base_short.endswith(ACTIVITY_BASES):
+                custom_act_bases.add(cls)
+            if base_short in DIALOG_BASES or base_short.endswith(("Dialog", "Sheet")):
+                custom_dlg_bases.add(cls)
     for f in files:
         if f["category"] not in ("source",):
             continue
         text = read_text(f["abs"])
         lines = text.splitlines()
         for ln in lines:
-            cm = _ACT_CLASS_RE.match(ln)
-            if not cm:
-                continue
-            cls, base = cm.group(1), cm.group(2)
-            base_short = base.rsplit(".", 1)[-1]
-            # Dialog/Sheet 承载独立布局 = 页面级 UI 承载（按页面发现）；
-            # 纯逻辑 Dialog 工具（不 inflate 布局）仍不算页面。
-            inflates_layout = bool(_INFLATE_RE.search(text))
-            is_dialog_page = base_short in DIALOG_BASES and inflates_layout
-            if base_short.endswith(FRAGMENT_BASES) or base_short.endswith(ACTIVITY_BASES) or is_dialog_page:
-                p = pages.setdefault(cls, {
-                    "symbol": cls, "kinds": [], "source_refs": [], "layout_names": [],
-                    "is_start": False, "features": [],
-                })
-                kind = "Fragment" if base_short.endswith(FRAGMENT_BASES) else ("Dialog" if is_dialog_page else "Activity")
-                if kind not in p["kinds"]:
-                    p["kinds"].append(kind)
-                if f["rel"] not in p["source_refs"]:
-                    p["source_refs"].append(f["rel"])
-                # layouts inflated by this class
-                for im in _INFLATE_RE.finditer(text):
-                    lay = im.group(1)
-                    if lay not in p["layout_names"]:
-                        p["layout_names"].append(lay)
+            cm = _ACT_CLASS_RE.match(_strip_generics(ln))
+            if cm:
+                cls, base_short = cm.group(1), cm.group(2).rsplit(".", 1)[-1]
+                # abstract 基类不是实例化页面（只在 pass1 作传递）
+                if re.search(r"\babstract\s+class\b", ln):
+                    continue
+                # Dialog/Sheet 承载独立布局 = 页面级 UI 承载（按页面发现）；
+                # 纯逻辑 Dialog 工具（不 inflate 布局）仍不算页面。
+                inflates_layout = bool(_INFLATE_RE.search(text))
+                is_dialog_page = (base_short in DIALOG_BASES
+                                  or base_short.endswith(("Dialog", "Sheet"))
+                                  or base_short in custom_dlg_bases) and inflates_layout
+                is_frag = base_short.endswith(FRAGMENT_BASES) or base_short in custom_frag_bases
+                is_act = base_short.endswith(ACTIVITY_BASES) or base_short in custom_act_bases
+                if is_frag or is_act or is_dialog_page:
+                    p = pages.setdefault(cls, {
+                        "symbol": cls, "kinds": [], "source_refs": [], "layout_names": [],
+                        "is_start": False, "features": [],
+                    })
+                    kind = "Fragment" if is_frag else ("Dialog" if is_dialog_page else "Activity")
+                    if kind not in p["kinds"]:
+                        p["kinds"].append(kind)
+                    if f["rel"] not in p["source_refs"]:
+                        p["source_refs"].append(f["rel"])
+                    # layouts inflated by this class
+                    for im in _INFLATE_RE.finditer(text):
+                        lay = im.group(1)
+                        if lay not in p["layout_names"]:
+                            p["layout_names"].append(lay)
+            else:
+                # 无 extends 的 Dialog 工厂类（如 AlertDialog.Builder 封装）：
+                # 类名以 Dialog/Sheet 结尾且 inflate 自有 app 布局（非 android.R.layout
+                # 系统项模板）= 页面级 UI 承载
+                nm = _CLASS_NOEXT_RE.match(ln)
+                if nm and nm.group(1).endswith(("Dialog", "Sheet")) \
+                        and bool(_INFLATE_RE.search(text)):
+                    cls = nm.group(1)
+                    p = pages.setdefault(cls, {
+                        "symbol": cls, "kinds": [], "source_refs": [], "layout_names": [],
+                        "is_start": False, "features": [],
+                    })
+                    if "Dialog" not in p["kinds"]:
+                        p["kinds"].append("Dialog")
+                    if f["rel"] not in p["source_refs"]:
+                        p["source_refs"].append(f["rel"])
+                    for im in _INFLATE_RE.finditer(text):
+                        lay = im.group(1)
+                        if lay not in p["layout_names"]:
+                            p["layout_names"].append(lay)
 
     # stable ids + page_id
     out = []
@@ -848,6 +910,13 @@ def scan_preference_xml(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             selectable = _pref_attr(attrs, "selectable")
             dependency = _pref_attr(attrs, "dependency")
             root = stack[-1] if stack else {}
+            # 三列增强：跟踪最近的 PreferenceCategory 祖先 title 作为 category
+            # 上下文（PreferenceScreen/PreferenceGroup 不算 category；无则空串）。
+            category = ""
+            for ancestor in reversed(stack):
+                if ancestor["tag"] == "PreferenceCategory":
+                    category = ancestor.get("title", "")
+                    break
             node = {
                 "file": rel, "level": len(stack), "tag": tag,
                 "title": title, "key": key, "summary": summary, "icon": icon,
@@ -855,6 +924,7 @@ def scan_preference_xml(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "fragment": fragment, "intentAction": intent,
                 "selectable": selectable, "dependency": dependency,
                 "parent": root.get("key", "") if root else "",
+                "category": category,
                 "source_ref": f"{rel}:{_line_of(text, m.start())}",
             }
             rows.append(node)
@@ -895,6 +965,9 @@ _BACK_RE = re.compile(r"\b(onBackPressedDispatcher\.onBackPressed|onBackPressed\
 _MENU_ITEM_WHEN_RE = re.compile(r"R\.id\.([A-Za-z0-9_]+)\s*->\s*\{(.*?)\}\s*(?:true|false|continue|break)", re.S)
 _MENU_CLICK_RE = re.compile(r"R\.id\.([A-Za-z0-9_]+)\s*(?:\}|\s*\)\s*(?:\{|\->))")
 _SET_CLICK_RE = re.compile(r"\.setOnPreferenceClickListener\s*\{")
+# 传统 View/Java 体系跳转: new Intent(ctx, X.class) 与自定义工具跳转 animateToActivity(ctx, X.class, ...)
+_INTENT_JAVA_RE = re.compile(r"new\s+Intent\s*\(\s*[^,()]{0,100},\s*([A-Za-z0-9_.$]+)\.class\s*\)")
+_ANIMATE_TO_ACTIVITY_RE = re.compile(r"animateToActivity\s*\(\s*[^,()]{0,100},\s*([A-Za-z0-9_.$]+)\.class")
 # Nav3/回调跳转（缺口4）：onXxxClick = { backStack.add(Dest) } / navigate / switch route
 _NAV3_CB_RE = re.compile(
     r"(?:on[A-Z]\w*(?:Click|Tap|Select)|onClick|onNavigate)\s*=\s*\{[^}]{0,120}?"
@@ -1021,6 +1094,16 @@ def scan_nav_relations(files: List[Dict[str, Any]],
             cls = m.group(1).replace("::class", "").rsplit(".", 1)[-1]
             line = _line_of(text, m.start())
             add(rel, page, "startActivity", cls[:60], cls, "INTENT", f"{rel}:{line}")
+
+        # 传统 View/Java: new Intent(ctx, X.class) 与 animateToActivity(ctx, X.class, ...)
+        for m in _INTENT_JAVA_RE.finditer(text):
+            cls = m.group(1).rsplit(".", 1)[-1]
+            line = _line_of(text, m.start())
+            add(rel, page, "new Intent", cls[:60], cls, "INTENT", f"{rel}:{line}")
+        for m in _ANIMATE_TO_ACTIVITY_RE.finditer(text):
+            cls = m.group(1).rsplit(".", 1)[-1]
+            line = _line_of(text, m.start())
+            add(rel, page, "animateToActivity", cls[:60], cls, "INTENT", f"{rel}:{line}")
 
         for m in _SET_CLICK_RE.finditer(text):
             line = _line_of(text, m.start())
@@ -1489,6 +1572,9 @@ _ANIM_STATE_RE = re.compile(r"\b(?:animate[a-zA-Z]*AsState|Animatable|rememberIn
 _NESTED_SCROLL_RE = re.compile(r"\bNestedScrollConnection\b|\bmaxCollapseOffset|\bcalendarOffsetPx|\bonPreScroll|\bonPostScroll|\bnestedScroll\s*\(")
 _RUNTIME_SHADER_RE = re.compile(r"\bruntimeShaderEffect\s*\(\s*\"([A-Za-z0-9_]+)\"")
 _FADE_RE = re.compile(r"myFade(In|Out|InFade|OutFade)\s*\(")
+# 传统 View/Java 体系动效: 属性动画/视图动画/Activity 过渡
+_VIEW_ANIM_RE = re.compile(r"\b(?:ObjectAnimator|ValueAnimator|AnimatorSet)\b|\.animate\s*\(\s*\)|overridePendingTransition\s*\(|setLayoutTransition\s*\(")
+_ACTIVITY_TRANSITION_RE = re.compile(r"\banimateToActivity\s*\(")
 
 
 def scan_color_palette(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1496,6 +1582,26 @@ def scan_color_palette(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
     seen = set()
     for f in files:
+        # 传统 View 体系: res/values*/colors.xml 的 <color name="x">#hex</color>（仅直接色值）
+        if f["category"] == "values":
+            text = read_text(f["abs"])
+            rel = f["rel"]
+            for m in re.finditer(r'<color\s+name="([^"]+)"\s*>([^<]{1,40})</color>', text):
+                name, val = m.group(1), m.group(2).strip()
+                hm = re.match(r"^#([0-9A-Fa-f]{3,8})$", val)
+                if not hm:
+                    continue  # 引用型(@color/x)跳过，只收真值
+                digits = hm.group(1)
+                alpha = "0x" + digits[:2] if len(digits) == 8 else "1.0"
+                key = (name, val.upper())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "name": name, "hex": val.upper(), "alpha": alpha,
+                    "kind": "XML", "file": rel, "line": _line_of(text, m.start()),
+                })
+            continue
         if f["category"] not in ("source",):
             continue
         text = read_text(f["abs"])
@@ -1583,6 +1689,7 @@ def scan_motion(files: List[Dict[str, Any]],
         pid = page_by_symbol.get(stem, {}).get("page_id", "")
         for rx, label in ((_ANIM_STATE_RE, "animation"), (_NESTED_SCROLL_RE, "nested-scroll-fold"),
                           (_RUNTIME_SHADER_RE, "runtime-shader"), (_FADE_RE, "fade"),
+                          (_VIEW_ANIM_RE, "view-animation"), (_ACTIVITY_TRANSITION_RE, "activity-transition"),
                           (_MODIFIER_SIZE_RE, "size"), (_MODIFIER_SHAPE_RE, "shape")):
             for m in rx.finditer(text):
                 sig = m.group(0)[:60]
