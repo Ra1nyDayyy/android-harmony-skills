@@ -1271,7 +1271,7 @@ def main() -> int:
         )
         applied_carrier_deviations: dict[str, dict[str, Any]] = {}
         try:
-            decision_log_rows = read_csv(run_input / "controller" / "decision-log.csv")
+            decision_log_rows = read_csv(run_dir / "controller" / "decision-log.csv")
         except ValueError as exc:
             raise ValueError(f"Controller decision log is unreadable: {exc}") from exc
 
