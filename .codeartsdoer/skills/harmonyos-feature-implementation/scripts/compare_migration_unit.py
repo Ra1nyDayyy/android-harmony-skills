@@ -209,6 +209,14 @@ def _expected_screenshot(contract: dict[str, Any], actual_dir: Path, evidence_id
     if len(matches) != 1:
         raise ValueError(f"Page contract lacks Android evidence hash: {evidence_id}")
     record = matches[0]
+    if record.get("pending_runtime_verify") is True:
+        # gmi honest baseline: no frozen Android evidence exists for this page.
+        # Pixel-level comparison against Android is not a meaningful verdict
+        # here; HEVD UiTest/business assertions carry the verification facts.
+        raise ValueError(
+            f"Android baseline is PENDING_RUNTIME_VERIFY for {evidence_id}; "
+            "frozen-screenshot comparison is not applicable"
+        )
     relative = Path(str(record.get("relative_path", f"inputs/android-evidence/{evidence_id}")))
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("Android evidence relative path is unsafe")

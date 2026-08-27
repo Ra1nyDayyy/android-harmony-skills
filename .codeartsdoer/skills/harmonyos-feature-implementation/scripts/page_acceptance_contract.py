@@ -72,6 +72,15 @@ RECORD_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     ),
     "phase3_targets": ("state_id", "env_id", "harmony_module_id", "target_kind", "target_id"),
 }
+# gmi 诚实路径的 PENDING 证据记录形状（与编译段 evidence_by_id 的 PENDING 分支
+# 及 _state_record 补齐后的 android_evidence 子对象严格一致）。
+PENDING_EVIDENCE_RECORD_KEYS: tuple[str, ...] = (
+    "evidence_id", "pending_runtime_verify", "source_geometry",
+)
+
+
+def _pending_record(record: object) -> bool:
+    return isinstance(record, dict) and record.get("pending_runtime_verify") is True
 
 
 def canonical_contract_sha256(contract: dict[str, object]) -> str:
@@ -224,9 +233,11 @@ def compile_page_contracts(
             raise ValueError(f"{page_id}: evidence {evidence_id} is not ACCEPTED")
         if evidence_index.get("status") == "PENDING_RUNTIME_VERIFY":
             # 未在运行时验证的证据：合同可编（gmi 诚实路径），但 parity 阶段强制补验；
-            # 此处不引用证据文件（缺 evidence 目录也是如实状态）
+            # 此处不引用证据文件（缺 evidence 目录也是如实状态）。
+            # pending 形状三键与 _state_record 补齐后的 android_evidence 子对象严格一致。
             evidence_by_id[evidence_id] = {"evidence_id": evidence_id,
-                                           "pending_runtime_verify": True}
+                                           "pending_runtime_verify": True,
+                                           "source_geometry": []}
             continue
         relative = evidence_index.get("relative_path") or f"evidence/{row['env_id']}/{page_id}/{row['state_id']}/{evidence_id}"
         evidence_dir = phase2_workspace / Path(str(relative))
@@ -554,6 +565,12 @@ def _validate_record_array(
     for record in value:
         if not isinstance(record, dict):
             raise ValueError(f"Invalid page acceptance contract {page_id}: {field} must contain objects")
+        if field in {"android_evidence_hashes", "android_evidence"} and _pending_record(record):
+            # gmi 诚实路径：PENDING 记录按三键形状校验，不参与证据文件哈希断言
+            #（未运行时验证≠已验证；补验义务由 parity 阶段 fail-closed 承担）。
+            if set(record) != set(PENDING_EVIDENCE_RECORD_KEYS):
+                raise ValueError(f"Invalid page acceptance contract {page_id}: {field} fields differ")
+            continue
         if field in {"android_evidence_hashes", "android_evidence"} and set(record) != set(RECORD_REQUIREMENTS["android_evidence_hashes"]):
             raise ValueError(f"Invalid page acceptance contract {page_id}: {field} fields differ")
         if field == "phase3_targets" and set(record) != set(RECORD_REQUIREMENTS[field]):
@@ -567,7 +584,7 @@ def _validate_record_array(
                 raise ValueError(
                     f"Invalid page acceptance contract {page_id}: {field}.{required} must be a non-empty string"
                 )
-        if field == "android_evidence_hashes":
+        if field == "android_evidence_hashes" and "screenshot_sha256" in record:
             for digest_field in ("screenshot_sha256", "layout_sha256", "metadata_sha256"):
                 if not SHA256_RE.fullmatch(str(record[digest_field])):
                     raise ValueError(
