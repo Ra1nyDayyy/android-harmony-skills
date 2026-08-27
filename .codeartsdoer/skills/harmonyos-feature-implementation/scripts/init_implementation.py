@@ -357,11 +357,59 @@ def directory_snapshot_facts(directory: Path) -> tuple[str, int, int]:
     return sha256_text(canonical), sum(item["size"] for item in entries), len(entries)
 
 
-def verify_phase3_snapshot(phase3: Path, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_scaffold_rebase(
+    declarations: Any,
+) -> dict[str, dict[str, Any]]:
+    """Validate the work-order ``phase3_scaffold_rebase`` declaration block.
+
+    Fail-closed normalization: every entry must declare the frozen sha256 it
+    expects to find in the sealed scaffold-snapshot-manifest (``sealed``) and
+    the exact on-disk value that supersedes it for this run (``current``, with
+    size). Entries under ``harmony-project/`` are rejected outright: accepted
+    project files may never drift. Returns an empty mapping when the key is
+    absent or the list is empty.
+    """
+    if declarations is None:
+        return {}
+    if not isinstance(declarations, list) or not declarations:
+        raise ValueError("phase3_scaffold_rebase must be a non-empty array when present")
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in declarations:
+        if not isinstance(item, dict):
+            raise ValueError("phase3_scaffold_rebase contains a non-object entry")
+        missing = [k for k in ("path", "sealed_sha256", "current_sha256", "current_size") if k not in item]
+        if missing:
+            raise ValueError(f"phase3_scaffold_rebase entry lacks fields: {missing}")
+        path = str(item["path"])
+        sealed = str(item["sealed_sha256"])
+        current = str(item["current_sha256"])
+        for label, digest in (("sealed_sha256", sealed), ("current_sha256", current)):
+            if not re.fullmatch(r"[0-9a-f]{64}", digest) or set(digest) == {"0"}:
+                raise ValueError(f"phase3_scaffold_rebase {label} is not a valid frozen hash")
+        if not isinstance(item["current_size"], int) or isinstance(item["current_size"], bool):
+            raise ValueError("phase3_scaffold_rebase current_size must be an integer")
+        if path.startswith("harmony-project/") or ".." in Path(path).parts:
+            raise ValueError(f"phase3_scaffold_rebase path is not rebasable: {path}")
+        if path in normalized:
+            raise ValueError(f"phase3_scaffold_rebase declares duplicate path: {path}")
+        normalized[path] = {
+            "sealed_sha256": sealed,
+            "current_sha256": current,
+            "current_size": item["current_size"],
+        }
+    return normalized
+
+
+def verify_phase3_snapshot(
+    phase3: Path,
+    snapshot: dict[str, Any],
+    rebase: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     raw_entries = snapshot.get("entries")
     if not isinstance(raw_entries, list) or not raw_entries:
         raise ValueError("Phase 3 scaffold snapshot has no entries")
     entries: list[dict[str, Any]] = []
+    applied_rebases: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     for raw in raw_entries:
         if not isinstance(raw, dict):
@@ -375,7 +423,24 @@ def verify_phase3_snapshot(phase3: Path, snapshot: dict[str, Any]) -> list[dict[
             raise ValueError(f"Phase 3 snapshot entry is not a file: {path}")
         entry = {"path": relative, "sha256": sha256_file(path), "size": path.stat().st_size}
         if entry["sha256"] != raw.get("sha256") or entry["size"] != raw.get("size"):
-            raise ValueError(f"Phase 3 snapshot entry changed: {relative}")
+            # Fail-closed controller-authorized drift channel: the only way a
+            # mismatched entry can proceed is an explicit work-order rebase
+            # whose sealed binding matches this manifest byte-for-byte and
+            # whose current binding matches the live file exactly.
+            declared = (rebase or {}).get(relative)
+            if (
+                declared is not None
+                and declared["sealed_sha256"] == str(raw.get("sha256"))
+                and declared["current_sha256"] == entry["sha256"]
+                and declared["current_size"] == entry["size"]
+            ):
+                applied_rebases[relative] = declared
+                # Historic-digest view keeps the sealed canonical intact so
+                # the stage-03 gate cross-binding stays untouched; the live
+                # disk state was already verified against the declaration.
+                entry = {"path": relative, "sha256": str(raw.get("sha256")), "size": raw.get("size")}
+            else:
+                raise ValueError(f"Phase 3 snapshot entry changed: {relative}")
         entries.append(entry)
     canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if snapshot.get("entry_count") != len(entries) or snapshot.get("snapshot_sha256") != sha256_text(canonical):
@@ -394,7 +459,7 @@ def verify_phase3_snapshot(phase3: Path, snapshot: dict[str, Any]) -> list[dict[
     snapshot_project = {item["path"] for item in entries if item["path"].startswith("harmony-project/")}
     if snapshot_project != actual_project:
         raise ValueError("Phase 3 snapshot does not exactly cover the accepted HarmonyOS project")
-    return entries
+    return entries, applied_rebases
 
 
 def validate_asset_chain(
@@ -1114,7 +1179,12 @@ def main() -> int:
         phase3_snapshot = require_object(
             load_json(phase3 / "scaffold-snapshot-manifest.json"), "Phase 3 scaffold snapshot"
         )
-        snapshot_entries = verify_phase3_snapshot(phase3, phase3_snapshot)
+        scaffold_rebase = normalize_scaffold_rebase(
+            work_order.get("phase3_scaffold_rebase")
+        )
+        snapshot_entries, snapshot_rebases_applied = verify_phase3_snapshot(
+            phase3, phase3_snapshot, rebase=scaffold_rebase
+        )
         if phase3_report.get("source_snapshot_sha256") != phase3_snapshot.get("snapshot_sha256"):
             raise ValueError("Phase 3 gate references another scaffold snapshot")
 
@@ -1758,6 +1828,18 @@ def main() -> int:
                 "phase2_asset_ids": sorted(phase2_assets),
                 "required_h4env_ids": sorted(h4env_ids),
                 "phase3_source_snapshot_sha256": phase3_snapshot["snapshot_sha256"],
+                "phase3_scaffold_rebases_applied": sorted(
+                    (
+                        {
+                            "path": path,
+                            "sealed_sha256": binding["sealed_sha256"],
+                            "current_sha256": binding["current_sha256"],
+                            "current_size": binding["current_size"],
+                        }
+                        for path, binding in sorted(snapshot_rebases_applied.items())
+                    ),
+                    key=lambda item: item["path"],
+                ),
                 "asset_conversion_contracts_sha256": sha256_file(temp_dir / "asset-conversion-contracts.json"),
                 "migration_unit_contracts_sha256": sha256_file(temp_dir / "migration-unit-contracts.json"),
                 "page_contract_registry": {
