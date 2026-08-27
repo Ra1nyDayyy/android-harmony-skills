@@ -113,7 +113,13 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
         if isinstance(row, dict)
     ]
     if not actions:
-        raise ValueError(f"{page_id} has no frozen action probes")
+        # Observation-only pages (gmi honest path): contracts without any
+        # frozen interaction facts yield a cold-start-only probe that asserts
+        # the frozen state identity and required components. Fabricating
+        # actions would break the honesty invariants; dropping these pages
+        # would leave them untested. Same disposition family as the
+        # pending-only empty-components path.
+        pass
     if len(actions) > 1 and len(plan.get("transitions", []) or []) > 1:
         raise ValueError(
             f"{page_id} has ambiguous multi-action/multi-transition layout; split the frozen State runs"
@@ -180,7 +186,10 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
             raise ValueError(f"{page_id} {state_id} has no required component locator")
         probe_runs = list(actions_by_event.items())
         if not probe_runs:
-            raise ValueError(f"{page_id} {state_id} has no frozen action probe")
+            # Observation-only page: exactly one cold-start assertion run
+            # with no declared actions/transitions (probe_id keeps the plain
+            # state form; result directory stays the state directory).
+            probe_runs = [(None, None)]
         for action_key, action_row in probe_runs:
             owned_event = (action_row or {}).get("event_id", "")
             owned_transitions = [

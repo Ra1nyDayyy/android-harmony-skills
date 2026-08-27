@@ -51,9 +51,15 @@ class ProbeFanoutTest(unittest.TestCase):
         self.assertEqual(owned.get("E1"), 1)   # T1 binds to its own event E1 (fixture)
         self.assertEqual(owned.get("E0"), 0)   # E0 has no transition
 
-    def test_no_action_rejected(self):
-        with self.assertRaisesRegex(ValueError, "no frozen action"):
-            pup._probes(make_plan([]), {})
+    def test_no_action_yields_observation_only_probe(self):
+        """gmi honest path: zero-action pages get one cold-start-only run."""
+        probes = pup._probes(make_plan([]), {})
+        self.assertEqual(len(probes), 1)
+        probe = probes[0]
+        self.assertEqual(probe["probe_id"], "PAGE-MAIN::STATE-DEFAULT")
+        self.assertEqual(probe["declared_actions"], [])
+        self.assertEqual(probe["declared_transitions"], [])
+        self.assertTrue(probe["required_components"])
 
     def test_multi_action_multi_transition_ambiguous_rejected(self):
         plan = make_plan(["A1", "A2"], [
