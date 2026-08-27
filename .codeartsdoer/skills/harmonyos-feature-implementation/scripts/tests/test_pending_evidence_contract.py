@@ -71,10 +71,20 @@ class TopLevelGeometryDispositionTest(unittest.TestCase):
         pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
         self._run([pending], [])
 
+    def test_pending_only_nested_empty_lists_pass(self):
+        """Compiled nested shape [[]] is truthful for pending-only pages."""
+        pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
+        self._run([pending], [[]])
+
     def test_pending_only_nonempty_geometry_rejected(self):
         pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
-        with self.assertRaisesRegex(ValueError, "empty array for pending-only"):
+        with self.assertRaisesRegex(ValueError, "must be empty for pending-only"):
             self._run([pending], [{"component_id": "C1"}])
+
+    def test_pending_only_nonempty_layout_object_in_list_rejected(self):
+        pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
+        with self.assertRaisesRegex(ValueError, "must be empty for pending-only"):
+            self._run([pending], [[{"component_id": "C1"}]])
 
     def test_accepted_baseline_empty_geometry_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-empty array"):

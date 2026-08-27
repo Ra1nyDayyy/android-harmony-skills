@@ -358,6 +358,10 @@ def compile_page_contracts(
             "feature_ids": feature_ids,
             "states": state_records,
             "components": page_components,
+            # 顶层 source_geometry 保持历史收集契约：元素既可以是单个布局对象，
+            # 也可以是该 record 的布局集合列表（_validate_geometry_value 双形状都
+            # 接受）；纯 PENDING 页会产 [[]] 形状，由 _validate_source_geometry
+            # 按 Android-baseline 处置分流裁决，不在此处改变形状。
             "source_geometry": [record["android_evidence"]["source_geometry"] for state in state_records for record in state["records"]],
             "assets": [assets[asset_id] for asset_id in asset_ids],
             "visible_text": sorted({str(component.get("text", "")) for component in page_components if component.get("text")}),
@@ -511,20 +515,29 @@ def _side_effects_for_page(rows: list[dict[str, object]], page_id: str, feature_
 def _validate_source_geometry(page_id: str, contract: dict[str, object]) -> None:
     """Validate the top-level source_geometry per Android-baseline disposition.
 
-    Mixed or fully accepted baselines keep the original non-empty invariant
-    (layout objects are mandatory once any real evidence exists). A pending-
-    only gmi honest baseline has no layout artifacts by definition, so the
-    only truthful shape is exactly an empty array.
+    Mixed or fully accepted baselines keep the original invariant (layout
+    objects are mandatory once any real evidence exists; elements may be a
+    dict or that record's layout list per _validate_geometry_value). A
+    pending-only gmi honest baseline has no layout artifacts by definition:
+    the compiled shape is either an empty array or an array of empty layout
+    lists — both are truthful and pass; anything carrying real layout facts
+    fails.
     """
     records = contract.get("android_evidence_hashes")
     records = records if isinstance(records, list) else []
     if any(not _pending_record(record) for record in records):
         _validate_geometry_array(str(contract["page_id"]), contract.get("source_geometry"))
         return
-    if not isinstance(contract.get("source_geometry"), list) or contract["source_geometry"]:
+    geometry = contract.get("source_geometry")
+    if not isinstance(geometry, list):
         raise ValueError(
             f"Invalid page acceptance contract {page_id}: "
-            "source_geometry must be an empty array for pending-only Android baseline"
+            "source_geometry must be an array for pending-only Android baseline"
+        )
+    if any(element for element in geometry):
+        raise ValueError(
+            f"Invalid page acceptance contract {page_id}: "
+            "source_geometry must be empty for pending-only Android baseline"
         )
 
 
