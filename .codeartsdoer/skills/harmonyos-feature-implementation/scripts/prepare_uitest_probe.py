@@ -112,10 +112,16 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
         for row in plan.get("events_actions", [])
         if isinstance(row, dict)
     ]
-    if len(actions) > 1:
+    if not actions:
+        raise ValueError(f"{page_id} has no frozen action probes")
+    if len(actions) > 1 and len(plan.get("transitions", []) or []) > 1:
         raise ValueError(
-            f"{page_id} requires isolated action probes; multiple actions may not share one frozen State-ID run"
+            f"{page_id} has ambiguous multi-action/multi-transition layout; split the frozen State runs"
         )
+    # Per-action probe fan-out: the isolation invariant stays intact — each
+    # frozen State-ID run exercises exactly one action. Multi-action pages
+    # yield one probe per action (shared state locators, per-action run
+    # bindings and transitions); single-action pages are unchanged.
     transitions = []
     action_event_ids = {row["event_id"] for row in actions if row["event_id"] and row["component_id"]}
     for row in plan.get("transitions", []):
@@ -139,6 +145,12 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
             "target_components": target_locators,
             "return_action": "PRESS_BACK",
         })
+    actions_by_event: dict[str, dict[str, str]] = {}
+    for action_row in actions:
+        key = action_row["event_id"] or f"__action_{len(actions_by_event)}__"
+        while key in actions_by_event:
+            key += "_x"
+        actions_by_event[key] = action_row
     result = []
     state_targets = plan["carrier"]["state_targets"]
     for state in sorted(states, key=lambda row: str(row["state_id"])):
@@ -166,18 +178,28 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
             })
         if not required_components:
             raise ValueError(f"{page_id} {state_id} has no required component locator")
-        result.append({
-            "probe_id": f"{page_id}::{state_id}",
-            "page_id": page_id,
-            "state_id": state_id,
-            "target_id": target["target_id"],
-            "entry_condition": str(first.get("entry_condition", "")),
-            "action_summary": str(first.get("action_summary", "")),
-            "required_components": required_components,
-            "declared_actions": actions,
-            "declared_transitions": transitions,
-            "result_directory": f"ui-test-snapshot/{page_id}/{state_id}",
-        })
+        probe_runs = list(actions_by_event.items())
+        if not probe_runs:
+            raise ValueError(f"{page_id} {state_id} has no frozen action probe")
+        for action_key, action_row in probe_runs:
+            owned_event = (action_row or {}).get("event_id", "")
+            owned_transitions = [
+                row for row in transitions if row["event_id"] == owned_event
+            ] if action_row is not None else []
+            suffix = "" if action_row is None or len(probe_runs) == 1 else f"::{action_key}"
+            result.append({
+                "probe_id": f"{page_id}::{state_id}{suffix}",
+                "page_id": page_id,
+                "state_id": state_id,
+                "target_id": target["target_id"],
+                "entry_condition": str(first.get("entry_condition", "")),
+                "action_summary": str(first.get("action_summary", "")),
+                "required_components": required_components,
+                # Isolation invariant: exactly one action per frozen State-ID run.
+                "declared_actions": [action_row] if action_row is not None else [],
+                "declared_transitions": owned_transitions,
+                "result_directory": f"ui-test-snapshot/{page_id}/{state_id}{suffix.replace('::', '-')}",
+            })
     return result
 
 

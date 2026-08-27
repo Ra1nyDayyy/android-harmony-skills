@@ -195,14 +195,30 @@ class UiTestPageProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "transition.*lacks a frozen event/action/target probe"):
             prepare_uitest_probe(self.workspace)
 
-    def test_multiple_actions_in_one_state_are_blocked_until_isolated(self) -> None:
+    def test_multiple_actions_in_one_state_fan_out_into_isolated_probes(self) -> None:
+        """Isolation invariant: one action per frozen State-ID run.
+
+        Historical behavior rejected multi-action states outright; the
+        isolation mechanism now fans them out into per-action probes sharing
+        the state locators (each probe declares exactly one action and only
+        its own transitions)."""
         self.contracts[0]["interaction_bindings"].append({
             "event_id": "EVENT-SECOND", "page_id": "PAGE-CALCULATOR",
             "component_id": "COMP-PAGE-CALCULATOR-ACTION", "action": "CLICK",
         })
         self._publish()
-        with self.assertRaisesRegex(ValueError, "isolated action probes"):
-            prepare_uitest_probe(self.workspace)
+        prepare_uitest_probe(self.workspace)
+        import json as _json
+        manifest = _json.loads((self.workspace / "ui-test-snapshot-generation-manifest.json").read_text())
+        probes = [row for row in manifest["probes"] if row["page_id"] == "PAGE-CALCULATOR"]
+        state_ids = {row["state_id"] for row in probes}
+        self.assertIn("STATE-EMPTY", state_ids)
+        page_probes_for_state = [row for row in probes if row["state_id"] == "STATE-EMPTY"]
+        self.assertGreaterEqual(len(page_probes_for_state), 2)
+        for row in page_probes_for_state:
+            self.assertEqual(len(row["declared_actions"]), 1)
+        event_ids = {row["declared_actions"][0]["event_id"] for row in page_probes_for_state}
+        self.assertEqual(event_ids, {"EVENT-OPEN", "EVENT-SECOND"})
 
 
 def page_contract(page_id: str, state_ids: tuple[str, ...]) -> dict[str, object]:
