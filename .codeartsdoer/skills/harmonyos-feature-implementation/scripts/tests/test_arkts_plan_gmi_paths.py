@@ -68,6 +68,44 @@ class ArktsPlanGmiPathsTest(unittest.TestCase):
         result = plan_or_error(contract)
         self.assertIsInstance(result, ValueError)
 
+    def test_c3_probe_pending_only_empty_components_pass(self):
+        """Probe layer mirrors the plan-layer pending-only disposition."""
+        import prepare_uitest_probe as pup
+        plan = {
+            "page_id": "PAGE-PEND",
+            "carrier_type": "PAGE",
+            "components": [],
+            "states": [{"state_id": "S1", "records": [{"entry_condition": "", "action_summary": ""}]}],
+            "events_actions": [],
+            "transitions": [],
+            "phase3_targets": [{"state_id": "S1", "env_id": "ENV-001", "harmony_module_id": "ENTRY", "target_kind": "ROUTE_PAGE", "target_id": "ROUTE-X"}],
+            "android_evidence_hashes": [{"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}],
+            "carrier": {"state_targets": {"S1": {"target_id": "ROUTE-X"}}},
+        }
+        probes = pup._probes(plan, {})
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]["declared_actions"], [])
+        self.assertEqual(probes[0]["required_components"], [])
+
+    def test_c3_probe_accepted_empty_components_still_rejected(self):
+        import prepare_uitest_probe as pup
+        plan = {
+            "page_id": "PAGE-X",
+            "carrier_type": "PAGE",
+            "components": [],
+            "states": [{"state_id": "S1", "records": [{"entry_condition": "", "action_summary": ""}]}],
+            "events_actions": [],
+            "transitions": [],
+            "phase3_targets": [{"state_id": "S1", "env_id": "ENV-001", "harmony_module_id": "ENTRY", "target_kind": "ROUTE_PAGE", "target_id": "ROUTE-X"}],
+            "android_evidence_hashes": [{
+                "evidence_id": "EVD-A", "relative_path": "e/x",
+                "screenshot_sha256": "a" * 64, "layout_sha256": "b" * 64,
+                "metadata_sha256": "c" * 64, "source_geometry": []}],
+            "carrier": {"state_targets": {"S1": {"target_id": "ROUTE-X"}}},
+        }
+        with self.assertRaisesRegex(ValueError, "no required component plan"):
+            pup._probes(plan, {})
+
 
 if __name__ == "__main__":
     unittest.main()

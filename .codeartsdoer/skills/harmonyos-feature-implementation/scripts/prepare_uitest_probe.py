@@ -99,8 +99,20 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
     page_id = str(plan["page_id"])
     components = plan.get("components")
     states = plan.get("states")
+    # gmi honest path (same disposition as arkts_page_plan): a contract whose
+    # Android evidence is entirely PENDING_RUNTIME_VERIFY truthfully carries
+    # no component facts; its probes degrade to cold-start arrival asserts
+    # with empty required_components.
+    evidence_hashes = plan.get("android_evidence_hashes")
+    pending_only_baseline = (
+        isinstance(evidence_hashes, list)
+        and bool(evidence_hashes)
+        and all(isinstance(record, dict) and record.get("pending_runtime_verify") is True for record in evidence_hashes)
+    )
     if not isinstance(components, list) or not components:
-        raise ValueError(f"{page_id} has no required component plan")
+        if not pending_only_baseline:
+            raise ValueError(f"{page_id} has no required component plan")
+        components = []
     if not isinstance(states, list) or not states:
         raise ValueError(f"{page_id} has no required state plan")
     actions = [
@@ -182,7 +194,7 @@ def _probes(plan: dict[str, Any], plans_by_page: dict[str, dict[str, Any]]) -> l
                 "locator_value": component["locator"]["value"],
                 "expected_text": str(source.get("text", "")),
             })
-        if not required_components:
+        if not required_components and not pending_only_baseline:
             raise ValueError(f"{page_id} {state_id} has no required component locator")
         probe_runs = list(actions_by_event.items())
         if not probe_runs:
