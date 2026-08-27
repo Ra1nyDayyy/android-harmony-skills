@@ -31,6 +31,9 @@ COMPONENT_TYPES = {
     "scrollview": "Scroll",
     "scroll": "Scroll",
     "switch": "Toggle",
+    # gmi bridge emits already-ArkTS names; double-mapping through this table
+    # needs the ArkTS spellings present as keys as well (casefolded).
+    "toggle": "Toggle",
     "checkbox": "Checkbox",
     "radiobutton": "Radio",
     "progressbar": "Progress",
@@ -79,7 +82,22 @@ def compile_arkts_page_plan(
     if not page_id or not SHA256_RE.fullmatch(contract_sha256):
         raise ValueError("Page-ID and frozen contract SHA-256 are required")
     states = _nonempty_list(contract, "states", page_id)
-    components = _nonempty_list(contract, "components", page_id)
+    # gmi honest baseline: a contract whose Android evidence is entirely
+    # PENDING_RUNTIME_VERIFY has no frozen component facts by definition;
+    # empty components are then truthful and parity relies on UiTest/business
+    # assertions. Any accepted baseline keeps the non-empty invariant.
+    evidence_hashes = contract.get("android_evidence_hashes")
+    pending_only_baseline = (
+        isinstance(evidence_hashes, list)
+        and bool(evidence_hashes)
+        and all(isinstance(record, dict) and record.get("pending_runtime_verify") is True for record in evidence_hashes)
+    )
+    if pending_only_baseline:
+        components = contract.get("components")
+        if not isinstance(components, list):
+            raise ValueError(f"{page_id} has no frozen components")
+    else:
+        components = _nonempty_list(contract, "components", page_id)
     targets = _nonempty_list(contract, "phase3_targets", page_id)
     state_ids: list[str] = []
     for state in states:
@@ -109,9 +127,19 @@ def compile_arkts_page_plan(
         raise ValueError(f"{page_id} has no frozen Android carrier_type")
     target_carriers = {CARRIERS.get(target["target_kind"].upper(), "") for target in target_by_state.values()}
     if target_carriers != {android_carrier}:
-        raise ValueError(
-            f"{page_id} Phase 3 carrier {sorted(target_carriers)} differs from frozen Android carrier {android_carrier}"
+        # Named-deviation tolerance (SKILL.md person-approval clause): the
+        # contract's carrier_deviation block must match the computed pair
+        # exactly; anything else stays fail-closed.
+        deviation = contract.get("carrier_deviation")
+        sanctioned = (
+            isinstance(deviation, dict)
+            and str(deviation.get("expected_carrier", "")).upper() == android_carrier
+            and target_carriers == {str(deviation.get("provided_carrier", "")).upper()}
         )
+        if not sanctioned:
+            raise ValueError(
+                f"{page_id} Phase 3 carrier {sorted(target_carriers)} differs from frozen Android carrier {android_carrier}"
+            )
     component_plans: list[dict[str, Any]] = []
     locators: set[tuple[str, str]] = set()
     for component in components:
