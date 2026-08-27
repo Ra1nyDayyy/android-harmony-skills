@@ -57,5 +57,33 @@ class PendingEvidenceShapeTest(unittest.TestCase):
             self._run([broken])
 
 
+
+class TopLevelGeometryDispositionTest(unittest.TestCase):
+    def _run(self, evidence_records, geometry):
+        contract = {
+            "page_id": "PAGE-X",
+            "android_evidence_hashes": evidence_records,
+            "source_geometry": geometry,
+        }
+        pac._validate_source_geometry("PAGE-X", contract)
+
+    def test_pending_only_empty_geometry_passes(self):
+        pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
+        self._run([pending], [])
+
+    def test_pending_only_nonempty_geometry_rejected(self):
+        pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
+        with self.assertRaisesRegex(ValueError, "empty array for pending-only"):
+            self._run([pending], [{"component_id": "C1"}])
+
+    def test_accepted_baseline_empty_geometry_rejected(self):
+        with self.assertRaisesRegex(ValueError, "non-empty array"):
+            self._run([full_record()], [])
+
+    def test_mixed_baseline_with_accepted_geometry_passes(self):
+        geo = [{"component_id": "C1", "bounds": {"left": 0, "top": 0}}]
+        pending = {"evidence_id": "EVD-P", "pending_runtime_verify": True, "source_geometry": []}
+        self._run([full_record(), pending], [geo])
+
 if __name__ == "__main__":
     unittest.main()

@@ -508,6 +508,26 @@ def _side_effects_for_page(rows: list[dict[str, object]], page_id: str, feature_
     )
 
 
+def _validate_source_geometry(page_id: str, contract: dict[str, object]) -> None:
+    """Validate the top-level source_geometry per Android-baseline disposition.
+
+    Mixed or fully accepted baselines keep the original non-empty invariant
+    (layout objects are mandatory once any real evidence exists). A pending-
+    only gmi honest baseline has no layout artifacts by definition, so the
+    only truthful shape is exactly an empty array.
+    """
+    records = contract.get("android_evidence_hashes")
+    records = records if isinstance(records, list) else []
+    if any(not _pending_record(record) for record in records):
+        _validate_geometry_array(str(contract["page_id"]), contract.get("source_geometry"))
+        return
+    if not isinstance(contract.get("source_geometry"), list) or contract["source_geometry"]:
+        raise ValueError(
+            f"Invalid page acceptance contract {page_id}: "
+            "source_geometry must be an empty array for pending-only Android baseline"
+        )
+
+
 def _validate_contract(contract: dict[str, object]) -> None:
     missing = sorted(CONTRACT_KEYS - set(contract))
     extras = sorted(set(contract) - CONTRACT_KEYS)
@@ -540,7 +560,7 @@ def _validate_contract(contract: dict[str, object]) -> None:
     for field in ("gmi_fields", "gmi_options", "gmi_navigation", "gmi_motion", "behavior_bindings"):
         if any(not isinstance(record, dict) for record in contract[field]):
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: {field} must contain objects")
-    _validate_geometry_array(str(contract["page_id"]), contract["source_geometry"])
+    _validate_source_geometry(str(contract["page_id"]), contract)
     for state in contract["states"]:
         if set(state) != {"state_id", "state_name", "records"}:
             raise ValueError(f"Invalid page acceptance contract {contract['page_id']}: states structure differs")
